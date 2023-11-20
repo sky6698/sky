@@ -830,6 +830,6 @@
     
     
 "lives":[
-{"name":"无名直播","type":0,"url":"https://gitee.com/ghtxhe/sky/raw/master/live.txt","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"},
+{"name":"无名直播","type":0,"url":"https://ghproxy.net/https://raw.githubusercontent.com/sky6698/sky/main/live.txt","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"},
 {"name":"备用直播","type":0,"url":"https://codeberg.org/jgfx/box1/raw/branch/main/xclive.json","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"}]
 }
