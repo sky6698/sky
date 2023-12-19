@@ -1,32 +1,59 @@
 {
     "友情提醒": "完全免费，切勿付费购买。",
-    "spider": "https://gitee.com/ghtxhe/sky/raw/master/jar/fty1113.jar;md5;f6ce0ce7bd8b398540be062ebef7051d",
+    "spider": "https://gitee.com/ghtxhe/sky/raw/master/jar/fty1214.jar;md5;ea2690fc66083afe1431071968e60395",
     "wallpaper": "https://tuapi.eees.cc/api.php?category=fengjing&type=302",
     "sites": [
 
 {"key": "77", "name": "🌈┃无名┃影视","type": 3,"api": "csp_Kunyu77", "searchable": 1,"quickSearch": 1,"changeable": 1},
 //{"key": "鲲娱七七", "name":"七七┃影视","type": 3, "api": "https://drpy.cainisi.cf/libs/drpy2.min.js", "searchable": 1,"changeable": 1,"ext": "https://drpy.cainisi.cf/js/酷云77.js"},
-{ "key": "巴士", "name": "🌸无名┃动漫", "type": 3, "api": "csp_Dm84", "searchable": 1,"changeable": 1, "jar":"https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"},
+{ "key": "巴士", "name": "🌸┃无名┃动漫", "type": 3, "api": "csp_Dm84", "searchable": 1,"changeable": 1, "jar": "https://tvbox.cainisi.cf/jar/fm1214.jar;md5;430c09fd9d279d1b5d1fdebbae7e1d67"},
 
 
-//{"key":"drpy_js_六月听书","name":"📻┃无名┃听书","type":3,"api":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/js/六月听书.js"},
-{"key":"drpy_js_有声小说","name":"📻┃无名┃听书","type":3,"api":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/js/有声小说吧.js"},
+//{"key":"drpy_js_六月听书","name":"📻┃无名┃听书","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/六月听书.js"},
+{"key":"drpy_js_有声小说","name":"📻┃无名┃听书","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/有声小说吧.js"},
 
-
-//{"key":"drpy_js_短剧网","name":"🎇┃短剧┃影视","type":3,"api":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/lib/drpy2.min.js","searchable":1,"quickSearch":1,"changeable":0,"ext":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/js/短剧网.js"},
+{"key": "短劇", "name": "🎇┃短剧┃影视", "type": 3, "api": "csp_Duanju", "searchable": 1, "changeable": 0,"jar": "https://tvbox.cainisi.cf/jar/fm1214.jar;md5;430c09fd9d279d1b5d1fdebbae7e1d67"},
+//{"key":"drpy_js_短剧网","name":"🎇┃短剧┃影视","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","searchable":1,"quickSearch":1,"changeable":0,"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/短剧网.js"},
 {"key": "Biliych","name": "📀┃无名┃音乐","type": 3,"api": "csp_Bili","style": { "type": "rect", "ratio": 1.597}, "searchable": 1, "quickSearch": 0, "changeable": 0,"ext": "https://gitee.com/ghtxhe/sky/raw/master/json/ych.json"},
 { "key": "MV_vod","name": "🎸┃明星┃MV","type": 1,"api": "https://mv.wogg.link/mv/vod","style": {"type": "oval"},"searchable": 1,"quickSearch": 0,"changeable": 0},
-{"key":"py_cctv_集合","name":"❤┃央视┃集合","type":3,"style":{"type":"rect","ratio":1.485},"api":"py_cctv","searchable":1,"quickSearch":1,"filterable":1,"ext":"https://ghproxy.net/raw.githubusercontent.com/sky6698/sky/main/js/pycctv.json"},
+
+//{"key":"py_cctv_集合","name":"❤┃央视┃集合","type":3,"style":{"type":"rect","ratio":1.485},"api":"py_cctv","searchable":1,"quickSearch":1,"filterable":1,"ext":"https://hungry.deno.dev/sky6698/sky/main/js/pycctv.json"},
+
+{
+   "key":"py_cctv_集合",
+   "name":"❤┃央视┃集合",
+   "type":3,
+   "api":"py_cctv",
+   "searchable":1,
+   "quickSearch":1,
+   "style":{
+      "type":"rect",
+      "ratio":0
+   },
+   "filterable":1,
+   "ext":"https://hungry.deno.dev/sky6698/sky/main/js/pycctv.json"
+},
+
+
+
 {"key": "戏曲自定义","name": " 💖┃戏曲┃大全","type": 3,"api": "csp_Bili","searchable": 0,"quickSearch": 0,"filterable": 1,"ext": "https://gitee.com/ghtxhe/sky/raw/master/json/%E6%88%8F%E6%9B%B20723.json"},
-{"key":"相声小品","name":"😁┃相声┃小品","type":3,"api":"csp_Bili","searchable":0,"quickSearch":0,"filterable":1,"ext":"https://ghproxy.net/raw.githubusercontent.com/sky6698/sky/main/js/Blixs.json"},
-{"key":"drpy_js_好趣网","name":"📺┃电视┃直播","type":3,"api":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/lib/drpy2.min.js","style":{"type":"rect","ratio":1.333},"changeable":0,"ext":"https://ghproxy.net/raw.githubusercontent.com/gaotianliuyun/gao/master/js/好趣网.js"},    
+{"key":"相声小品","name":"😁┃相声┃小品","type":3,"api":"csp_Bili","searchable":0,"quickSearch":0,"filterable":1,"ext":"https://hungry.deno.dev/sky6698/sky/main/js/Blixs.json"},
+{"key":"drpy_js_好趣网","name":"📺┃电视┃直播","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","style":{"type":"rect","ratio":1.333},"changeable":0,"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/好趣网.js"},    
 {"key": "Aid", "name": "🚑┃急救┃教学", "type": 3, "api": "csp_FirstAid", "searchable": 0,  "quickSearch": 0, "style": { "type": "rect", "ratio": 3.8}, "gridview": "0-0-4.1"},
 {"key":"豆豆","name":"🌏┃豆瓣┃推荐","type": 3, "api": "csp_DouDou","searchable": 0,"quickSearch": 0,"filterable": 0},
 
 
 
-//{"key": "豆瓣", "name": "🌏┃豆瓣┃推荐", "type": 3, "api": "csp_Douban", "searchable": 0, "changeable": 1, "ext": "https://tvbox.cainisi.cf/json/douban.json","jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"},
+//{"key": "豆瓣", "name": "🌏┃豆瓣┃推荐", "type": 3, "api": "csp_Douban", "searchable": 0, "changeable": 1, "ext": "https://tvbox.cainisi.cf/json/douban.json","jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"},
 
+        {
+            "key": "一起看",
+            "name": "🦊┃一起看┃影视",
+            "api": "csp_YQKan",
+            "type": 3,
+            "searchable": 1,
+            "changeable": 1
+        },
         {
             "key": "两个BT",
             "name": "🎥┃两个BT┃影视",
@@ -55,14 +82,7 @@
             "changeable": 1,
             "ext": "https://drpy.cainisi.cf/js/ddys.js"
         },
-        {
-            "key": "一起看",
-            "name": "🦊┃一起看┃影视",
-            "api": "csp_YQKan",
-            "type": 3,
-            "searchable": 1,
-            "changeable": 1
-        },
+
 
 
         {
@@ -259,7 +279,7 @@
                 "token": "影視天下第一",
                 "filter": "https://tvbox.cainisi.cf/json/wogg.json"
             },
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "七夜",
@@ -268,7 +288,7 @@
             "api": "csp_Dovx",
             "searchable": 1,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "云搜",
@@ -277,7 +297,7 @@
             "api": "csp_UpYun",
             "searchable": 1,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "盘搜",
@@ -286,7 +306,7 @@
             "api": "csp_PanSou",
             "searchable": 1,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "盘搜索",
@@ -295,7 +315,7 @@
             "api": "csp_PanSearch",
             "searchable": 1,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "csp_search_Yisou",
@@ -325,7 +345,7 @@
             "searchable": 1,
             "changeable": 1,
             "ext": "https://tvbox.cainisi.cf/json/jianpian.json",
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
 
 
@@ -350,7 +370,7 @@
             "api": "https://cj.lziapi.com/api.php/provide/vod",
             "searchable": 1,
             "changeable": 1,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "非凡",
@@ -359,7 +379,7 @@
             "api": "http://cj.ffzyapi.com/api.php/provide/vod",
             "searchable": 1,
             "changeable": 1,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "樱花",
@@ -368,7 +388,7 @@
             "api": "csp_Ying",
             "searchable": 1,
             "changeable": 1,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
 
         {
@@ -387,7 +407,7 @@
             "api": "csp_NiNi",
             "searchable": 1,
             "changeable": 1,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "星星",
@@ -396,7 +416,7 @@
             "api": "csp_Star",
             "searchable": 1,
             "changeable": 1,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
         {
             "key": "唐人街影院",
@@ -419,7 +439,7 @@
             "api": "csp_Kugou",
             "searchable": 0,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },        
                        
         {
@@ -606,7 +626,7 @@
             "api": "csp_Local",
             "searchable": 0,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         },
 
         {
@@ -616,7 +636,7 @@
             "api": "csp_Push",
             "searchable": 1,
             "changeable": 0,
-            "jar": "https://tvbox.cainisi.cf/jar/fm1113.jar;md5;18d6103e01c3865caeb7a23e627adb3c"
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/fm1201.jar;md5;d21813e2dfdd1685610b2748e96e6c3a"
         }  
  
     ],
@@ -830,6 +850,6 @@
     
     
 "lives":[
-{"name":"无名直播","type":0,"url":"https://ghproxy.net/https://raw.githubusercontent.com/sky6698/sky/main/live.txt","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"},
+{"name":"无名直播","type":0,"url":"https://hungry.deno.dev/sky6698/sky/main/live.txt","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"},
 {"name":"备用直播","type":0,"url":"https://codeberg.org/jgfx/box1/raw/branch/main/xclive.json","epg":"https://epg.112114.xyz/?ch={name}&date={date}", "logo": "https://epg.112114.xyz/logo/{name}.png"}]
 }
