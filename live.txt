@@ -215,6 +215,7 @@ CCTV1,https://www.yangshipin.cn/#/tv/home?pid=600001859$央视频
 东方卫视,http://39.134.65.208/PLTV/88888888/224/3221225672/index.m3u8
 
 📡丨河南频道,#genre#
+河南都市,http://player.200877926.top/169l/henan/henan.php?id=hntv2
 河南都市,http://66sky.top/hntv.php?id=hnds 
 河南民生,http://66sky.top/hntv.php?id=hnms 
 河南法治,http://66sky.top/hntv.php?id=hmfz 
