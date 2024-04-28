@@ -21,12 +21,16 @@ http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226008/index.m3u8$移动
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225734/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV10" tvg-logo="https://live.fanmingming.com/tv/CCTV10.png" group-title="⚛️丨央视频道",CCTV10
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225730/index.m3u8$移动
+#EXTINF:-1 tvg-name="CCTV11" tvg-logo="https://live.fanmingming.com/tv/CCTV11.png" group-title="⚛️丨央视频道",CCTV11
+http://39.134.66.66/PLTV/88888888/224/3221225517/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV12" tvg-logo="https://live.fanmingming.com/tv/CCTV12.png" group-title="⚛️丨央视频道",CCTV12
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225731/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV13" tvg-logo="https://live.fanmingming.com/tv/CCTV13.png" group-title="⚛️丨央视频道",CCTV13
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226537/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV14" tvg-logo="https://live.fanmingming.com/tv/CCTV14.png" group-title="⚛️丨央视频道",CCTV14
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225732/index.m3u8$移动
+#EXTINF:-1 tvg-name="CCTV15" tvg-logo="https://live.fanmingming.com/tv/CCTV15.png" group-title="⚛️丨央视频道",CCTV15
+http://39.135.138.60:18890/PLTV/88888910/224/3221225641/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV16" tvg-logo="https://live.fanmingming.com/tv/CCTV16.png" group-title="⚛️丨央视频道",CCTV16
 http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226100/index.m3u8$移动
 #EXTINF:-1 tvg-name="CCTV17" tvg-logo="https://live.fanmingming.com/tv/CCTV17.png" group-title="⚛️丨央视频道",CCTV17
@@ -37,22 +41,6 @@ https://tv.cry33.com/ys4k.php?id=4k
 https://tv.cry33.com/ys4k.php?id=8k
 #EXTINF:-1 tvg-name="CCTV8K 超高清" tvg-logo="https://live.fanmingming.com/tv/CCTV8K 超高清.png" group-title="⚛️丨央视频道",CCTV8K 超高清
 https://tv.iill.top/live/cctv8k
-#EXTINF:-1 tvg-name="CCTV电视指南" tvg-logo="https://live.fanmingming.com/tv/CCTV电视指南.png" group-title="⚛️丨央视频道",CCTV电视指南
-https://tv.iill.top/live/dszn
-#EXTINF:-1 tvg-name="CCTV兵器科技" tvg-logo="https://live.fanmingming.com/tv/CCTV兵器科技.png" group-title="⚛️丨央视频道",CCTV兵器科技
-https://tv.iill.top/live/bqkj
-#EXTINF:-1 tvg-name="CCTV世界地理" tvg-logo="https://live.fanmingming.com/tv/CCTV世界地理.png" group-title="⚛️丨央视频道",CCTV世界地理
-https://tv.iill.top/live/sjdl
-#EXTINF:-1 tvg-name="CCTV卫生健康" tvg-logo="https://live.fanmingming.com/tv/CCTV卫生健康.png" group-title="⚛️丨央视频道",CCTV卫生健康
-https://tv.iill.top/live/wsjk
-#EXTINF:-1 tvg-name="CCTV风云剧场" tvg-logo="https://live.fanmingming.com/tv/CCTV风云剧场.png" group-title="⚛️丨央视频道",CCTV风云剧场
-https://tv.iill.top/live/fyjc
-#EXTINF:-1 tvg-name="CCTV央视台球" tvg-logo="https://live.fanmingming.com/tv/CCTV央视台球.png" group-title="⚛️丨央视频道",CCTV央视台球
-https://tv.iill.top/live/ystq
-#EXTINF:-1 tvg-name="CCTV高尔夫•网球" tvg-logo="https://live.fanmingming.com/tv/CCTV高尔夫•网球.png" group-title="⚛️丨央视频道",CCTV高尔夫•网球
-https://tv.iill.top/live/gefwq
-#EXTINF:-1 tvg-name="CCTV央视文化精品" tvg-logo="https://live.fanmingming.com/tv/CCTV央视文化精品.png" group-title="⚛️丨央视频道",CCTV央视文化精品
-https://tv.iill.top/live/whjp
 #EXTINF:-1 tvg-name="CCTV1" tvg-logo="https://live.fanmingming.com/tv/CCTV1.png" group-title="⚛️丨央视频道",CCTV1
 http://39.134.66.110/PLTV/88888888/224/3221225816/index.m3u8
 #EXTINF:-1 tvg-name="CCTV1" tvg-logo="https://live.fanmingming.com/tv/CCTV1.png" group-title="⚛️丨央视频道",CCTV1
@@ -169,8 +157,6 @@ http://39.134.65.181/PLTV/88888888/224/3221225677/index.m3u8
 http://39.134.65.183/PLTV/88888888/224/3221225677/index.m3u8
 #EXTINF:-1 tvg-name="CCTV10" tvg-logo="https://live.fanmingming.com/tv/CCTV10.png" group-title="⚛️丨央视频道",CCTV10
 http://39.134.66.66/PLTV/88888888/224/3221225677/index.m3u8
-#EXTINF:-1 tvg-name="CCTV11" tvg-logo="https://live.fanmingming.com/tv/CCTV11.png" group-title="⚛️丨央视频道",CCTV11
-http://39.134.66.66/PLTV/88888888/224/3221225517/index.m3u8
 #EXTINF:-1 tvg-name="CCTV12" tvg-logo="https://live.fanmingming.com/tv/CCTV12.png" group-title="⚛️丨央视频道",CCTV12
 http://39.134.66.110/PLTV/88888888/224/3221225669/index.m3u8
 #EXTINF:-1 tvg-name="CCTV12" tvg-logo="https://live.fanmingming.com/tv/CCTV12.png" group-title="⚛️丨央视频道",CCTV12
