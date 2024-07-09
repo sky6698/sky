@@ -25,7 +25,7 @@
     "site_admin": false
   },
   "node_id": "RE_kwDOLsXxyc4Jm-1g",
-  "tag_name": "v1.4.1",
+  "tag_name": "v1.1.1",
   "target_commitish": "main",
   "name": "v1.4.1",
   "draft": false,
@@ -37,7 +37,7 @@
       "url": "https://api.github.com/repos/yaoxieyoulei/mytv-android/releases/assets/174647335",
       "id": 174647335,
       "node_id": "RA_kwDOLsXxyc4KaOgn",
-      "name": "mytv-android-1.4.1.apk",
+      "name": "wmviptv-android-1.1.1.apk",
       "label": null,
       "uploader": {
         "login": "yaoxieyoulei",
@@ -65,7 +65,7 @@
       "download_count": 2462,
       "created_at": "2024-06-19T06:54:41Z",
       "updated_at": "2024-06-19T06:54:45Z",
-      "browser_download_url": "https://github.com/yaoxieyoulei/mytv-android/releases/download/v1.4.1/mytv-android-1.4.1.apk"
+      "browser_download_url": "https://github.com/sky6698/sky/raw/main/apk/release/wmviptv-android-1.1.1.apk"
     }
   ],
   "tarball_url": "https://api.github.com/repos/yaoxieyoulei/mytv-android/tarball/v1.4.1",
