@@ -342,6 +342,7 @@ CCTV17,http://[2409:8087:1a01:df::7005]:80/ottrrs.hl.chinamobile.com/PLTV/888888
 📡┃河南频道,#genre#
 河南卫视,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226480/index.m3u8
 河南都市频道 ,video://http://player.200877926.top/169l/henan/henan.php?id=hntv2
+河南都市频道1,http://player.200877926.top/169l/henan/henan.php?id=hntv2
 河南民生频道 ,video://http://player.200877926.top/169l/henan/henan.php?id=hntv3
 河南法治频道 ,video://http://player.200877926.top/169l/henan/henan.php?id=hntv4
 河南电视剧频道 ,video://http://player.200877926.top/169l/henan/henan.php?id=hntv5
