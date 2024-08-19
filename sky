@@ -7,16 +7,7 @@
 {"key": "77", "name": "🌈┃无名┃影视","type": 3,"api": "csp_Kunyu77", "searchable": 1,"quickSearch": 1,"changeable": 1},
 //{"key": "鲲娱七七", "name":"七七┃影视","type": 3, "api": "https://drpy.cainisi.cf/libs/drpy2.min.js", "searchable": 1,"changeable": 1,"ext": "https://drpy.cainisi.cf/js/酷云77.js"},
 { "key": "巴士", "name": "🌸┃无名┃动漫", "type": 3, "api": "csp_Dm84", "searchable": 1,"changeable": 1, "jar": "https://tvbox.cainisi.cf/jar/fm1214.jar;md5;430c09fd9d279d1b5d1fdebbae7e1d67"},
-	{
-		"key": "cntv",
-		"name": "🔥ys",
-		"type": 4,
-		"api": "py_cntv",
-		"searchable": 0,
-		"quickSearch": 0,
-		"filterable": 1,
-		"ext": "https://azure.leuse.top/vod/cntv"
-	},
+{"key": "cntv", "name": "❤┃央视", "type": 4, "api": "https://azure.leuse.top/vod/cntv", "searchable": 0, "quickSearch": 0, "filterable": 1},
 
 //{"key":"drpy_js_六月听书","name":"📻┃无名┃听书","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/六月听书.js"},
 {"key":"drpy_js_有声小说","name":"📻┃无名┃听书","type":3,"api":"https://hungry.deno.dev/gaotianliuyun/gao/master/lib/drpy2.min.js","changeable":0,"style":{"type":"rect","ratio":1},"ext":"https://hungry.deno.dev/gaotianliuyun/gao/master/js/有声小说吧.js"},
