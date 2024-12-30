@@ -234,6 +234,11 @@ CHC家庭影院,http://cg11.hunancatv.cn:9090/live/CHCJTYY_8000.m3u8?deviceid=86
 河南晴彩中原,video://http://p.ytelc.com/169l/henan/henan.php?id=hntv11 
 郑州新闻综合频道,video://http://p.ytelc.com/169l/henan/henan.php?id=zz1
 郑州商都频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv2
+郑州文体旅游频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv3
+郑州影视戏曲频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv4
+郑州妇女儿童频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv5
+郑州文体旅游频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv6
+南阳新闻综合频道,video://http://p.ytelc.com/169l/henan/henan.php?id=ny1
 方城一套,http://tvpull.dxhmt.cn:9081/tv/11322-1.m3u8?zhend
 焦作综合频道,http://zhpull.dxhmt.cn/jiaozuo/b75a92c9503e47cf9e89f7ff247b65f2/playlist.m3u8?zhend
 焦作公共频道,http://zhpull.dxhmt.cn/jiaozuo/29b65b69130c4ef1a3283cc7b913da05/playlist.m3u8?zhend
