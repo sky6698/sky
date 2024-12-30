@@ -217,6 +217,9 @@ CHC家庭影院,http://cg11.hunancatv.cn:9090/live/CHCJTYY_8000.m3u8?deviceid=86
 
 📡┃河南频道,#genre#
 河南卫视,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226480/index.m3u8
+河南卫视,http://[2409:8087:5e08:24::17]:6610/000000001000/1000000002000027731/index.m3u8?channel-id=ystenlive&Contentid=1000000002000027731&livemode=1&stbId=3
+河南卫视,http://[2409:8087:1a01:df::4077]/PLTV/88888888/224/3221225988/index.m3u8
+河南卫视,http://[2409:8087:1a01:df::4077]/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226480/index.m3u8
 河南都市频道,video://http://p.ytelc.com/169l/henan/henan.php?id=hntv2
 河南民生频道,video://http://p.ytelc.com/169l/henan/henan.php?id=hntv3
 河南法治频道,video://http://p.ytelc.com/169l/henan/henan.php?id=hntv4
@@ -229,6 +232,8 @@ CHC家庭影院,http://cg11.hunancatv.cn:9090/live/CHCJTYY_8000.m3u8?deviceid=86
 河南武术频道,video://http://p.ytelc.com/169l/henan/henan.php?id=wssj
 河南文物宝库频道,video://http://p.ytelc.com/169l/henan/henan.php?id=wwbk
 河南晴彩中原,video://http://p.ytelc.com/169l/henan/henan.php?id=hntv11 
+郑州新闻综合频道,video://http://p.ytelc.com/169l/henan/henan.php?id=zz1
+郑州商都频道,video://http://p.ytelc.com/169l/henan/zhengzhou.php?id=zztv2
 方城一套,http://tvpull.dxhmt.cn:9081/tv/11322-1.m3u8?zhend
 焦作综合频道,http://zhpull.dxhmt.cn/jiaozuo/b75a92c9503e47cf9e89f7ff247b65f2/playlist.m3u8?zhend
 焦作公共频道,http://zhpull.dxhmt.cn/jiaozuo/29b65b69130c4ef1a3283cc7b913da05/playlist.m3u8?zhend
