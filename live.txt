@@ -140,21 +140,6 @@ CCTV15,http://otttv.bj.chinamobile.com/PLTV/88888888/224/3221226333/1.m3u8?Guard
 CCTV16,http://otttv.bj.chinamobile.com/PLTV/88888888/224/3221227002/1.m3u8?GuardEncType=2&accountinfo=%7E%7EV2.0%7EX9goLRw26BM_r54des2PAw%7EtP4-l0lmSfjwLWEfK_el1vH_mv-s1zo4AQJwdedaVwG9xkuFTDg8J26cwOrNJzn20BErrHdLhuZ9EzLUCD3PMW-OMx4MGteHV2vLeW6BqoY%2CEND
 CCTV17,http://otttv.bj.chinamobile.com/PLTV/88888888/224/3221226318/1.m3u8?GuardEncType=2&accountinfo=%7E%7EV2.0%7EEkwQnoHNXRDb-IayWakK1A%7EtP4-l0lmSfjwLWEfK_el1vH_mv-s1zo4AQJwdedaVwG9xkuFTDg8J26cwOrNJzn20BErrHdLhuZ9EzLUCD3PMW-OMx4MGteHV2vLeW6BqoY%2CEND
 
-
-CCTV1,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=1
-CCTV2,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=2
-CCTV4,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=3
-CCTV5+,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=4
-CCTV7,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=5
-CCTV9,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=6
-CCTV10,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=7
-CCTV11,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=8
-CCTV12,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=9
-CCTV13,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=10
-CCTV14,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=11
-CCTV15,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=12
-CCTV16,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=13
-CCTV17,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=14
 CCTV1,https://tvpull.careryun.com:443/tv/cctv1.m3u8
 CCTV2,https://tvpull.careryun.com:443/tv/cctv2.m3u8
 CCTV3,https://tvpull.careryun.com:443/tv/cctv3.m3u8
@@ -554,40 +539,7 @@ CCTV17,http://[2409:8087:5e00:24::1e]:6060/200000001898/460000089800010210/1.m3u
 
 
 
-北京卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=21
-江苏卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=22
-浙江卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=23
-东方卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=24
-广东卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=25
-黑龙江卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=26
-深圳卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=27
-天津卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=28
-山东卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=29
-湖北卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=30
-贵州卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=31
-江西卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=32
-重庆卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=33
-辽宁卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=34
-东南卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=35
-四川卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=36
-广西卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=37
-河北卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=38
-山西卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=39
-陕西卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=40
-青海卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=41
-安徽卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=42
-甘肃卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=43
-宁夏卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=44
-内蒙古卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=45
-云南卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=46
-新疆卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=47
-吉林卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=48
-海南卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=49
-西藏卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=50
-延边卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=51
-康巴卫视,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=52
-CETV1,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=53
-CETV4,http://106.53.99.30/公众号【榴芒电视】/proxy/bjyd.php?id=54
+
 东方卫视,http://150.158.112.123/公众号~玉玉软件库/mg.php?id=dfws
 重庆卫视,http://150.158.112.123/公众号~玉玉软件库/mg.php?id=cqws
 吉林卫视,http://150.158.112.123/公众号~玉玉软件库/mg.php?id=jlws
