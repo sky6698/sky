@@ -1,0 +1,86 @@
+{
+  "spider": "./pg/pg.jar",
+  "logo": "https://fs-im-kefu.7moor-fs1.com/ly/4d2c3f00-7d4c-11e5-af15-41bf63ae4ea0/1716545739254/fc1b89e152cd4aa28d295107cb6c56c9.gif",
+
+  "sites": [
+    {
+      "key": "py_jieyingshi",
+      "name": "🌈┃无名┃影视",
+      "type": 3,
+      "api": "./py/py_jieyingshi.py",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
+    {
+      "key": "py_AiGuaTV",
+      "name": "🌺┃爱瓜TV(T4)",
+      "type": 4,
+      "api": "https://spider.doube.eu.org/spider?site=AiGuaTV",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
+    {
+      "key": "py_UpFuHn",
+      "name": "🍂┃Hi视频(T4)",
+      "type": 4,
+      "api": "https://py.doube.eu.org/spider?site=UpFuHn",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
+    {
+      "key": "py_OleVod",
+      "name": "🍓┃欧乐影院(T4)",
+      "type": 4,
+      "api": "https://py.doube.eu.org/spider?site=OleVod",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
+    {
+      "key": "py_Dm84",
+      "name": "🚌┃动漫巴士(T4)",
+      "type": 4,
+      "api": "https://py.doube.eu.org/spider?site=Dm84",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
+    {
+      "key": "py_BaHaoTV",
+      "name": "🍁┃八号影院(T4)",
+      "type": 4,
+      "api": "https://py.doube.eu.org/spider?site=BaHaoTV",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    }
+  ],
+
+    "lives": [
+        			{
+				"name": "最强国内直播",
+				"type": 0,
+				"url": "http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/tv.m3u",
+				"ua": "okhttp/3.15",
+				"epg": "http://127.0.0.1:10079/p/0/proxy/http://epg.112114.xyz/?ch={name}&date={date}",
+				"logo": "http://127.0.0.1:10079/p/0/proxy/https://epg.112114.xyz/logo/{name}.png",
+				"catchup": {
+					"type": "append",
+					"source": "?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z"
+				}
+			},
+{"name":"无名直播","type":0,"url":"https://hungry.deno.dev/sky6698/sky/main/live.txt","epg":"http://epg.112114.eu.org/?ch={name}&date={date}", "logo": "https://www.xn--rgv465a.top/tvlogo/{name}.png"},  
+{"name": "无名备用","type": 0,"url": "https://ghproxy.net/raw.githubusercontent.com/PizazzGY/TV/master/output/user_result.txt","playerType": 1,"ua": "okhttp/3.15","epg": "http://epg.112114.eu.org/?ch={name}&date={date}","logo": "https://www.xn--rgv465a.top/tvlogo/{name}.png"},
+{"name": "无名专用dns-45.205.24.2","type": 0,"url": "http://www.52sw.top:678/iptv/dns-itv.txt","playerType": 1,"ua": "okhttp/3.15","epg": "http://epg.112114.eu.org/?ch={name}&date={date}","logo": "https://www.xn--rgv465a.top/tvlogo/{name}.png"},
+{"name": "ipv6-f","type": 0,"url": "https://fanmingming.com/txt?url=https://live.fanmingming.cn/tv/m3u/ipv6.m3u","playerType": 1,"ua": "okhttp/3.15","epg": "http://epg.112114.eu.org/?ch={name}&date={date}","logo": "https://www.xn--rgv465a.top/tvlogo/{name}.png"}
+    ]
+}
