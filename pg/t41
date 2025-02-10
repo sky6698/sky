@@ -97,7 +97,7 @@
 		},
 		{"key": "FirstAid","name": "🚑┃急救┃知识 ","type": 3,"api": "csp_FirstAid","searchable": 0,"quickSearch": 0,"changeable": 0,"style": {"type": "rect","ratio": 3.8}},
 		{"key": "新6V","name": "🛩️┃新6V┃电影","type": 3,"api": "csp_Xb6v","searchable": 1,"changeable": 1,"timeout": 60,"ext": "./lib/tokenm.json$$$https://www.66ss.org$$$null$$$1"},
-	    {"key": "Bdys_spider","name": "🛩️┃修罗┃磁力","api": "csp_Bdys01","type": 3,"filterable": 1,"searchable":1,"quickSearch": 1,"searchable": 1,"timeout":60,"ext": "./lib/tokenm.json$$$https://www.xlys01.com/$$$noproxy$$$1"} 
+	    {"key": "Bdys_spider","name": "🛩️┃修罗┃磁力","api": "csp_Bdys01","type": 3,"filterable": 1,"searchable":1,"quickSearch": 1,"searchable": 1,"timeout":60,"ext": "./lib/tokenm.json$$$https://www.xlys01.com/$$$noproxy$$$1"}, 
 		{"key":"BLSGod","name":"🛩️┃BLSGod|磁","type":3,"api":"csp_BLSGod","changeable":1, "timeout":60},
 		{"key":"Xunlei8","name":"🛩️┃Xunlei8|磁","type":3,"api":"csp_Xunlei8","changeable":1, "timeout":60},
 		{"key":"SeedHub","name":"🛩️┃SeedHub|磁","type":3,"api":"csp_SeedHub","changeable":1, "timeout":60},
