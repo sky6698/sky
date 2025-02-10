@@ -12,7 +12,7 @@
       "filterable": 0,
       "changeable": 0
     },
-{ "key": "爱你短剧", "name": "🌸┃短劇┃精品", "type": 3, "api": "csp_XYQHiker", "searchable": 1, "quickSearch": 1, "filterable": 1, "ext": "https://hungry.deno.dev/PizazzGY/TVBox/main/XYQHiker/爱你短剧.json"},
+{ "key": "爱你短剧", "name": "🌸┃短劇┃精品", "type": 3, "jar": "https://gitee.com/ghtxhe/sky/raw/master/ar/spider.jar", "api": "csp_XYQHiker", "searchable": 1, "quickSearch": 1, "filterable": 1, "ext": "https://hungry.deno.dev/PizazzGY/TVBox/main/XYQHiker/爱你短剧.json"},
 	{"key": "豆瓣","name": "🌱┃豆瓣┃推荐","type": 3,"api": "csp_Douban","searchable": 0,"changeable": 1,"indexs":1,"ext": "./lib/tokenm.json$$$./lib/douban.json"},
     {
       "key": "py_AiGuaTV",
