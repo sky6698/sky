@@ -12,6 +12,16 @@
       "filterable": 0,
       "changeable": 0
     },
+    {
+      "key": "py_Dm84",
+      "name": "🚌┃动漫巴士(T4)",
+      "type": 4,
+      "api": "https://py.doube.eu.org/spider?site=Dm84",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "changeable": 0
+    },
 { "key": "爱你短剧", "name": "🌸┃短劇┃精品", "type": 3, "jar": "https://gitee.com/ghtxhe/sky/raw/master/ar/spider.jar", "api": "csp_XYQHiker", "searchable": 1, "quickSearch": 1, "filterable": 1, "ext": "https://hungry.deno.dev/PizazzGY/TVBox/main/XYQHiker/爱你短剧.json"},
 	{"key": "豆瓣","name": "🌱┃豆瓣┃推荐","type": 3,"api": "csp_Douban","searchable": 0,"changeable": 1,"indexs":1,"ext": "./lib/tokenm.json$$$./lib/douban.json"},
     {
@@ -39,16 +49,6 @@
       "name": "🍓┃欧乐影院(T4)",
       "type": 4,
       "api": "https://py.doube.eu.org/spider?site=OleVod",
-      "searchable": 1,
-      "quickSearch": 0,
-      "filterable": 0,
-      "changeable": 0
-    },
-    {
-      "key": "py_Dm84",
-      "name": "🚌┃动漫巴士(T4)",
-      "type": 4,
-      "api": "https://py.doube.eu.org/spider?site=Dm84",
       "searchable": 1,
       "quickSearch": 0,
       "filterable": 0,
@@ -84,8 +84,39 @@
 			"changeable": 0,
 			"filterable": 1
 		},
-		{ "key": "Ikanbot", "name": "📽️┃爱看┃机器人", "type": 3, "api": "csp_Ikanbot", "searchable": 1, "quickSearch": 1, "filterable": 1, "changeable": 1 , "ext":"https://v.aikanbot.com$$$proxy"},
-
+        {
+            "key": "机器人弹幕",
+            "name": "📽️┃机器人┃影视┃Sky",
+            "type": 3,
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "api": "csp_Ikanbot",
+            "searchable": 1,
+            "quickSearch": 1,
+            "filterable": 1,
+            "ext": {
+                "danmu": true
+            }
+        },
+        {
+            "key": "韩小圈",
+            "name": "⭕┃韩小圈┃APP┃Sky",
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "type": 3,
+            "api": "csp_HanXiaoQuan",
+            "searchable": 1,
+            "quickSearch": 1,
+            "filterable": 1
+        },
+        {
+            "key": "星芽短剧",
+            "name": "✌┃星芽┃短剧┃Sky",
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "type": 3,
+            "api": "csp_AppXY",
+            "searchable": 1,
+            "quickSearch": 0,
+            "filterable": 0
+        },
 
 		{
 			"key": "巴士",
@@ -114,7 +145,60 @@
 			"timeout": 60,
 			"ext": "./lib/tokenm.json$$$https://mihdr.top/$$$noproxy$$$1$$$./lib/wogg.json$$$ZHIZHEN"
 		},
-
+        {
+            "key": "dr_兔小贝",
+            "name": "📚┃儿童┃启蒙",
+            "type": 3,
+            "style": {"type": "rect","ratio": 1.597},
+            "api": "https://gitee.com/ghtxhe/sky/raw/master/cns/api/drpy2.min.js",
+            "searchable": 0,
+            "changeable": 0,
+            "ext": "https://gitee.com/ghtxhe/sky/raw/master/json/xx1.json"
+        },
+        {
+            "key": "少儿教育",
+            "name": "📚┃少儿┃教育",
+            "type": 3,
+            "style": {"type": "rect","ratio": 1.597},
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "api": "csp_Bili",
+            "searchable": 0,
+            "changeable": 0,
+            "ext": "https://gitee.com/ghtxhe/sky/raw/master/json/少儿教育.json"
+        },
+        {
+            "key": "小学课堂",
+            "name": "📚┃小学┃课堂",
+            "type": 3,
+            "style": {"type": "rect","ratio": 1.597},
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "api": "csp_Bili",
+            "searchable": 0,
+            "changeable": 0,
+            "ext": "https://gitee.com/ghtxhe/sky/raw/master/json/小学课堂.json"
+        },
+        {
+            "key": "初中课堂",
+            "name": "📚┃初中┃课堂",
+            "type": 3,
+            "style": {"type": "rect","ratio": 1.597},
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "api": "csp_Bili",
+            "searchable": 0,
+            "changeable": 0,
+            "ext": "https://gitee.com/ghtxhe/sky/raw/master/json/初中课堂.json"
+        },
+        {
+            "key": "高中教育",
+            "name": "📚┃高中┃课堂",
+            "type": 3,
+            "style": {"type": "rect","ratio": 1.597},
+            "jar": "https://gitee.com/ghtxhe/sky/raw/master/jar/spider2.jar",
+            "api": "csp_Bili",
+            "searchable": 0,
+            "changeable": 0,
+            "ext": "https://gitee.com/ghtxhe/sky/raw/master/json/高中课堂.json"
+        },
 
 		{
 			"key": "直播转点播",
