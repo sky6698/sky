@@ -23,7 +23,7 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 浙江卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227020/1.m3u8?fmt=ts2hls
 安徽卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226975/1.m3u8?fmt=ts2hls
 北京卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227014/1.m3u8?fmt=ts2hls
-福建东南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227016/1.m3u8?fmt=ts2hls
+东南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227016/1.m3u8?fmt=ts2hls
 广东卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226979/1.m3u8?fmt=ts2hls
 广西卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226977/1.m3u8?fmt=ts2hls
 海南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226973/1.m3u8?fmt=ts2hls
