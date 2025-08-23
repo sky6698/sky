@@ -144,6 +144,8 @@ CHC家庭影院,https://mursor.ottiptv.cc/migu/644368373.m3u8?migutoken=20825633
 南方影视,https://mursor.ottiptv.cc/migu/614961829.m3u8?migutoken=64b49eb2ab9824ae35101c89a8053bb68d5d431e9ed63353f98e1ee7bbc635a108692e5f3f141d831aedfeccda32d20a09aeccee55fa5bcdc0013c95d6691bb6c3cf32705dce73d8ec2e30a3e4
 血色山河·抗日战争影像志,https://mursor.ottiptv.cc/migu/713600957.m3u8?migutoken=d03b2f3b7426070b2494e5a2275205e71869a7edb4706e97043c33cce95b98fa96b3b89bf4e8174c3302ff2415fca12edb8aed7a354b1269d2120922b92070cadb3f4d1749947dab8159bdfa71
 深度对话,https://mursor.ottiptv.cc/migu/625703337.m3u8?migutoken=89e0894aa540183ba89b2e15117f4a9a2fe8de12f9df5d5adc7bbbe4b36f7fd0dd6603df9ef8049399e8ca02c2494ccf3312e0d2ab0b8a525e37fda44aa0b10d8a0faa2de1a940e7eb2bc62513
+
+熊猫,#genre#
 熊猫频道0,https://mursor.ottiptv.cc/migu/609158151.m3u8?migutoken=17ed0c61f9b48a16aec558b8e89c56aecf9271732680cb7f321370b058e9cc640caaecb9ab4bbcb99d43911c2f64a9b98af3a0f50da7380c2bfc123fb2737334f42ac4c3f7e07615975b72ab82
 熊猫频道1,https://mursor.ottiptv.cc/migu/608933610.m3u8?migutoken=2fff4b0f3fba90d30591bc6833acf002d01b41bd250c89e1dc6763fd782c5f72d7b26acfb866067614289973a560adb37ca0b3256a19d716a9e93b5149afc16b19f00c26da671d01dc989df39c
 熊猫频道2,https://mursor.ottiptv.cc/migu/608933640.m3u8?migutoken=9cfe5245f92c7cbc331d63ba4f71f45f7df373dfdc6c617bc793459e98d6da7b559c70486c2fb1ed856a85f239652cc6fb58c3dd58f719e284e6c93a4dc7a5568932ce8f74f15eb395ac5dd99c
@@ -403,3 +405,4 @@ CHC家庭影院,https://mursor.ottiptv.cc/migu/644368373.m3u8?migutoken=20825633
 综艺-德云斗笑社第一季,https://live.metshop.top/huya/30080153
 王牌对王牌系列,https://live.metshop.top/huya/11352905
 综艺-跑男1-4季,https://live.metshop.top/huya/29465875
+
