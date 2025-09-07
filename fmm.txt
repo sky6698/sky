@@ -35,6 +35,40 @@ CETV1,https://mursor.ottiptv.cc/mcp/cetv1.m3u8
 
 
 卫视,#genre#
+河南卫视,https://mursor.ottiptv.cc/mcp/henan.m3u8
+北京卫视,https://mursor.ottiptv.cc/mcp/beijing.m3u8
+湖南卫视,https://mursor.ottiptv.cc/mcp/hunan.m3u8
+江苏卫视,https://mursor.ottiptv.cc/mcp/jiangsu.m3u8
+东方卫视,https://mursor.ottiptv.cc/mcp/dongfang.m3u8
+浙江卫视,https://mursor.ottiptv.cc/mcp/zhejiang.m3u8
+湖北卫视,https://mursor.ottiptv.cc/mcp/hubei.m3u8
+天津卫视,https://mursor.ottiptv.cc/mcp/tianjing.m3u8
+山东卫视,https://mursor.ottiptv.cc/mcp/shandong.m3u8
+辽宁卫视,https://mursor.ottiptv.cc/mcp/liaoning.m3u8
+安徽卫视,https://mursor.ottiptv.cc/mcp/anhui.m3u8
+黑龙江卫视,https://mursor.ottiptv.cc/mcp/heilongjiang.m3u8
+贵州卫视,https://mursor.ottiptv.cc/mcp/guizhou.m3u8
+东南卫视,https://mursor.ottiptv.cc/mcp/dongnan.m3u8
+重庆卫视,https://mursor.ottiptv.cc/mcp/chongqing.m3u8
+江西卫视,https://mursor.ottiptv.cc/mcp/jiangxi.m3u8
+广东卫视,https://mursor.ottiptv.cc/mcp/guangdong.m3u8
+河北卫视,https://mursor.ottiptv.cc/mcp/hebei.m3u8
+深圳卫视,https://mursor.ottiptv.cc/mcp/shenzheng.m3u8
+吉林卫视,https://mursor.ottiptv.cc/mcp/jiling.m3u8
+四川卫视,https://mursor.ottiptv.cc/mcp/sichuan.m3u8
+河北卫视,https://mursor.ottiptv.cc/mcp/hebei.m3u8
+广西卫视,https://mursor.ottiptv.cc/mcp/guangxi.m3u8
+陕西卫视,https://mursor.ottiptv.cc/mcp/shanxiws.m3u8
+山西卫视,https://mursor.ottiptv.cc/mcp/shanxi.m3u8
+内蒙古卫视,https://mursor.ottiptv.cc/mcp/neimenggu.m3u8
+青海卫视,https://mursor.ottiptv.cc/mcp/qinghai.m3u8
+海南卫视,https://mursor.ottiptv.cc/mcp/hainan.m3u8
+宁夏卫视,https://mursor.ottiptv.cc/mcp/ningxia.m3u8
+西藏卫视,https://mursor.ottiptv.cc/mcp/xizang.m3u8
+新疆卫视,https://mursor.ottiptv.cc/mcp/xinjiang.m3u8
+甘肃卫视,https://mursor.ottiptv.cc/mcp/gansu.m3u8
+云南卫视,https://mursor.ottiptv.cc/mcp/yunnan.m3u8
+兵团卫视,https://mursor.ottiptv.cc/mcp/bintuan.m3u8
 河南卫视,https://mgtv.ottiptv.cc/migu/790187291.m3u8?migutoken=92e7b741ab16d16c1fa21c9cbed94c90887967d2386a7284051261e1d63efa7f76b2a4ad9a1812dbaaa2cc2450bb3ae0cc377f07ab446eb4effb58c7f987f050a119de81631e0221c327128196
  东方卫视,https://mgtv.ottiptv.cc/migu/651632648.m3u8?migutoken=d494a93cdaab5216affab514ab9d8ce822d12b55be24b5997e542511d65fb15018040b6e0cfbd32045397e27d4d5f8edc0081559918083bf8900c30ff4119cdbad4cdf8ba3861024d6cfd8559b
  江苏卫视,https://mgtv.ottiptv.cc/migu/623899368.m3u8?migutoken=05202f63aad5e59e32c1d1239ceb507acc615daccaa4e09a6ad106304e83ea2a1b5301529408ea101122c3f52183bb2d3f4b530527dc8dacfb83f48b2f63e9fc1fec1670f7e7be0026e677c6d8
@@ -50,40 +84,7 @@ CETV1,https://mursor.ottiptv.cc/mcp/cetv1.m3u8
  海峡卫视,https://mgtv.ottiptv.cc/migu/849119120.m3u8?migutoken=aaf9f358a210f37ce1965c626e03c2d0389d2684abe8084a37757a94512622a3b6290f64dac45256e856260d4e2ff705f0fec4dc69c5486918353727e5a6d2c737cdc1ad616b3b7099bcbcbcbd
  中国农林卫视,https://mgtv.ottiptv.cc/migu/956904896.m3u8?migutoken=8f6858642b4b3146935ac9915d710e36f432054c00e46994f10066e1d3d577662e6b77fb13490015d1f3ad6467eed4f3e226ebaf5744ca8e3a7705e3dcc27a297202a2c8dbae13a0148e4dd889
  兵团卫视,https://mgtv.ottiptv.cc/migu/956923145.m3u8?migutoken=5444a4c3ac6b6d2aa01a57800a296f720de5a28c3e5bf7820b76644b916dd95b116f1d895c06f0a907de04412c5f6f00f4823e366c195d28436e13e20ac7558c24d4908162871ac2ec1f124519
-北京卫视-MCP,https://mursor.ottiptv.cc/mcp/beijing.m3u8
-湖南卫视-MCP,https://mursor.ottiptv.cc/mcp/hunan.m3u8
-江苏卫视-MCP,https://mursor.ottiptv.cc/mcp/jiangsu.m3u8
-东方卫视-MCP,https://mursor.ottiptv.cc/mcp/dongfang.m3u8
-浙江卫视-MCP,https://mursor.ottiptv.cc/mcp/zhejiang.m3u8
-湖北卫视-MCP,https://mursor.ottiptv.cc/mcp/hubei.m3u8
-天津卫视-MCP,https://mursor.ottiptv.cc/mcp/tianjing.m3u8
-山东卫视-MCP,https://mursor.ottiptv.cc/mcp/shandong.m3u8
-辽宁卫视-MCP,https://mursor.ottiptv.cc/mcp/liaoning.m3u8
-安徽卫视-MCP,https://mursor.ottiptv.cc/mcp/anhui.m3u8
-黑龙江卫视-MCP,https://mursor.ottiptv.cc/mcp/heilongjiang.m3u8
-贵州卫视-MCP,https://mursor.ottiptv.cc/mcp/guizhou.m3u8
-东南卫视-MCP,https://mursor.ottiptv.cc/mcp/dongnan.m3u8
-重庆卫视-MCP,https://mursor.ottiptv.cc/mcp/chongqing.m3u8
-江西卫视-MCP,https://mursor.ottiptv.cc/mcp/jiangxi.m3u8
-广东卫视-MCP,https://mursor.ottiptv.cc/mcp/guangdong.m3u8
-河北卫视-MCP,https://mursor.ottiptv.cc/mcp/hebei.m3u8
-深圳卫视-MCP,https://mursor.ottiptv.cc/mcp/shenzheng.m3u8
-吉林卫视-MCP,https://mursor.ottiptv.cc/mcp/jiling.m3u8
-河南卫视-MCP,https://mursor.ottiptv.cc/mcp/henan.m3u8
-四川卫视-MCP,https://mursor.ottiptv.cc/mcp/sichuan.m3u8
-河北卫视-MCP,https://mursor.ottiptv.cc/mcp/hebei.m3u8
-广西卫视-MCP,https://mursor.ottiptv.cc/mcp/guangxi.m3u8
-陕西卫视-MCP,https://mursor.ottiptv.cc/mcp/shanxiws.m3u8
-山西卫视-MCP,https://mursor.ottiptv.cc/mcp/shanxi.m3u8
-内蒙古卫视-MCP,https://mursor.ottiptv.cc/mcp/neimenggu.m3u8
-青海卫视-MCP,https://mursor.ottiptv.cc/mcp/qinghai.m3u8
-海南卫视-MCP,https://mursor.ottiptv.cc/mcp/hainan.m3u8
-宁夏卫视-MCP,https://mursor.ottiptv.cc/mcp/ningxia.m3u8
-西藏卫视-MCP,https://mursor.ottiptv.cc/mcp/xizang.m3u8
-新疆卫视-MCP,https://mursor.ottiptv.cc/mcp/xinjiang.m3u8
-甘肃卫视-MCP,https://mursor.ottiptv.cc/mcp/gansu.m3u8
-云南卫视-MCP,https://mursor.ottiptv.cc/mcp/yunnan.m3u8
-兵团卫视-MCP,https://mursor.ottiptv.cc/mcp/bintuan.m3u8
+
 
 地方,#genre#
 
@@ -278,6 +279,7 @@ CETV1,https://mursor.ottiptv.cc/mcp/cetv1.m3u8
 综艺-德云斗笑社第一季,https://live.metshop.top/huya/30080153
 王牌对王牌系列,https://live.metshop.top/huya/11352905
 综艺-跑男1-4季,https://live.metshop.top/huya/29465875
+
 
 
 
