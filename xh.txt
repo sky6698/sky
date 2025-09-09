@@ -1,0 +1,559 @@
+央视频道,#genre#
+CCTV1,https://星河.xyz/太白金星李长寿/师妹.php?id=1
+CCTV2,https://星河.xyz/太白金星李长寿/师妹.php?id=2
+CCTV3,https://星河.xyz/太白金星李长寿/师妹.php?id=3
+CCTV4,https://星河.xyz/太白金星李长寿/师妹.php?id=4
+CCTV5,https://星河.xyz/太白金星李长寿/师妹.php?id=5
+CCTV5+,https://星河.xyz/太白金星李长寿/师妹.php?id=6
+CCTV6,https://星河.xyz/太白金星李长寿/师妹.php?id=7
+CCTV7,https://星河.xyz/太白金星李长寿/师妹.php?id=8
+CCTV8,https://星河.xyz/太白金星李长寿/师妹.php?id=9
+CCTV9,https://星河.xyz/太白金星李长寿/师妹.php?id=10
+CCTV10,https://星河.xyz/太白金星李长寿/师妹.php?id=11
+CCTV11,https://星河.xyz/太白金星李长寿/师妹.php?id=12
+CCTV12,https://星河.xyz/太白金星李长寿/师妹.php?id=13
+CCTV13,https://星河.xyz/太白金星李长寿/师妹.php?id=14
+CCTV14,https://星河.xyz/太白金星李长寿/师妹.php?id=15
+CCTV15,https://星河.xyz/太白金星李长寿/师妹.php?id=16
+CCTV17,https://星河.xyz/太白金星李长寿/师妹.php?id=17
+CCTV4欧洲,https://星河.xyz/太白金星李长寿/师妹.php?id=18
+CCTV4美洲,https://星河.xyz/太白金星李长寿/师妹.php?id=19
+老故事,https://星河.xyz/太白金星李长寿/师妹.php?id=25
+发现之旅,https://星河.xyz/太白金星李长寿/师妹.php?id=26
+中学生,https://星河.xyz/太白金星李长寿/师妹.php?id=27
+CGTN,https://星河.xyz/太白金星李长寿/师妹.php?id=28
+CETV1,https://星河.xyz/太白金星李长寿/师妹.php?id=29
+CETV2,https://星河.xyz/太白金星李长寿/师妹.php?id=30
+CETV4,https://星河.xyz/太白金星李长寿/师妹.php?id=31
+
+卫视频道,#genre#
+凤凰资讯,https://星河.xyz/云霄仙子/fengshows.php?id=7c96b084-60e1-40a9-89c5-682b994fb680
+凤凰中文,https://星河.xyz/云霄仙子/fengshows.php?id=f7f48462-9b13-485b-8101-7b54716411ec
+凤凰香港,https://星河.xyz/云霄仙子/fengshows.php?id=15e02d92-1698-416c-af2f-3e9a872b4d78
+星影台,https://星河.xyz/太白金星李长寿/师兄.php?id=98
+星影台,https://星河.xyz/太白金星李长寿/师妹.php?id=259
+爆谷台,https://星河.xyz/太白金星李长寿/师妹.php?id=258
+爆谷台,https://星河.xyz/太白金星李长寿/师兄.php?id=99
+重温经典,https://gdcucc.v1.mk/gdcucc/cwjd.m3u8
+东方卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=41
+江苏卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=42
+广东卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=43
+江西卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=44
+河南卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=45
+陕西卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=46
+大湾区卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=47
+湖北卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=48
+吉林卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=49
+青海卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=50
+东南卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=51
+海南卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=52
+海峡卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=53
+凤凰资讯,https://星河.xyz/太白金星李长寿/西安.php?id=199
+凤凰中文,https://星河.xyz/太白金星李长寿/西安.php?id=200
+陕西卫视,https://星河.xyz/太白金星李长寿/西安.php?id=shxws
+北京卫视,https://星河.xyz/太白金星李长寿/西安.php?id=bjws
+东方卫视,https://星河.xyz/太白金星李长寿/西安.php?id=shws
+天津卫视,https://星河.xyz/太白金星李长寿/西安.php?id=tjws
+黑龙江卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hljws
+吉林卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jlws
+辽宁卫视,https://星河.xyz/太白金星李长寿/西安.php?id=lnws
+甘肃卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gsws
+山东卫视,https://星河.xyz/太白金星李长寿/西安.php?id=sdws
+安徽卫视,https://星河.xyz/太白金星李长寿/西安.php?id=ahws
+河南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hnws
+湖北卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hubws
+湖南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hunws
+江西卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jxws
+江苏卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jsws
+浙江卫视,https://星河.xyz/太白金星李长寿/西安.php?id=zjws
+东南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=dnws
+广东卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gdws
+深圳卫视,https://星河.xyz/太白金星李长寿/西安.php?id=szws
+云南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=ynws
+贵州卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gzws
+四川卫视,https://星河.xyz/太白金星李长寿/西安.php?id=scws
+新疆卫视,https://星河.xyz/太白金星李长寿/西安.php?id=xjws
+西藏卫视,https://星河.xyz/太白金星李长寿/西安.php?id=xzws
+
+咪咕影视,#genre#
+抗战老剧,https://星河.xyz/太白金星李长寿/师妹.php?id=32
+新片放映厅,https://星河.xyz/太白金星李长寿/师妹.php?id=33
+CHC影迷电影,https://星河.xyz/太白金星李长寿/师妹.php?id=34
+CHC动作电影,https://星河.xyz/太白金星李长寿/师妹.php?id=35
+CHC家庭影院,https://星河.xyz/太白金星李长寿/师妹.php?id=36
+和美乡途轮播台,https://星河.xyz/太白金星李长寿/师妹.php?id=37
+高清大片,https://星河.xyz/太白金星李长寿/师妹.php?id=38
+南方影视,https://星河.xyz/太白金星李长寿/师妹.php?id=39
+红色轮播台,https://星河.xyz/太白金星李长寿/师妹.php?id=40
+
+
+西安酒店,#genre#
+CCTV1,https://星河.xyz/太白金星李长寿/西安.php?id=0
+CCTV2,https://星河.xyz/太白金星李长寿/西安.php?id=1
+CCTV3,https://星河.xyz/太白金星李长寿/西安.php?id=2
+CCTV4,https://星河.xyz/太白金星李长寿/西安.php?id=3
+CCTV5,https://星河.xyz/太白金星李长寿/西安.php?id=4
+CCTV5+,https://星河.xyz/太白金星李长寿/西安.php?id=15
+CCTV6,https://星河.xyz/太白金星李长寿/西安.php?id=5
+CCTV7,https://星河.xyz/太白金星李长寿/西安.php?id=6
+CCTV8,https://星河.xyz/太白金星李长寿/西安.php?id=7
+CCTV9,https://星河.xyz/太白金星李长寿/西安.php?id=8
+CCTV10,https://星河.xyz/太白金星李长寿/西安.php?id=9
+CCTV11,https://星河.xyz/太白金星李长寿/西安.php?id=10
+CCTV12,https://星河.xyz/太白金星李长寿/西安.php?id=11
+CCTV13,https://星河.xyz/太白金星李长寿/西安.php?id=12
+CCTV14,https://星河.xyz/太白金星李长寿/西安.php?id=13
+CCTV15,https://星河.xyz/太白金星李长寿/西安.php?id=14
+CCTV16,https://星河.xyz/太白金星李长寿/西安.php?id=16
+CCTV17,https://星河.xyz/太白金星李长寿/西安.php?id=17
+风云剧场,https://星河.xyz/太白金星李长寿/西安.php?id=18
+风云足球,https://星河.xyz/太白金星李长寿/西安.php?id=19
+怀旧剧场,https://星河.xyz/太白金星李长寿/西安.php?id=20
+凤凰资讯,https://星河.xyz/太白金星李长寿/西安.php?id=199
+凤凰中文,https://星河.xyz/太白金星李长寿/西安.php?id=200
+陕西卫视,https://星河.xyz/太白金星李长寿/西安.php?id=shxws
+北京卫视,https://星河.xyz/太白金星李长寿/西安.php?id=bjws
+东方卫视,https://星河.xyz/太白金星李长寿/西安.php?id=shws
+天津卫视,https://星河.xyz/太白金星李长寿/西安.php?id=tjws
+黑龙江卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hljws
+吉林卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jlws
+辽宁卫视,https://星河.xyz/太白金星李长寿/西安.php?id=lnws
+甘肃卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gsws
+山东卫视,https://星河.xyz/太白金星李长寿/西安.php?id=sdws
+安徽卫视,https://星河.xyz/太白金星李长寿/西安.php?id=ahws
+河南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hnws
+湖北卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hubws
+湖南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=hunws
+江西卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jxws
+江苏卫视,https://星河.xyz/太白金星李长寿/西安.php?id=jsws
+浙江卫视,https://星河.xyz/太白金星李长寿/西安.php?id=zjws
+东南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=dnws
+广东卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gdws
+深圳卫视,https://星河.xyz/太白金星李长寿/西安.php?id=szws
+云南卫视,https://星河.xyz/太白金星李长寿/西安.php?id=ynws
+贵州卫视,https://星河.xyz/太白金星李长寿/西安.php?id=gzws
+四川卫视,https://星河.xyz/太白金星李长寿/西安.php?id=scws
+新疆卫视,https://星河.xyz/太白金星李长寿/西安.php?id=xjws
+西藏卫视,https://星河.xyz/太白金星李长寿/西安.php?id=xzws
+陕西新闻综合,https://星河.xyz/太白金星李长寿/西安.php?id=201
+陕西都市青春,https://星河.xyz/太白金星李长寿/西安.php?id=202
+陕西银龄,https://星河.xyz/太白金星李长寿/西安.php?id=203
+陕西秦腔,https://星河.xyz/太白金星李长寿/西安.php?id=204
+陕西西部电影,https://星河.xyz/太白金星李长寿/西安.php?id=205
+西安新闻综合,https://星河.xyz/太白金星李长寿/西安.php?id=206
+西安都市频道,https://星河.xyz/太白金星李长寿/西安.php?id=207
+西安商务资讯,https://星河.xyz/太白金星李长寿/西安.php?id=208
+西安戏剧影视,https://星河.xyz/太白金星李长寿/西安.php?id=209
+
+
+
+地方频道,#genre#
+浙江卫视,https://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8
+浙江公共新闻,https://ali-m-l.cztv.com/channels/lantian/channel007/1080p.m3u8
+浙江国际,https://ali-m-l.cztv.com/channels/lantian/channel010/1080p.m3u8
+浙江少儿,https://ali-m-l.cztv.com/channels/lantian/channel008/1080p.m3u8
+浙江教科影视,https://ali-m-l.cztv.com/channels/lantian/channel004/1080p.m3u8
+之江纪录,https://ali-m-l.cztv.com/channels/lantian/channel012/1080p.m3u8
+浙江民生休闲,https://ali-m-l.cztv.com/channels/lantian/channel006/1080p.m3u8
+浙江经视,https://ali-m-l.cztv.com/channels/lantian/channel003/1080p.m3u8
+浙江钱江都市,https://ali-m-l.cztv.com/channels/lantian/channel002/1080p.m3u8
+江苏卫视,http://星河.xyz/太白金星李长寿/js.php?id=jsws
+江苏城市,http://星河.xyz/太白金星李长寿/js.php?id=jscs
+江苏综艺,http://星河.xyz/太白金星李长寿/js.php?id=jszy
+江苏影视,http://星河.xyz/太白金星李长寿/js.php?id=jsys
+江苏新闻,http://星河.xyz/太白金星李长寿/js.php?id=jsxw
+江苏教育,http://星河.xyz/太白金星李长寿/js.php?id=jsjy
+江苏体育休闲,http://星河.xyz/太白金星李长寿/js.php?id=jsty
+江苏国际,http://星河.xyz/太白金星李长寿/js.php?id=jsgj
+优漫卡通,http://星河.xyz/太白金星李长寿/js.php?id=ymk
+科教纪实 8K,http://星河.xyz/太白金星李长寿/bj8k.php
+北京卫视 4k,http://星河.xyz/太白金星李长寿/bj.php?id=bjws4k
+北京卫视,http://星河.xyz/太白金星李长寿/bj.php?id=bjws
+北京文艺,http://星河.xyz/太白金星李长寿/bj.php?id=bjwy
+北京纪实,http://星河.xyz/太白金星李长寿/bj.php?id=bjjs
+北京新闻,http://星河.xyz/太白金星李长寿/bj.php?id=bjxw
+北京财经,http://星河.xyz/太白金星李长寿/bj.php?id=bjcj
+北京生活,http://星河.xyz/太白金星李长寿/bj.php?id=bjsh
+北京影视,http://星河.xyz/太白金星李长寿/bj.php?id=bjys
+卡酷少儿,http://星河.xyz/太白金星李长寿/bj.php?id=bjkk
+北京体育,http://星河.xyz/太白金星李长寿/bj.php?id=bjty
+江西卫视,http://星河.xyz/太白金星李长寿/jx.php?id=jxws
+江西新闻,http://星河.xyz/太白金星李长寿/jx.php?id=jxxw
+江西都市,http://星河.xyz/太白金星李长寿/jx.php?id=jxds
+江西经视,http://星河.xyz/太白金星李长寿/jx.php?id=jxjs
+江西影视,http://星河.xyz/太白金星李长寿/jx.php?id=jxys
+江西公共,http://星河.xyz/太白金星李长寿/jx.php?id=jxgg
+江西少儿,http://星河.xyz/太白金星李长寿/jx.php?id=jxse
+江西陶瓷,http://星河.xyz/太白金星李长寿/jx.php?id=jxtc
+东南卫视,http://星河.xyz/太白金星李长寿/fj.php?id=dnws
+海峡卫视,http://星河.xyz/太白金星李长寿/fj.php?id=hxws
+福建综合,http://星河.xyz/太白金星李长寿/fj.php?id=fjzh
+福建乡村,http://星河.xyz/太白金星李长寿/fj.php?id=fjgg
+福建新闻,http://星河.xyz/太白金星李长寿/fj.php?id=fjxw
+福建电视剧,http://星河.xyz/太白金星李长寿/fj.php?id=fjdsj
+福建旅游,http://星河.xyz/太白金星李长寿/fj.php?id=fjly
+福建经济,http://星河.xyz/太白金星李长寿/fj.php?id=fjjj
+福建文体,http://星河.xyz/太白金星李长寿/fj.php?id=fjwt
+福建少儿,http://星河.xyz/太白金星李长寿/fj.php?id=fjse
+
+海南卫视,http://星河.xyz/太白金星李长寿/海南.php?id=hnws
+三沙卫视,http://星河.xyz/太白金星李长寿/海南.php?id=ssws
+海南新闻,http://星河.xyz/太白金星李长寿/海南.php?id=hnxw
+海南自贸,http://星河.xyz/太白金星李长寿/海南.php?id=hnzm
+海南公共,http://星河.xyz/太白金星李长寿/海南.php?id=hngg
+海南少儿,http://星河.xyz/太白金星李长寿/海南.php?id=hnse
+
+
+山西卫视,http://星河.xyz/太白金星李长寿/山西.php?id=sxws
+山西经济,http://星河.xyz/太白金星李长寿/山西.php?id=sxjj
+山西影视,http://星河.xyz/太白金星李长寿/山西.php?id=sxys
+山西社会法治,http://星河.xyz/太白金星李长寿/山西.php?id=sxshfz
+山西文体生活,http://星河.xyz/太白金星李长寿/山西.php?id=sxwtsh
+山西黄河,http://星河.xyz/太白金星李长寿/山西.php?id=sxhh
+
+
+东方卫视,http://星河.xyz/太白金星李长寿/上海.php?id=dfws
+上海新闻综合,http://星河.xyz/太白金星李长寿/上海.php?id=xwzh
+新纪实,http://星河.xyz/太白金星李长寿/上海.php?id=xjs
+乐游,http://星河.xyz/太白金星李长寿/上海.php?id=ly
+上海第一财经,http://星河.xyz/太白金星李长寿/上海.php?id=dycj
+上海都市,http://星河.xyz/太白金星李长寿/上海.php?id=ds
+五星体育,http://星河.xyz/太白金星李长寿/上海.php?id=wxty
+
+
+吉林卫视,http://星河.xyz/太白金星李长寿/吉林.php?id=jlws
+吉林都市,http://星河.xyz/太白金星李长寿/吉林.php?id=jlds
+吉林生活,http://星河.xyz/太白金星李长寿/吉林.php?id=jlsh
+吉林影视,http://星河.xyz/太白金星李长寿/吉林.php?id=jlys
+吉林乡村,http://星河.xyz/太白金星李长寿/吉林.php?id=jlxc
+吉林公共・新闻,http://星河.xyz/太白金星李长寿/吉林.php?id=jlggxw
+吉林综艺・文化,http://星河.xyz/太白金星李长寿/吉林.php?id=jlzywh
+延边卫视,http://星河.xyz/太白金星李长寿/吉林.php?id=ybws
+吉林新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=jlszh
+辽源新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=lyzh
+通化新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=thzh
+白山新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=bszh
+白城新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=bczh
+松原新闻综合,http://星河.xyz/太白金星李长寿/吉林.php?id=syzh
+
+陕西卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=46
+陕西新闻资讯,https://星河.xyz/太白金星李长寿/师妹.php?id=55
+陕西都市青春,https://星河.xyz/太白金星李长寿/师妹.php?id=56
+陕西银龄,https://星河.xyz/太白金星李长寿/师妹.php?id=57
+陕西秦腔,https://星河.xyz/太白金星李长寿/sx.php?id=sxqq
+陕西秦腔,https://星河.xyz/太白金星李长寿/师妹.php?id=59
+陕西体育休闲,https://星河.xyz/太白金星李长寿/师妹.php?id=58
+农林卫视,https://星河.xyz/太白金星李长寿/师妹.php?id=54
+西安新闻综合,https://星河.xyz/太白金星李长寿/ssx.php?id=xazh
+西安都市,https://星河.xyz/太白金星李长寿/ssx.php?id=xads
+西安商务资讯,https://星河.xyz/太白金星李长寿/ssx.php?id=xasw
+西安影视,https://星河.xyz/太白金星李长寿/ssx.php?id=xays
+西安丝路,https://星河.xyz/太白金星李长寿/ssx.php?id=xasl
+西安乐购购物,https://星河.xyz/太白金星李长寿/ssx.php?id=xagw
+西安移动电视,https://星河.xyz/太白金星李长寿/ssx.php?id=xayd
+
+电视轮播,#genre#
+刘德华经典,http://星河.xyz/太白金星李长寿/师妹.php?id=149
+周星星经典,http://星河.xyz/太白金星李长寿/师妹.php?id=150
+王宝强经典,http://星河.xyz/太白金星李长寿/师妹.php?id=151
+漫威经典,http://星河.xyz/太白金星李长寿/师妹.php?id=152
+国漫经典,http://星河.xyz/太白金星李长寿/师妹.php?id=153
+搞笑经典,http://星河.xyz/太白金星李长寿/师妹.php?id=154
+爱情公寓,http://星河.xyz/太白金星李长寿/师妹.php?id=155
+我是特种兵之火凤凰,http://星河.xyz/太白金星李长寿/师妹.php?id=156
+亮剑,http://星河.xyz/太白金星李长寿/师妹.php?id=157
+铁齿铜牙纪晓岚,http://星河.xyz/太白金星李长寿/师妹.php?id=158
+神探狄仁杰,http://星河.xyz/太白金星李长寿/师妹.php?id=159
+天龙八部,http://星河.xyz/太白金星李长寿/师妹.php?id=160
+庆余年,http://星河.xyz/太白金星李长寿/师妹.php?id=161
+庆余年 2,http://星河.xyz/太白金星李长寿/师妹.php?id=162
+鬼吹灯,http://星河.xyz/太白金星李长寿/师妹.php?id=163
+新水浒传,http://星河.xyz/太白金星李长寿/师妹.php?id=164
+鹊刀门传奇,http://星河.xyz/太白金星李长寿/师妹.php?id=165
+龙门镖局,http://星河.xyz/太白金星李长寿/师妹.php?id=166
+水浒传,http://星河.xyz/太白金星李长寿/师妹.php?id=167
+猎罪图鉴,http://星河.xyz/太白金星李长寿/师妹.php?id=168
+情满四合院,http://星河.xyz/太白金星李长寿/师妹.php?id=169
+僵尸先生,http://星河.xyz/太白金星李长寿/师妹.php?id=170
+如懿传,http://星河.xyz/太白金星李长寿/师妹.php?id=171
+花千骨,http://星河.xyz/太白金星李长寿/师妹.php?id=172
+梦华录,http://星河.xyz/太白金星李长寿/师妹.php?id=173
+永夜星河,http://星河.xyz/太白金星李长寿/师妹.php?id=174
+轩辕剑之天之痕,http://星河.xyz/太白金星李长寿/师妹.php?id=175
+天龙八部,http://星河.xyz/太白金星李长寿/师妹.php?id=176
+鱿鱼游戏,http://星河.xyz/太白金星李长寿/师妹.php?id=177
+地下交通站,http://星河.xyz/太白金星李长寿/师妹.php?id=178
+三国演义,http://星河.xyz/太白金星李长寿/师妹.php?id=179
+寻秦记,http://星河.xyz/太白金星李长寿/师妹.php?id=180
+雍正王朝,http://星河.xyz/太白金星李长寿/师妹.php?id=181
+鹿鼎记,http://星河.xyz/太白金星李长寿/师妹.php?id=182
+医馆笑传,http://星河.xyz/太白金星李长寿/师妹.php?id=183
+传闻中的陈芊芊,http://星河.xyz/太白金星李长寿/师妹.php?id=184
+都挺好,http://星河.xyz/太白金星李长寿/师妹.php?id=185
+漫长的季节,http://星河.xyz/太白金星李长寿/师妹.php?id=186
+扫黑风暴,http://星河.xyz/太白金星李长寿/师妹.php?id=187
+繁花,http://星河.xyz/太白金星李长寿/师妹.php?id=188
+白鹿原,http://星河.xyz/太白金星李长寿/师妹.php?id=189
+湄公河行动,http://星河.xyz/太白金星李长寿/师妹.php?id=190
+全职高手,http://星河.xyz/太白金星李长寿/师妹.php?id=191
+好先生,http://星河.xyz/太白金星李长寿/师妹.php?id=192
+雪中悍刀行,http://星河.xyz/太白金星李长寿/师妹.php?id=193
+与凤行,http://星河.xyz/太白金星李长寿/师妹.php?id=194
+开端,http://星河.xyz/太白金星李长寿/师妹.php?id=195
+一起同过窗,http://星河.xyz/太白金星李长寿/师妹.php?id=196
+神雕侠侣,http://星河.xyz/太白金星李长寿/师妹.php?id=197
+特战荣耀,http://星河.xyz/太白金星李长寿/师妹.php?id=198
+星汉灿烂,http://星河.xyz/太白金星李长寿/师妹.php?id=199
+有翡,http://星河.xyz/太白金星李长寿/师妹.php?id=200
+斗罗大陆 (剧版),http://星河.xyz/太白金星李长寿/师妹.php?id=201
+陆贞传奇,http://星河.xyz/太白金星李长寿/师妹.php?id=202
+外科风云,http://星河.xyz/太白金星李长寿/师妹.php?id=203
+乡村爱情,http://星河.xyz/太白金星李长寿/师妹.php?id=204
+鬼吹灯之怒晴湘西,http://星河.xyz/太白金星李长寿/师妹.php?id=205
+新三国,http://星河.xyz/太白金星李长寿/师妹.php?id=206
+唐朝诡事录,http://星河.xyz/太白金星李长寿/师妹.php?id=207
+黑镜,http://星河.xyz/太白金星李长寿/师妹.php?id=208
+
+堆堆轮播,#genre#
+封神榜,http://星河.xyz/太白金星李长寿/师妹.php?id=209
+创世纪,http://星河.xyz/太白金星李长寿/师妹.php?id=210
+西游记,http://星河.xyz/太白金星李长寿/师妹.php?id=211
+笑看风云,http://星河.xyz/太白金星李长寿/师妹.php?id=212
+洗冤录,http://星河.xyz/太白金星李长寿/师妹.php?id=213
+法证先锋,http://星河.xyz/太白金星李长寿/师妹.php?id=214
+金枝欲孽,http://星河.xyz/太白金星李长寿/师妹.php?id=215
+警花档案,http://星河.xyz/太白金星李长寿/师妹.php?id=216
+刑侦日记,http://星河.xyz/太白金星李长寿/师妹.php?id=217
+
+综艺动漫,#genre#
+英雄联盟比赛,http://星河.xyz/太白金星李长寿/师妹.php?id=222
+欢乐集结号,http://星河.xyz/太白金星李长寿/师妹.php?id=223
+德爷的挨饿日记,http://星河.xyz/太白金星李长寿/师妹.php?id=224
+哈哈哈哈哈,http://星河.xyz/太白金星李长寿/师妹.php?id=225
+现在就出发,http://星河.xyz/太白金星李长寿/师妹.php?id=226
+奔跑吧,http://星河.xyz/太白金星李长寿/师妹.php?id=227
+青春环游记,http://星河.xyz/太白金星李长寿/师妹.php?id=228
+一人之下,http://星河.xyz/太白金星李长寿/师妹.php?id=229
+诛仙,http://星河.xyz/太白金星李长寿/师妹.php?id=230
+画江湖之不良人,http://星河.xyz/太白金星李长寿/师妹.php?id=231
+全职高手,http://星河.xyz/太白金星李长寿/师妹.php?id=232
+魔道祖师,http://星河.xyz/太白金星李长寿/师妹.php?id=233
+少年歌行,http://星河.xyz/太白金星李长寿/师妹.php?id=234
+斗破苍穹,http://星河.xyz/太白金星李长寿/师妹.php?id=235
+仙逆,http://星河.xyz/太白金星李长寿/师妹.php?id=236
+成龙历险记,http://星河.xyz/太白金星李长寿/师妹.php?id=237
+名侦探柯南剧场版,http://星河.xyz/太白金星李长寿/师妹.php?id=238
+喜羊羊与灰太狼,http://星河.xyz/太白金星李长寿/师妹.php?id=239
+完美世界,http://星河.xyz/太白金星李长寿/师妹.php?id=240
+熊出没,http://星河.xyz/太白金星李长寿/师妹.php?id=241
+猫和老鼠,http://星河.xyz/太白金星李长寿/师妹.php?id=242
+海绵宝宝,http://星河.xyz/太白金星李长寿/师妹.php?id=243
+茶啊二中,http://星河.xyz/太白金星李长寿/师妹.php?id=244
+开心锤锤,http://星河.xyz/太白金星李长寿/师妹.php?id=245
+
+港台斯玛特,#genre#
+翡翠台,http://mytv6688.xyz/smt.php?id=jade_twn
+翡翠台,http://mytv6688.xyz/smt.php?id=Jade_xue
+无线新闻台,http://mytv6688.xyz/smt.php?id=inews_twn
+J 2,http://mytv6688.xyz/smt.php?id=j2_twn
+珍珠台,http://mytv6688.xyz/smt.php?id=pearl_twn
+HOY资讯台,http://mytv6688.xyz/smt.php?id=hoycaijing_twn
+TVB星河,http://mytv6688.xyz/smt.php?id=Xinhe
+TVBS News 新闻台,http://mytv6688.xyz/smt.php?id=tvbs_n
+TVBS 欢乐台 （备份）,http://mytv6688.xyz/smt.php?id=tvbshuanle_twn
+TVBS HD,http://mytv6688.xyz/smt.php?id=tvbs
+中天新闻 HD,http://mytv6688.xyz/smt.php?id=ctinews
+中天娱乐 CTI Entertaiment,http://mytv6688.xyz/smt.php?id=ctient
+中天综合 CTI Metro,http://mytv6688.xyz/smt.php?id=ctizhonghe
+中天亚洲台,http://mytv6688.xyz/smt.php?id=ctiasia_twn
+台视 TTV HD,http://mytv6688.xyz/smt.php?id=ttv_taiwan
+台视新闻台,http://mytv6688.xyz/smt.php?id=ttvnews_twn
+台视综合台,http://mytv6688.xyz/smt.php?id=ttvzhonghe
+中视 HD,http://mytv6688.xyz/smt.php?id=zhongshihd_twn
+中视新闻台,http://mytv6688.xyz/smt.php?id=zhongshinews_twn
+民视 HD,http://mytv6688.xyz/smt.php?id=ftvhd_taiwan
+民视新闻台 FTV News,http://mytv6688.xyz/smt.php?id=ftvnew_taiwan
+民视台湾台,http://mytv6688.xyz/smt.php?id=ftvtaiwan_twn
+华视 CTS HD,http://mytv6688.xyz/smt.php?id=ctshd_twn
+公视 CTV,http://mytv6688.xyz/smt.php?id=ctv18_twn
+八大第一 GTV First,http://mytv6688.xyz/smt.php?id=badafirst
+八大综合 GTV Metro,http://mytv6688.xyz/smt.php?id=badazhonghe
+八大戏剧 GTV Drama,http://mytv6688.xyz/smt.php?id=badadrama
+八大娱乐 GTV Entertainment,http://mytv6688.xyz/smt.php?id=badaentertain
+HBO_HD,http://mytv6688.xyz/smt.php?id=hbohd_twn
+HBO_HITS,http://mytv6688.xyz/smt.php?id=hbohit_twn
+Hollywood Movies,http://mytv6688.xyz/smt.php?id=hollywoodmovies_twn
+三立台湾 Sanli Taiwan,http://mytv6688.xyz/smt.php?id=sanlitaiwan
+三立戏剧台,http://mytv6688.xyz/smt.php?id=sanlixiju_twn
+三立综合 Sanli Metro,http://mytv6688.xyz/smt.php?id=sanlizhonghe
+三立都会台,http://mytv6688.xyz/smt.php?id=sanlidouhui
+东森新闻 ETTV News,http://mytv6688.xyz/smt.php?id=ettvnews
+CINEMAX,http://mytv6688.xyz/smt.php?id=cinemax_twn
+东森综合 ETTV Metro,http://mytv6688.xyz/smt.php?id=ettvzhonghe
+东森戏剧 ETTV Drama,http://mytv6688.xyz/smt.php?id=ettvdrama
+东森超视,http://mytv6688.xyz/smt.php?id=ettvsuper
+东森财经新闻 ETTV Business,http://mytv6688.xyz/smt.php?id=ettvcaijing_twn
+寰宇财经,http://mytv6688.xyz/smt.php?id=huanyutaiwan_twn
+寰宇新闻台,http://mytv6688.xyz/smt.php?id=huanyuxinwen_twn
+公视2,http://mytv6688.xyz/smt.php?id=ctv2_twn
+大爱1台,http://mytv6688.xyz/smt.php?id=daai_twn
+非凡新闻台,http://mytv6688.xyz/smt.php?id=feifannews_twn
+龙华戏剧 Lunghua Drama,http://mytv6688.xyz/smt.php?id=lunghuaxiju_twn
+龙华经典台,http://mytv6688.xyz/smt.php?id=lunghuajingdian_twn
+龙华偶像,http://mytv6688.xyz/smt.php?id=lunghuaidol_twn
+AXN Taiwan,http://mytv6688.xyz/smt.php?id=axn_twn
+靖天国际台,http://mytv6688.xyz/smt.php?id=jingtianintl_twn
+年代新闻,http://mytv6688.xyz/smt.php?id=niandainews_twn
+纬来日本台,http://mytv6688.xyz/smt.php?id=videolandjapan
+纬来电影台,http://mytv6688.xyz/smt.php?id=videolandmovie
+纬来体育台,http://mytv6688.xyz/smt.php?id=videolandsport
+纬来综合台,http://mytv6688.xyz/smt.php?id=videolandzonghe
+纬来育乐,http://mytv6688.xyz/smt.php?id=videolandyule
+纬来精彩,http://mytv6688.xyz/smt.php?id=videolandspecial_twn
+好消息 2,http://mytv6688.xyz/smt.php?id=good2_twn
+大爱2台,http://mytv6688.xyz/smt.php?id=daai2_twn
+亚洲美食,http://mytv6688.xyz/smt.php?id=afc_twn
+美食星球,http://mytv6688.xyz/smt.php?id=foodplanet_twn
+亚洲旅游 TLC Asia,http://mytv6688.xyz/smt.php?id=tlc_twn
+东森电影 ETTV Movie,http://mytv6688.xyz/smt.php?id=ettvmovie
+阿里郎 Arirang,http://mytv6688.xyz/smt.php?id=arirang_twn
+博斯运动 1,http://mytv6688.xyz/smt.php?id=bosisport1_twn
+博斯运动 2,http://mytv6688.xyz/smt.php?id=bosisport2_twn
+博斯高球2 HD,http://mytv6688.xyz/smt.php?id=bosigolf2_twn
+博斯网球 HD,http://mytv6688.xyz/smt.php?id=bositennis_twn
+东森洋片 ETTV Western,http://mytv6688.xyz/smt.php?id=ettvwestern
+龙华洋片 Lunghua Western,http://mytv6688.xyz/smt.php?id=lunghuawestern_twn
+博斯无限,http://mytv6688.xyz/smt.php?id=bosiunlimited_twn
+MTV Live,http://mytv6688.xyz/smt.php?id=mtvhd_twn
+龙详时代,http://mytv6688.xyz/smt.php?id=lungxiangtime_twn
+EYETV 旅游,http://mytv6688.xyz/smt.php?id=eyetvtravel_twn
+靖天卡通台,http://mytv6688.xyz/smt.php?id=jingtiancartoon_twn
+EYETV 戏剧,http://mytv6688.xyz/smt.php?id=eyetvxiju_twn
+卫视中文台 Star Movies Chinese,http://mytv6688.xyz/smt.php?id=weishichinese_twn
+东森幼幼 Yoyo TV,http://mytv6688.xyz/smt.php?id=yoyo_twn
+卫视电影台,http://mytv6688.xyz/smt.php?id=weishimovie_twn
+美亚电影,http://mytv6688.xyz/smt.php?id=meiyamovie_twn
+爱尔达影剧台,http://mytv6688.xyz/smt.php?id=eltayingju_twn
+爱尔达综合台,http://mytv6688.xyz/smt.php?id=eltazonghe_twn
+星卫电影,http://mytv6688.xyz/smt.php?id=xingwei_movie
+爱尔达影剧,http://mytv6688.xyz/smt.php?id=eltayingju_twn
+AFC 亚洲旅游台,http://mytv6688.xyz/smt.php?id=asiatravel_twn
+爱尔达体育2台,http://mytv6688.xyz/smt.php?id=eltasport2_twn
+爱尔达体育3台,http://mytv6688.xyz/smt.php?id=eltasport3_twn
+
+靖天卡通台,http://mytv6688.xyz/smt.php?id=jingtiancartoon_twn
+东森幼幼 Yoyo TV,http://mytv6688.xyz/smt.php?id=yoyo_twn
+美亚电影,http://mytv6688.xyz/smt.php?id=meiyamovie_twn
+龙详时代,http://mytv6688.xyz/smt.php?id=lungxiangtime_twn
+东森电影 ETTV Movie,http://mytv6688.xyz/smt.php?id=ettvmovie
+东森洋片 ETTV Western,http://mytv6688.xyz/smt.php?id=ettvwestern
+龙华洋片,http://mytv6688.xyz/smt.php?id=lunghuawestern_twn
+
+亚洲美食,http://mytv6688.xyz/smt.php?id=afc_twn
+美食星球,http://mytv6688.xyz/smt.php?id=foodplanet_twn
+亚洲旅游 TLC Asia,http://mytv6688.xyz/smt.php?id=tlc_twn
+东森财经新闻 ETTV Business,http://mytv6688.xyz/smt.php?id=ettvcaijing_twn
+
+
+爱奇艺,http://mytv6688.xyz/smt.php?id=Qiyi
+华丽台HD,http://mytv6688.xyz/smt.php?id=Wlt
+欢喜台HD,http://mytv6688.xyz/smt.php?id=Huahee
+Astro QJ,http://mytv6688.xyz/smt.php?id=Quanjia
+TVB Jade,http://mytv6688.xyz/smt.php?id=Tvbjade
+TVB Asia,http://mytv6688.xyz/smt.php?id=Tvbasia
+TVB Entertainment,http://mytv6688.xyz/smt.php?id=Tvbentertainment
+TVB Classic,http://mytv6688.xyz/smt.php?id=Tvbclassic
+RHK 31,http://mytv6688.xyz/smt.php?id=rhk31_twn
+RHK 32,http://mytv6688.xyz/smt.php?id=rhk32_twn
+Viu6,http://mytv6688.xyz/smt.php?id=viusix_twn
+VIUTV1,http://mytv6688.xyz/smt.php?id=viu1_twn
+
+CCTV-1综合 HD,http://mytv6688.xyz/smt.php?id=cctv1
+CCTV-2财经,http://mytv6688.xyz/smt.php?id=cctv2
+CCTV-3综艺 HD,http://mytv6688.xyz/smt.php?id=cctv3
+CCTV-4中文国际,http://mytv6688.xyz/smt.php?id=cctv4
+CCTV-4中文国际,,http://mytv6688.xyz/smt.php?id=Cctv4
+CCTV-7军事农业,http://mytv6688.xyz/smt.php?id=cctv7
+CCTV-8电视剧 HD,http://mytv6688.xyz/smt.php?id=cctv8hd
+CCTV-9记录 HD,http://mytv6688.xyz/smt.php?id=cctv9hd
+CCTV-10科教 HD,http://mytv6688.xyz/smt.php?id=cctv10hd
+CCTV-11戏曲,http://mytv6688.xyz/smt.php?id=cctv11
+CCTV-12社会与法,http://mytv6688.xyz/smt.php?id=cctv12
+CCTV-13新闻频道,http://mytv6688.xyz/smt.php?id=cctv13
+CCTV-14少儿,http://mytv6688.xyz/smt.php?id=cctv14
+CCTV-6,http://mytv6688.xyz/smt.php?id=cctv6
+CCTV-15音乐,http://mytv6688.xyz/smt.php?id=cctv15
+湖南卫视,http://mytv6688.xyz/smt.php?id=hunan_twn
+浙江卫视,http://mytv6688.xyz/smt.php?id=zhejiang_twn
+江苏卫视,http://mytv6688.xyz/smt.php?id=jiangsu_twn
+深圳卫视,http://mytv6688.xyz/smt.php?id=shenzhen
+东南卫视,http://mytv6688.xyz/smt.php?id=fujian
+广东南方卫视,http://mytv6688.xyz/smt.php?id=nanfang_twn
+广东卫视,http://mytv6688.xyz/smt.php?id=guangdongweishi_twn
+北京卫视,http://mytv6688.xyz/smt.php?id=beijing
+珠江台,http://mytv6688.xyz/smt.php?id=zhujiang
+广西卫视,http://mytv6688.xyz/smt.php?id=guangxi
+湖北卫视,http://mytv6688.xyz/smt.php?id=hubei
+四川卫视,http://mytv6688.xyz/smt.php?id=sichuan_twn
+东方卫视,http://mytv6688.xyz/smt.php?id=dongfangweishi_twn
+CGTN,http://mytv6688.xyz/smt.php?id=CGTN
+凤凰卫视,http://mytv6688.xyz/smt.php?id=phoenixtv_hd
+凤凰资讯,http://mytv6688.xyz/smt.php?id=phoenixinfo_hd
+CCTV-5体育频道,http://mytv6688.xyz/smt.php?id=cctv5
+CCTV-5+体育赛事 HD,http://mytv6688.xyz/smt.php?id=cctv5plus
+
+
+80周年阅兵,#genre#
+抗战80周年阅兵回放,https://vip.dytt-cine.com/20250903/54616_ce842c8a/index.m3u8
+
+CNR广播,#genre# 
+中国之声,https://ngcdn001.cnr.cn/live/zgzs/index.m3u8
+经济之声，,https://ngcdn001.cnr.cn/live/jjzs/index.m3u8
+音乐之声,https://ngcdn001.cnr.cn/live/yyzs/index.m3u8
+乡村之声,https://ngcdn001.cnr.cn/live/xczs/index.m3u8
+大湾区之声,https://ngcdn001.cnr.cn/live/dwqzs/index.m3u8
+中华之声,https://ngcdn001.cnr.cn/live/zhzs/index.m3u8
+神州之声,https://ngcdn001.cnr.cn/live/szzs/index.m3u8
+民族之声,https://ngcdn001.cnr.cn/live/mzzs/index.m3u8
+文艺之声,https://ngcdn001.cnr.cn/live/wyzs/index.m3u8
+阅读之声,https://ngcdn001.cnr.cn/live/ydzs/index.m3u8
+铁路之声,https://stream-176.zeno.fm/gzsk9r47sc9uv
+
+
+全球广播,#genre# 
+AsiaFM HD音乐,http://asiafm.hk:8000/asiahd
+AsiaFM 亚洲热歌,http://asiafm.hk:8000/asiafm
+Asia音乐台,https://lhttp.qtfm.cn/live/4581/64k.mp3
+Asia亚洲粤语,https://lhttp.qtfm.cn/live/15318569/64k.mp3#http://asiafm.hk:8000/asiafm#http://asiafm.hk:8000/myradio#http://asiafm.vip:8000/live965
+Asia亚洲经典，http://goldfm.cn:8000/goldfm#https://lhttp.qtfm.cn/live/5021912/64k.mp3
+Asia亚洲天空，http://funradio.cn:8000/funradio
+加拿大中文电台（普通话）,https://5b2959fe11444.streamlock.net/radio/fm961.stream/playlist.m3u8
+加拿大中文电台（粤语）,https://5b2959fe11444.streamlock.net/radio/am1470.stream/playlist.m3u8
+相声电台,https://stream-174.zeno.fm/yqawwmweq8mtv
+
+陕西广播,#genre# 
+陕西音乐广播,https://lhttp.qtfm.cn/live/4873/64k.mp3
+西安新闻广播,http://stream3.xiancity.cn/1/sd/live.m3u8
+西安交通广播,http://stream3.xiancity.cn/5/sd/live.m3u8
+西安交通广播,http://ls.qingting.fm/live/1611.m3u8
+西安音乐广播,http://live.xmcdn.com/live/1442/64.m3u8
+
+北京广播,#genre# 
+北京城市广播,https://lhttp.qtfm.cn/live/345/64k.mp3#https://brtv-radiolive.rbc.cn/alive/fm1073.m3u8
+北京文艺广播,https://lhttp.qtfm.cn/live/333/64k.mp3#https://brtv-radiolive.rbc.cn/alive/fm876.m3u8
+北京音乐广播,https://lhttp.qtfm.cn/live/332/64k.mp3#https://brtv-radiolive.rbc.cn/alive/fm974.m3u8
+北京体育广播,https://lhttp.qtfm.cn/live/335/64k.mp3
+大兴阳光广播,https://lhttp.qtfm.cn/live/5021739/64k.mp3
+北京交通广播,https://lhttp.qtfm.cn/live/336/64k.mp3
+北京古典音乐广播,https://stream.zeno.fm/qa9punk6ynhvv
+北京新闻广播,https://brtv-radiolive.rbc.cn/alive/fm945.m3u8
+
+济南广播,#genre#
+济南新闻综合广播,https://lhttp.qtfm.cn/live/1667/64k.mp3
+济南私家车音乐广播,https://lhttp.qtfm.cn/live/1670/64k.mp3
+济南经济广播,https://lhttp.qtfm.cn/live/1668/64k.mp3
+济南音乐广播,https://lhttp.qtfm.cn/live/1671/64k.mp3
+济南故事广播,https://lhttp.qtfm.cn/live/1672/64k.mp3
+济南交通广播,https://lhttp.qtfm.cn/live/1669/64k.mp3
+济南都市广播（莱芜地区）,https://lhttp.qtfm.cn/live/5022333/64k.mp3
+济南生活广播(莱芜地区),https://lhttp.qtfm.cn/live/20500122/64k.mp3
