@@ -93,8 +93,7 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 
 📡┃河南频道,#genre#
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls$移动
-河南卫视,http://[2409:8087:5e08:25::4]:6610/000000001000/5000000011000031119/index.m3u8?channel-id=bestzb&Contentid=5000000011000031119&livemode=1&stbId=3$FHD
-河南卫视,http://[2409:8087:5e08:25::4]:6610/000000001000/7304224304099543804/index.m3u8?channel-id=ystenlive&Contentid=7304224304099543804&livemode=1&stbId=3
+河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
 河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226936/1.m3u8?fmt=ts2hls
 河南都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226911/1.m3u8?fmt=ts2hls
 河南新闻,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226915/1.m3u8?fmt=ts2hls
