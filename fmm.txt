@@ -219,7 +219,7 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 健康河南融媒,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227091/1.m3u8?fmt=ts2hls
 中华功夫,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226962/1.m3u8?fmt=ts2hls
 国学频道,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227154/1.m3u8?fmt=ts2hls
-晴彩中原,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226927/1.m3u8?fmt=ts2hls
+河南曲艺,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226927/1.m3u8?fmt=ts2hls
 收藏天下,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226931/1.m3u8?fmt=ts2hls
 河南戏曲,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226933/1.m3u8?fmt=ts2hls
 河南移动戏曲,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226929/1.m3u8?fmt=ts2hls
@@ -520,6 +520,7 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 春晚2022,https://alimov2.a.kwimgs.com/upic/2022/02/01/11/BMjAyMjAyMDExMTEwMjNfNDAzMDAxOTlfNjYzNzA4MTk4NzNfMF8z_b_B898cc7ddd0025bf54ddb18ec1f723c84.mp4
 春晚2023,https://txmov2.a.kwimgs.com/bs3/video-hls/5251197255879398624_hlshd15.m3u8
 春晚2024,https://ikcdn01.ikzybf.com/20240205/QBNgom4j/2000kb/hls/index.m3u8
+
 
 
 
