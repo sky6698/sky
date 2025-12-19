@@ -166,42 +166,6 @@ CETV4,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225783/index.m3u8
 快乐垂钓,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226904/1.m3u8?fmt=ts2hls
 咪咕视频,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227258/1.m3u8?fmt=ts2hls
 
-NewTV,#genre#
-海外剧场,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225671/index.m3u8
-精品大剧,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225670/index.m3u8
-精品纪录,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225672/index.m3u8
-精品体育,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225674/index.m3u8
-精品萌宠,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226505/index.m3u8
-爱情喜剧,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225669/index.m3u8
-超级电视剧,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225716/index.m3u8
-超级电影,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225717/index.m3u8
-超级体育,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225715/index.m3u8
-超级综艺,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225714/index.m3u8
-潮妈辣婆,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225685/index.m3u8
-东北热剧,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225741/index.m3u8
-古装剧场,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225663/index.m3u8
-欢乐剧场,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225742/index.m3u8
-家庭剧场,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225677/index.m3u8
-金牌综艺,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225666/index.m3u8
-惊悚悬疑,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225665/index.m3u8
-军旅剧场,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225676/index.m3u8
-军事评论,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225668/index.m3u8
-明星大片,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225664/index.m3u8
-农业致富,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225683/index.m3u8
-武搏世界,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225680/index.m3u8
-炫舞未来,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225719/index.m3u8
-怡伴健康,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225673/index.m3u8
-优漫卡通,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225656/index.m3u8
-金鹰卡通,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225653/index.m3u8
-卡酷少儿,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225654/index.m3u8
-哈哈炫动,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225657/index.m3u8
-黑莓电影,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225743/index.m3u8
-黑莓动画,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225662/index.m3u8
-哒啵赛事,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225675/index.m3u8
-睛彩篮球,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226469/index.m3u8
-睛彩竞技,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226124/index.m3u8
-睛彩广场舞,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221226472/index.m3u8
-
 SiTV频道,#genre#
 SiTV东方财经,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226843/1.m3u8?fmt=ts2hls
 SiTV动漫秀场,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226845/1.m3u8?fmt=ts2hls
@@ -215,131 +179,7 @@ SiTV生活时尚,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226881
 SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910/1.m3u8?fmt=ts2hls
 
 
-🎥┃电影轮播,#genre#
-电影_周星驰,http://tv.666150.xyz/huya.php?id=11342412
-电影_周星星,http://tv.666150.xyz/huya.php?id=11336587
-星爷-电影解读,http://tv.666150.xyz/huya.php?id=21136378
-电影_英叔,http://tv.666150.xyz/huya.php?id=11342421
-电影_发哥,http://tv.666150.xyz/huya.php?id=11342387
-电影_成龙,http://tv.666150.xyz/huya.php?id=11342386
-电影_王晶,http://tv.666150.xyz/huya.php?id=11602058
-电影_沈腾,http://tv.666150.xyz/huya.php?id=11601968
-电影_黄渤,http://tv.666150.xyz/huya.php?id=11352876
-电影-甄子丹,http://tv.666150.xyz/huya.php?id=11352935
-电影_李连杰,http://tv.666150.xyz/huya.php?id=11342390
-电影_洪金宝,http://tv.666150.xyz/huya.php?id=11279251
-电影_古天乐,http://tv.666150.xyz/huya.php?id=29982675
-电影_贾  玲,http://tv.666150.xyz/huya.php?id=30080235
-电影_王宝强,http://tv.666150.xyz/huya.php?id=30080251
-电影_梁家辉,http://tv.666150.xyz/huya.php?id=11342429
-电影_许冠英,http://tv.666150.xyz/huya.php?id=11601972
-电影_刘德华,http://tv.666150.xyz/huya.php?id=11342424
-电影_强森,http://tv.666150.xyz/huya.php?id=21059581
-电影_斯坦森,http://tv.666150.xyz/huya.php?id=21059588
-电影_漫威,http://tv.666150.xyz/huya.php?id=11602034
-电影_宇宙,http://tv.666150.xyz/huya.php?id=11342428
-电影_怪兽,http://tv.666150.xyz/huya.php?id=21059577
-惊悚-解说,http://tv.666150.xyz/huya.php?id=16865726
-电影_玄幻,http://tv.666150.xyz/huya.php?id=11342414
-电影_谍战,http://tv.666150.xyz/huya.php?id=21059585
-电影_战争,http://tv.666150.xyz/huya.php?id=21059592
-电影_喜剧,http://tv.666150.xyz/huya.php?id=11352877
-电影_港片,http://tv.666150.xyz/huya.php?id=11602043
-电影_国产,http://tv.666150.xyz/huya.php?id=11352973
-电影_贺岁,http://tv.666150.xyz/huya.php?id=11601971
-电影_贺岁片,http://tv.666150.xyz/huya.php?id=11601986
-电影_贺岁海外,http://tv.666150.xyz/huya.php?id=29982623
-电影_功夫片,http://tv.666150.xyz/huya.php?id=11352941
-电影_黑帮片,http://tv.666150.xyz/huya.php?id=11336719
-电影_丧尸片,http://tv.666150.xyz/huya.php?id=21059578
-电影_灾难片,http://tv.666150.xyz/huya.php?id=11602075
-电影_战争片,http://tv.666150.xyz/huya.php?id=21059574
-电影_古装片,http://tv.666150.xyz/huya.php?id=11336590
-电影_无名影院,http://tv.666150.xyz/huya.php?id=11602041
-电影_高分动作,http://tv.666150.xyz/huya.php?id=11352884
-电影_搞笑喜剧,http://tv.666150.xyz/huya.php?id=11342423
-电影_喜剧专场,http://tv.666150.xyz/huya.php?id=11602044
-电影_欢笑影院,http://tv.666150.xyz/huya.php?id=11352894
-电影_不挤影院,http://tv.666150.xyz/huya.php?id=11352897
-电影_国产悬疑,http://tv.666150.xyz/huya.php?id=11342395
-电影_快意江湖,http://tv.666150.xyz/huya.php?id=11342435
-电影_黑帮斗争,http://tv.666150.xyz/huya.php?id=11342419
-电影_古墓系列,http://tv.666150.xyz/huya.php?id=11352913
-电影_嫣然影厅,http://tv.666150.xyz/huya.php?id=11601977
-电影_女神系列,http://tv.666150.xyz/huya.php?id=11336571
-电影_经典女神,http://tv.666150.xyz/huya.php?id=11352909
-电影_经典港片,http://tv.666150.xyz/huya.php?id=11352965
-电影_喜乐影院,http://tv.666150.xyz/huya.php?id=21059580
-电影_蘑菇影厅,http://tv.666150.xyz/huya.php?id=11601981
-电影_搞笑恐怖,http://tv.666150.xyz/huya.php?id=11601960
-电影_死神来了,http://tv.666150.xyz/huya.php?id=11352903
-电影_怪兽系列,http://tv.666150.xyz/huya.php?id=21059554
-电影_国产动画系列,http://tv.666150.xyz/huya.php?id=30080188
-电影_红色经典系列,http://tv.666150.xyz/huya.php?id=11602076
-电影_狄仁杰系列,http://tv.666150.xyz/huya.php?id=30080229
-电影_倩女幽魂系列,http://tv.666150.xyz/huya.php?id=30627334
-电影_陆小凤系列系列,http://tv.666150.xyz/huya.php?id=11342427
-电影_黄飞鸿方世玉系列,http://tv.666150.xyz/huya.php?id=11602055
-电影_最佳拍档系列,http://tv.666150.xyz/huya.php?id=11342423
-电影_古惑仔系列,http://tv.666150.xyz/huya.php?id=30569079
-电影_超级英雄系列,http://tv.666150.xyz/huya.php?id=11352950
-电影_哈利波特系列,http://tv.666150.xyz/huya.php?id=29982669
-动漫-茶啊二中[216],http://tv.666150.xyz/huya.php?id=11213191
-动漫-斗罗大陆,http://tv.666150.xyz/huya.php?id=11352906
-动漫-斗破苍穹,http://tv.666150.xyz/huya.php?id=11336572
-动漫_火影忍者,http://tv.666150.xyz/huya.php?id=11352974
-动漫_柯南国语版,http://tv.666150.xyz/huya.php?id=30080148
-动漫_百变小樱,http://tv.666150.xyz/huya.php?id=21059587
-动漫-猫和老鼠[106],http://tv.666150.xyz/huya.php?id=11352879
-动漫-哆啦A梦,http://tv.666150.xyz/huya.php?id=30649359
-动漫-海绵宝宝,http://tv.666150.xyz/huya.php?id=11352919
-剧集-西游记86版,http://tv.666150.xyz/huya.php?id=26355861
-剧集-三国演义,http://tv.666150.xyz/huya.php?id=11602081
-剧集-新三国,http://tv.666150.xyz/huya.php?id=11352944
-易中天品三国,http://tv.666150.xyz/huya.php?id=11602032
-剧集-新水浒,http://tv.666150.xyz/huya.php?id=11342384
-剧集-水浒传,http://tv.666150.xyz/huya.php?id=26355860
-剧集-红楼梦,http://tv.666150.xyz/huya.php?id=30080221
-剧集-康熙王朝,http://tv.666150.xyz/huya.php?id=11352940
-剧集-雍正王朝,http://tv.666150.xyz/huya.php?id=11342439
-剧集-大秦帝国,http://tv.666150.xyz/huya.php?id=11602077
-剧集-汉武大帝,http://tv.666150.xyz/huya.php?id=26355859
-剧集-大宋提刑官,http://tv.666150.xyz/huya.php?id=26355856
-剧集-庆余年,http://tv.666150.xyz/huya.php?id=11352960
-剧集-芈月传,http://tv.666150.xyz/huya.php?id=11352975
-剧集-还珠格格,http://tv.666150.xyz/huya.php?id=30080241
-剧集-新白娘子传奇,http://tv.666150.xyz/huya.php?id=26355768
-剧集-亮剑,http://tv.666150.xyz/huya.php?id=30080238
-剧集-士兵突击,http://tv.666150.xyz/huya.php?id=11342430
-剧集-征服,http://tv.666150.xyz/huya.php?id=30311494
-剧集-乡村爱情系列,http://tv.666150.xyz/huya.php?id=30080255
-剧集-葛二蛋,http://tv.666150.xyz/huya.php?id=11602072
-剧集-爱情公寓,http://tv.666150.xyz/huya.php?id=11336726
-剧集-神探狄仁杰-高清,http://tv.666150.xyz/huya.php?id=11352958
-剧集-神探狄仁杰,http://tv.666150.xyz/huya.php?id=11342425
-剧集-铁齿铜牙纪晓岚[8],http://tv.666150.xyz/huya.php?id=11342396
-剧集-康熙微服私访,http://tv.666150.xyz/huya.php?id=11342418
-剧集-铁齿铜牙纪晓岚,http://tv.666150.xyz/huya.php?id=11342396
-剧集-神貂侠侣-陈晓版,http://tv.666150.xyz/huya.php?id=11352964
-剧集-天龙八部03版,http://tv.666150.xyz/huya.php?id=20985816
-剧集-倚天屠龙记,http://tv.666150.xyz/huya.php?id=11342403
-剧集-笑傲江湖-李亚鹏版,http://tv.666150.xyz/huya.php?id=26355790
-剧集-鬼吹灯,http://tv.666150.xyz/huya.php?id=11352871
-剧集-地下交通站,http://tv.666150.xyz/huya.php?id=11342433
-剧集-家有儿女,http://tv.666150.xyz/huya.php?id=11352872
-剧集-神医喜来乐[127],http://tv.666150.xyz/huya.php?id=11601978
-小品,http://tv.666150.xyz/huya.php?id=11352938
-小品-重温经典,http://tv.666150.xyz/huya.php?id=29982631
-小品-开心麻花,http://tv.666150.xyz/huya.php?id=30080154
-小品-宋小宝,http://tv.666150.xyz/huya.php?id=30080192
-搞笑_陈翔六点半,http://tv.666150.xyz/huya.php?id=11274154
-综艺-音乐石榴,http://tv.666150.xyz/huya.php?id=17091681
-综艺-脱口秀来了,http://tv.666150.xyz/huya.php?id=11352875
-综艺-德云斗笑社第一季,http://tv.666150.xyz/huya.php?id=30080153
-王牌对王牌系列,http://tv.666150.xyz/huya.php?id=11352905
-综艺-跑男1-4季,http://tv.666150.xyz/huya.php?id=29465875
-
-
+电影轮播,#genre#
 电影_周星驰,https://live.metshop.top/huya/11342412
 电影_周星星,https://live.metshop.top/huya/11336587
 星爷-电影解读,https://live.metshop.top/huya/21136378
@@ -508,4 +348,5 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 春晚2023,https://txmov2.a.kwimgs.com/bs3/video-hls/5251197255879398624_hlshd15.m3u8
 春晚2024,https://p2.bdstatic.com/rtmp.liveshow.lss-user.baidubce.com/live/stream_bduid_6488563992_8982723413/merged_1707497046297_88536_25144_41936.m3u8
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
+
 
