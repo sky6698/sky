@@ -54,23 +54,6 @@ CETV1,https://mgtv.ottiptv.cc/mg/923287154.m3u8?userid=1935186284&sign=1efb0c8e2
 CETV2,https://mgtv.ottiptv.cc/mg/923287211.m3u8?userid=1935186284&sign=dc94ec1465a166e5933b94e8d3b9bbb3e30b62951e26b0c3570da4a26566e637ff7467d0d28d9fde2056b24dea56c35a5ca1d7b8fd788deb88a89d7028df537725d3bfd3450f621dd5d69164e681216767&auth_token=9fd4968f9694d07426f806434b9d3dcc
 CETV4,https://mgtv.ottiptv.cc/mg/923287339.m3u8?userid=1935186284&sign=7a969b1a92401589fbed8dad1a929665f5a5ee6684e8d343f06e29c14c4ec4734a1f37fff8cd88b247a4a1479ed7eec2e3d58f1e501f6f5682cfb05af248f61d8733aab581efddd7a513965645a4a5fe71&auth_token=9fd4968f9694d07426f806434b9d3dcc
 
-CCTV1,http://iptv.huuc.edu.cn/hls/cctv1hd.m3u8
-CCTV2,http://iptv.huuc.edu.cn/hls/cctv2hd.m3u8
-CCTV3,http://iptv.huuc.edu.cn/hls/cctv3hd.m3u8
-CCTV4,http://iptv.huuc.edu.cn/hls/cctv4hd.m3u8
-CCTV5,http://iptv.huuc.edu.cn/hls/cctv5hd.m3u8
-CCTV5+,http://iptv.huuc.edu.cn/hls/cctv5phd.m3u8
-CCTV6,http://iptv.huuc.edu.cn/hls/cctv6hd.m3u8
-CCTV7,http://iptv.huuc.edu.cn/hls/cctv7hd.m3u8
-CCTV8,http://iptv.huuc.edu.cn/hls/cctv8hd.m3u8
-CCTV9,http://iptv.huuc.edu.cn/hls/cctv9hd.m3u8
-CCTV10,http://iptv.huuc.edu.cn/hls/cctv10hd.m3u8
-CCTV12,http://iptv.huuc.edu.cn/hls/cctv12hd.m3u8
-CCTV13,http://iptv.huuc.edu.cn/hls/cctv13hd.m3u8
-CCTV14,http://iptv.huuc.edu.cn/hls/cctv14hd.m3u8
-
-
-
 CCTV1,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226917/1.m3u8?fmt=ts2hls
 CCTV2,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226970/1.m3u8?fmt=ts2hls
 CCTV3,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226960/1.m3u8?fmt=ts2hls
@@ -148,38 +131,6 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 宁夏卫视,https://mgtv.ottiptv.cc/mg/738910535.m3u8?userid=1935186284&sign=83e1abc24ae0680ef13b9ba2db06b69fac88dd9cd5e8b1c3d57b35a9e40a6136dcfcbfc55e4244a4308e738926bb03b89eea10a2246a67e7e5cf76ccc11cb889ebc6873c0dc89fb167e79b42d8397736a3&auth_token=9fd4968f9694d07426f806434b9d3dcc
 重庆卫视,https://mgtv.ottiptv.cc/mg/738910914.m3u8?userid=1935186284&sign=bf6e30cbf9846cfb523488176a85ae37afd4a181153a2334f33e4a348e5cc40cab31af887542b089eaba54f8f786cd18f106d25df9fb3ec7250062cabce6baa7e3540f255ff6c0604dd2c90f11d0cf9e4f&auth_token=9fd4968f9694d07426f806434b9d3dcc
 三沙卫视,https://mgtv.ottiptv.cc/mg/961023778.m3u8?userid=1935186284&sign=49d0c4f41d368395e41cbfaca26abb01f917b1480c04ea091a0f7fa79fda0ae72063cc5b8ccadc9df4c01d93ee13f1a4f5c3a2725386a7e7db116e77a6ea36b9fa2236d07a5d90fd3a800132218293e7f2&auth_token=9fd4968f9694d07426f806434b9d3dcc
-
-
-
-
-河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
-北京卫视,http://iptv.huuc.edu.cn/hls/btv1hd.m3u8
-湖南卫视,http://iptv.huuc.edu.cn/hls/hunanhd.m3u8
-浙江卫视,http://iptv.huuc.edu.cn/hls/zjhd.m3u8
-江苏卫视,http://iptv.huuc.edu.cn/hls/jshd.m3u8
-东方卫视,http://iptv.huuc.edu.cn/hls/dfhd.m3u8
-安徽卫视,http://iptv.huuc.edu.cn/hls/ahhd.m3u8
-黑龙江卫视,http://iptv.huuc.edu.cn/hls/hljhd.m3u8
-辽宁卫视,http://iptv.huuc.edu.cn/hls/lnhd.m3u8
-深圳卫视,http://iptv.huuc.edu.cn/hls/szhd.m3u8
-广东卫视,http://iptv.huuc.edu.cn/hls/gdhd.m3u8
-天津卫视,http://iptv.huuc.edu.cn/hls/tjhd.m3u8
-湖北卫视,http://iptv.huuc.edu.cn/hls/hbhd.m3u8
-山东卫视,http://iptv.huuc.edu.cn/hls/sdhd.m3u8
-重庆卫视,http://iptv.huuc.edu.cn/hls/cqhd.m3u8
-四川卫视,http://iptv.huuc.edu.cn/hls/schd.m3u8
-东南卫视,http://iptv.huuc.edu.cn/hls/dnhd.m3u8
-河北卫视,http://iptv.huuc.edu.cn/hls/hebhd.m3u8
-江西卫视,http://iptv.huuc.edu.cn/hls/jxhd.m3u8
-凤凰中文http://iptv.huuc.edu.cn/hls/fhzw.m3u8
-凤凰资讯http://iptv.huuc.edu.cn/hls/fhzx.m3u8  
-凤凰电影http://iptv.huuc.edu.cn/hls/fhdy.m3u8  
-探索频道http://iptv.huuc.edu.cn/hls/discovery.m3u8  
-国家地理http://iptv.huuc.edu.cn/hls/natlgeo.m3u8  
-星空卫视http://iptv.huuc.edu.cn/hls/startv.m3u8  
-Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
-
-
 
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 湖南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226961/1.m3u8?fmt=ts2hls
@@ -354,6 +305,16 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 辽宁体育频道,https://mgtv.ottiptv.cc/mg/962067526.m3u8?userid=1935186284&sign=a6d0bdd8f395e10026335387c22a85a81bf6274b28de0d61e25388635d840102e8031df4b2f72a354ed86c60870db9d21f59575e87acd42234fbc65e6163f6b218ca1b075c0aed8ce2a9645819ebb776cc&auth_token=9fd4968f9694d07426f806434b9d3dcc
 辽宁影视剧频道,https://mgtv.ottiptv.cc/mg/962067517.m3u8?userid=1935186284&sign=78e8020e1a7a58751e44078b0c83c622d4299bcaf8858647f96b18f57b1e3b66d1dcf55f1492382e92d60387937ddb7a1fa4ada98899043602758c87b9c688b7876ff4474b7aae919f642bc393ec1b5999&auth_token=9fd4968f9694d07426f806434b9d3dcc
 
+内蒙频道,#genre#
+内蒙古卫视,https://live.ottiptv.cc/mcp/neimenggu.m3u8?userid=1935186284&sign=8f2194ca4908bde5441c4b1d109b235741d7535e37b8a57a6339ceacf33a7a18f52a608aacdda5d84b1a7c5d0e7b48639970432eef34a4f719c99c10954ac15db98a01be3e8014a2d76ccab72e57b59188&auth_token=9fd4968f9694d07426f806434b9d3dcc
+内蒙古农牧,http://play1-qk.nmtv.cn:80/live/1686561299036179.m3u8
+内蒙古新闻综合,http://play1-qk.nmtv.cn/live/1686560423879174.m3u8
+内蒙古少儿,http://play1-qk.nmtv.cn/live/1686560464515368.m3u8
+内蒙古文体娱乐,http://play1-qk.nmtv.cn/live/1686561195713372.m3u8
+内蒙古经济生活,http://play1-qk.nmtv.cn/live/1686562470947181.m3u8
+内蒙古蒙语卫视,http://play1-qk.nmtv.cn/live/1686560387346365.m3u8
+内蒙古蒙语文化,http://play1-qk.nmtv.cn/live/1686561065304370.m3u8
+
 地方频道,#genre#
 上海新闻综合,https://mgtv.ottiptv.cc/mg/651632657.m3u8?userid=1935186284&sign=a659affbf530a85bea06ffc1abeef7e9bc5d58dffafa43f2543c8c11f7f6025de6cae1154e8134fb19cf9709428bc6574127ea85c837aefc5c4d1e7d6f3804852c4f91204e86741276906798f1a1aee3ff&auth_token=9fd4968f9694d07426f806434b9d3dcc
 上海东方影视,https://mgtv.ottiptv.cc/mg/617290047.m3u8?userid=1935186284&sign=aa14f5223b9dc3de2d3282492013809ff06cf604ded0c6ae140098859670926fa6264774c8fa2503394d1df5d784a11a625b530bf0f55186ba8e6b9a88435c5688a1f751bf273c5dac45a7bab3e15bac82&auth_token=9fd4968f9694d07426f806434b9d3dcc
@@ -364,6 +325,15 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 南京教科频道,https://mgtv.ottiptv.cc/mg/838153729.m3u8?userid=1935186284&sign=4eb6688d79c455a78f38fb1589219ea39e97b1c6c18c8f42c003f0e853bfc4866fccb0d0389327b612bc17bb0d990dea940a6623b443f5d483b084604c4156b032185d75bc39705f29e3b9b767338b342a&auth_token=9fd4968f9694d07426f806434b9d3dcc
 南京十八频道,https://mgtv.ottiptv.cc/mg/838151753.m3u8?userid=1935186284&sign=3a813449c4dd7a043e66bad2b567d7b38bc3ab7550756c910c6dd1de930e3877891725577b2bc72641fb2c4687d94dcd31a0ce64adb940f63c3e271aa43bc0d05d0e821e7a09fbc51cb20a8edad827d24b&auth_token=9fd4968f9694d07426f806434b9d3dcc
 山东教育,https://mgtv.ottiptv.cc/mg/609154353.m3u8?userid=1935186284&sign=cf3ad535805602118976820b22d3008c60b992b7342be9de96f30470911f664f3a2dfbc342eb0246900f73286cf82405816cfb39bdbc53dba75f6596ee257fe4d3c72fa859fa18e16f3ef0ddf3f28eb564&auth_token=9fd4968f9694d07426f806434b9d3dcc
+
+内蒙频道,#genre#
+内蒙古农牧,http://play1-qk.nmtv.cn:80/live/1686561299036179.m3u8
+内蒙古新闻综合,http://play1-qk.nmtv.cn/live/1686560423879174.m3u8
+内蒙古少儿,http://play1-qk.nmtv.cn/live/1686560464515368.m3u8
+内蒙古文体娱乐,http://play1-qk.nmtv.cn/live/1686561195713372.m3u8
+内蒙古经济生活,http://play1-qk.nmtv.cn/live/1686562470947181.m3u8
+内蒙古蒙语卫视,http://play1-qk.nmtv.cn/live/1686560387346365.m3u8
+内蒙古蒙语文化,http://play1-qk.nmtv.cn/live/1686561065304370.m3u8
 
 其它频道,#genre#
 最强综艺趴,https://mgtv.ottiptv.cc/mg/629942228.m3u8?userid=1935186284&sign=5ee54b9b4091f303dba358e62f407ad6baee33d43c0fbf13b96294c2096957b9bd97a764be14ae7aa3dcf71fa6a7cb20d6a95f06c33a5b0b576c6b033da474bf26e1c90e1d31a39c6aeaef0e5bd1e82c53&auth_token=9fd4968f9694d07426f806434b9d3dcc
@@ -721,6 +691,7 @@ Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
 春晚2023,https://txmov2.a.kwimgs.com/bs3/video-hls/5251197255879398624_hlshd15.m3u8
 春晚2024,https://ikcdn01.ikzybf.com/20240205/QBNgom4j/2000kb/hls/index.m3u8
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
+
 
 
 
