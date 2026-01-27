@@ -390,15 +390,6 @@ CCTV17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17$高清
 南京十八频道,https://mgtv.ottiptv.cc/mg/838151753.m3u8?userid=1935186284&sign=3a813449c4dd7a043e66bad2b567d7b38bc3ab7550756c910c6dd1de930e3877891725577b2bc72641fb2c4687d94dcd31a0ce64adb940f63c3e271aa43bc0d05d0e821e7a09fbc51cb20a8edad827d24b&auth_token=9fd4968f9694d07426f806434b9d3dcc
 山东教育,https://mgtv.ottiptv.cc/mg/609154353.m3u8?userid=1935186284&sign=cf3ad535805602118976820b22d3008c60b992b7342be9de96f30470911f664f3a2dfbc342eb0246900f73286cf82405816cfb39bdbc53dba75f6596ee257fe4d3c72fa859fa18e16f3ef0ddf3f28eb564&auth_token=9fd4968f9694d07426f806434b9d3dcc
 
-内蒙频道,#genre#
-内蒙古农牧,http://play1-qk.nmtv.cn:80/live/1686561299036179.m3u8
-内蒙古新闻综合,http://play1-qk.nmtv.cn/live/1686560423879174.m3u8
-内蒙古少儿,http://play1-qk.nmtv.cn/live/1686560464515368.m3u8
-内蒙古文体娱乐,http://play1-qk.nmtv.cn/live/1686561195713372.m3u8
-内蒙古经济生活,http://play1-qk.nmtv.cn/live/1686562470947181.m3u8
-内蒙古蒙语卫视,http://play1-qk.nmtv.cn/live/1686560387346365.m3u8
-内蒙古蒙语文化,http://play1-qk.nmtv.cn/live/1686561065304370.m3u8
-
 其它频道,#genre#
 最强综艺趴,https://mgtv.ottiptv.cc/mg/629942228.m3u8?userid=1935186284&sign=5ee54b9b4091f303dba358e62f407ad6baee33d43c0fbf13b96294c2096957b9bd97a764be14ae7aa3dcf71fa6a7cb20d6a95f06c33a5b0b576c6b033da474bf26e1c90e1d31a39c6aeaef0e5bd1e82c53&auth_token=9fd4968f9694d07426f806434b9d3dcc
 快乐垂钓,https://mgtv.ottiptv.cc/mg/961930263.m3u8?userid=1935186284&sign=8620fb9e81c69373a8d721db52e5b82a711853db12052d8730b0bd27d6ddd1ecf1387e9a400529aea705f0ae7cae78780ef1ace10e025ddec467d4e969fc0c26a025a25039bfda9ea7d94f783d9db42244&auth_token=9fd4968f9694d07426f806434b9d3dcc
@@ -841,6 +832,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
