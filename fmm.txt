@@ -47,6 +47,23 @@ CCTV-15,http://rihou.cc:555/tv/[mg]CCTV-15
 CCTV-16,http://rihou.cc:555/tv/[mg]CCTV-16
 CCTV-17,http://rihou.cc:555/tv/[mg]CCTV-17
 
+CCTV1,http://113.224.119.217:1234/608807420
+CCTV2,http://113.224.119.217:1234/631780532
+CCTV3,http://113.224.119.217:1234/624878271
+CCTV4,http://113.224.119.217:1234/631780421
+CCTV5,http://113.224.119.217:1234/641886683
+CCTV5+,http://113.224.119.217:1234/641886773
+CCTV6,http://113.224.119.217:1234/624878396
+CCTV7,http://113.224.119.217:1234/673168121
+CCTV8,http://113.224.119.217:1234/624878356
+CCTV9,http://113.224.119.217:1234/673168140
+CCTV10,http://113.224.119.217:1234/624878405
+CCTV11,http://113.224.119.217:1234/667987558
+CCTV12,http://113.224.119.217:1234/673168185
+CCTV13,http://113.224.119.217:1234/608807423
+CCTV14,http://113.224.119.217:1234/624878440
+CCTV15,http://113.224.119.217:1234/673168223
+CCTV17,http://113.224.119.217:1234/673168256
 
 CCTV1,https://mgtv.ottiptv.cc/mg/608807420.m3u8?userid=1935186284&sign=414f78888591488966da1eaa73c82fee2bb70f5845bcc5f7c7773152f55c0833d529f1f9ba7c0d8c8b78f03b2ea3f3f66a17e4d0c7cf03b09d8dff5e7102345efedd39f60c01fe02a879478905983377e9&auth_token=9fd4968f9694d07426f806434b9d3dcc
 CCTV2,https://mgtv.ottiptv.cc/mg/631780532.m3u8?userid=1935186284&sign=27ff67abd57b6c2a71053eb11ed87fdb683d04d76267b714f33feaf0b6af3a3fb0c1614de64ce4ff8876ecf2f051a07c6c22deb92b726187d37194e8c3296210e4fb84afc69cf0923bc2e9712017944592&auth_token=9fd4968f9694d07426f806434b9d3dcc
@@ -152,6 +169,28 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 重庆卫视,https://mgtv.ottiptv.cc/mg/738910914.m3u8?userid=1935186284&sign=bf6e30cbf9846cfb523488176a85ae37afd4a181153a2334f33e4a348e5cc40cab31af887542b089eaba54f8f786cd18f106d25df9fb3ec7250062cabce6baa7e3540f255ff6c0604dd2c90f11d0cf9e4f&auth_token=9fd4968f9694d07426f806434b9d3dcc
 三沙卫视,https://mgtv.ottiptv.cc/mg/961023778.m3u8?userid=1935186284&sign=49d0c4f41d368395e41cbfaca26abb01f917b1480c04ea091a0f7fa79fda0ae72063cc5b8ccadc9df4c01d93ee13f1a4f5c3a2725386a7e7db116e77a6ea36b9fa2236d07a5d90fd3a800132218293e7f2&auth_token=9fd4968f9694d07426f806434b9d3dcc
 
+河南卫视,http://113.224.119.217:1234/790187291
+东方卫视,http://113.224.119.217:1234/651632648
+江苏卫视,http://113.224.119.217:1234/623899368
+广东卫视,http://113.224.119.217:1234/608831231
+北京卫视,http://113.224.119.217:1234/630287636
+辽宁卫视,http://113.224.119.217:1234/630291707
+河北卫视,http://113.224.119.217:1234/962042070
+江西卫视,http://113.224.119.217:1234/783847495
+陕西卫视,http://113.224.119.217:1234/738910838
+大湾区卫视,http://113.224.119.217:1234/608917627
+湖北卫视,http://113.224.119.217:1234/947472496
+吉林卫视,http://113.224.119.217:1234/947472500
+青海卫视,http://113.224.119.217:1234/947472506
+东南卫视,http://113.224.119.217:1234/849116810
+海南卫视,http://113.224.119.217:1234/947472502
+海峡卫视,http://113.224.119.217:1234/849119120
+中国农林卫视,http://113.224.119.217:1234/956904896
+兵团卫视,http://113.224.119.217:1234/956923145
+宁夏卫视,http://113.224.119.217:1234/738910535
+重庆卫视,http://113.224.119.217:1234/738910914
+三沙卫视,http://113.224.119.217:1234/961023778
+
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 湖南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226961/1.m3u8?fmt=ts2hls
 浙江卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227020/1.m3u8?fmt=ts2hls
@@ -179,7 +218,7 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 超清4k,#genre#
 北京卫视,https://tv1288.xyz/公众号潇雨萌萌.php?ch=%E5%8C%97%E4%BA%AC%E5%8D%AB%E8%A7%864K%E8%B6%85%E9%AB%98%E6%B8%85$4K
 浙江卫视,http://j.s.bkpcp.top/jj/zjws$4K
-湖南卫视,http://j.s.bkpcp.top/jj/hnws$4K
+湖南卫视,http://j.s.bkpcp.top/jj/hunws$4K
 深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k$4K
 江苏卫视,http://j.s.bkpcp.top/jj/jsws$4K
 河北4K,https://event.pull.hebtv.com:443/live/live101.m3u8$4K
@@ -797,6 +836,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
