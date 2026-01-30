@@ -107,6 +107,7 @@ CCTV-17,http://rihou.cc:555/tv/[mg]CCTV-17
 云南卫视,https://live.ottiptv.cc/mcp/yunnan.m3u8?userid=1935186284&sign=12c8df293a1419147e564ca4007f19b1f36b83946d03c5f63144ca9ebd36b8424d651c33495dedd9380c61eaa24d29cb69d318acc2517a55f5062256b3b8c9ab8ca48bb56aa8d4e68b612c52e0eb&auth_token=9fd4968f9694d07426f806434b9d3dcc
 兵团卫视,https://live.ottiptv.cc/mcp/bintuan.m3u8?userid=1935186284&sign=35782abfa16b87e6cebf63c251e98a8d79a3793b4de71e1643506bd99a45bde5aa4c043f873aa84b5a021013bce9722d06ec873d73a27b3ebfdb6d2f1ba0842bd7770ef720878b4e642365b1bee0a6&auth_token=9fd4968f9694d07426f806434b9d3dcc
 
+
 河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226936/1.m3u8?fmt=ts2hls
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls$移动
 湖南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226961/1.m3u8?fmt=ts2hls$移动
@@ -132,34 +133,14 @@ CCTV-17,http://rihou.cc:555/tv/[mg]CCTV-17
 云南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226986/1.m3u8?fmt=ts2hls$移动
 重庆卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226982/1.m3u8?fmt=ts2hls$移动
 
-河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
-北京卫视,http://iptv.huuc.edu.cn/hls/btv1hd.m3u8
-湖南卫视,http://iptv.huuc.edu.cn/hls/hunanhd.m3u8
-浙江卫视,http://iptv.huuc.edu.cn/hls/zjhd.m3u8
-江苏卫视,http://iptv.huuc.edu.cn/hls/jshd.m3u8
-东方卫视,http://iptv.huuc.edu.cn/hls/dfhd.m3u8
-安徽卫视,http://iptv.huuc.edu.cn/hls/ahhd.m3u8
-黑龙江卫视,http://iptv.huuc.edu.cn/hls/hljhd.m3u8
-辽宁卫视,http://iptv.huuc.edu.cn/hls/lnhd.m3u8
-深圳卫视,http://iptv.huuc.edu.cn/hls/szhd.m3u8
-广东卫视,http://iptv.huuc.edu.cn/hls/gdhd.m3u8
-天津卫视,http://iptv.huuc.edu.cn/hls/tjhd.m3u8
-湖北卫视,http://iptv.huuc.edu.cn/hls/hbhd.m3u8
-山东卫视,http://iptv.huuc.edu.cn/hls/sdhd.m3u8
-重庆卫视,http://iptv.huuc.edu.cn/hls/cqhd.m3u8
-四川卫视,http://iptv.huuc.edu.cn/hls/schd.m3u8
-东南卫视,http://iptv.huuc.edu.cn/hls/dnhd.m3u8
-河北卫视,http://iptv.huuc.edu.cn/hls/hebhd.m3u8
-江西卫视,http://iptv.huuc.edu.cn/hls/jxhd.m3u8
-凤凰中文http://iptv.huuc.edu.cn/hls/fhzw.m3u8
-凤凰资讯http://iptv.huuc.edu.cn/hls/fhzx.m3u8  
-凤凰电影http://iptv.huuc.edu.cn/hls/fhdy.m3u8  
-探索频道http://iptv.huuc.edu.cn/hls/discovery.m3u8  
-国家地理http://iptv.huuc.edu.cn/hls/natlgeo.m3u8  
-星空卫视http://iptv.huuc.edu.cn/hls/startv.m3u8  
-Channel[V]http://iptv.huuc.edu.cn/hls/channelv.m3u8
-
-
+超清4k,#genre#
+北京卫视,https://tv1288.xyz/公众号潇雨萌萌.php?ch=%E5%8C%97%E4%BA%AC%E5%8D%AB%E8%A7%864K%E8%B6%85%E9%AB%98%E6%B8%85$4K
+浙江卫视,http://j.s.bkpcp.top/jj/zjws$4K
+湖南卫视,http://j.s.bkpcp.top/jj/hunws$4K
+深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k$4K
+江苏卫视,http://j.s.bkpcp.top/jj/jsws$4K
+河北4K,https://event.pull.hebtv.com:443/live/live101.m3u8$4K
+苏州4K,https://tylive.kan0512.com/norecord/csztv4k_4k.m3u8$4K
 
 📡┃河南频道,#genre#
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls$移动
