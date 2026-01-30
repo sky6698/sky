@@ -172,13 +172,9 @@ CETV4,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225783/index.m3u8
 浙江之江纪录,http://ali-m-l.cztv.com/channels/lantian/channel012/1080p.m3u8
 
 地方频道,#genre#
-北京纪实科教,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225729/index.m3u8
-上海纪实人文,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225738/index.m3u8
-山东教育,http://ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225655/index.m3u8
-上海纪实人文,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226914/1.m3u8?fmt=ts2hls
+金鹰卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226965/1.m3u8?fmt=ts2hls
 湖南茶,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227129/1.m3u8?fmt=ts2hls
 湖南金鹰纪实,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226889/1.m3u8?fmt=ts2hls
-金鹰卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226965/1.m3u8?fmt=ts2hls
 快乐垂钓,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226904/1.m3u8?fmt=ts2hls
 咪咕视频,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227258/1.m3u8?fmt=ts2hls
 
@@ -486,6 +482,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 春晚2023,https://txmov2.a.kwimgs.com/bs3/video-hls/5251197255879398624_hlshd15.m3u8
 春晚2024,https://p2.bdstatic.com/rtmp.liveshow.lss-user.baidubce.com/live/stream_bduid_6488563992_8982723413/merged_1707497046297_88536_25144_41936.m3u8
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
+
 
 
 
