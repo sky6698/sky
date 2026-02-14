@@ -683,7 +683,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 小品-开心麻花,https://live.ottiptv.cc/huya/30080154
 小品-宋小宝,https://live.ottiptv.cc/huya/30080192
 
-📽️综艺直播,#genre#
+📽️┃综艺直播,#genre#
 李子柒,http://81.70.10.196:35455/huya/21969336
 搞笑_陈翔六点半,https://live.metshop.top/huya/11274154
 综艺-音乐石榴,https://live.metshop.top/huya/17091681
@@ -723,7 +723,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 变形计专场,http://81.70.10.196:35455/huya/23903164
 
 
-💽纪录片直播,#genre#
+💽┃纪录片直播,#genre#
 李子柒,https://iptv.catvod.com/huya.php?id=21969336
 贝爷,https://iptv.catvod.com/huya.php?id=20969143
 幻海航行,https://iptv.catvod.com/huya.php?id=17105786
@@ -737,7 +737,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 云游故宫1,https://iptv.catvod.com/huya.php?id=19743457
 云游故宫2,https://iptv.catvod.com/huya.php?id=19743452
 
-🎹歌手合集点播,#genre#
+🎹┃歌手集点播,#genre#
 周杰伦精选120首(8小时),https://txmov2.a.kwimgs.com/upic/2023/06/18/23/BMjAyMzA2MTgyMzE1MjBfMzQ4MzI0MjA1OF8xMDU4Nzc4MzAzNjZfMF8z_b_B386baa1bb2c0c48626a830ff69393771.mp4
 林俊杰精选81首(5小时),https://txmov2.a.kwimgs.com/upic/2024/01/09/12/BMjAyNDAxMDkxMjA2MDdfMzQ4MzI0MjA1OF8xMjE2Nzg4Mjk4NTZfMF8z_b_Bc9f7d3b0c4b69136e61d8328a8538bd2.mp4?clientCacheKey=3xajh8b4u5j6uva_b.mp4
 潘玮柏精选28首(1小时),https://txmov2.a.kwimgs.com/upic/2021/02/18/21/BMjAyMTAyMTgyMTI0MzNfODI4NTk1NTQ0XzQ0NTk2NzM2MDU3XzJfMw==_b_B92f3c6849966ee988590af29cfd9237b.mp4?tag=1-1750435163-std-1-6qxcke5wod-82a7afd374de76aa&clientCacheKey=3xabaxhvbd3me8s_b.mp4
@@ -811,7 +811,7 @@ DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/52599230165249789
 
 
 
-🤪沙雕动画点播,#genre#
+🤪┃沙雕动画,#genre#
 凡小陈重生记(7小时),https://txmov2.a.kwimgs.com/upic/2023/10/02/08/BMjAyMzEwMDIwODQ0MjNfMTc3ODc1NjEyMl8xMTQwODQ0NDM2NzdfMF8z_b_B979853f23985acb8927c9cee71c709a6.mp4
 生肖造神日记(17小时),https://www.iesdouyin.com/aweme/v1/playwm/?line=0&logo_name=aweme_diversion_search&ratio=720p&video_id=v0200fg10000cqm6oufog65r70g4jj3g
 为弥补遗憾带老婆孩子逆袭人生(2小时),https://txmov2.a.kwimgs.com/upic/2023/11/16/14/BMjAyMzExMTYxNDU2NTJfMzc4OTA3MTE5MV8xMTcyODExNTkyMTlfMF8z_b_B0040256f5fb7b10163c712772d34544c.mp4
