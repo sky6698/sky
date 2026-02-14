@@ -143,16 +143,16 @@ CCTV-17,http://rihou.cc:555/tv/[mg]CCTV-17
 苏州4K,https://tylive.kan0512.com/norecord/csztv4k_4k.m3u8$4K
 
 🚀┃央卫高码,#genre#
-CCTV-01,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv1
-CCTV-02,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv2
-CCTV-03,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv3
-CCTV-04,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv4
+CCTV-1,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv1
+CCTV-2,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv2
+CCTV-3,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv3
+CCTV-4,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv4
 CCTV-05,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5
 CCTV-5+,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5p
-CCTV-06,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv6
-CCTV-07,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv7
-CCTV-08,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv8
-CCTV-09,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv9
+CCTV-6,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv6
+CCTV-7,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv7
+CCTV-8,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv8
+CCTV-9,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv9
 CCTV-10,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv10
 CCTV-11,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv11
 CCTV-12,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv12
