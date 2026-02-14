@@ -216,13 +216,56 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 重庆卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226982/1.m3u8?fmt=ts2hls
 
 超清4k,#genre#
-北京卫视,https://tv1288.xyz/公众号潇雨萌萌.php?ch=%E5%8C%97%E4%BA%AC%E5%8D%AB%E8%A7%864K%E8%B6%85%E9%AB%98%E6%B8%85$4K
 浙江卫视,http://j.s.bkpcp.top/jj/zjws$4K
 湖南卫视,http://j.s.bkpcp.top/jj/hunws$4K
 深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k$4K
 江苏卫视,http://j.s.bkpcp.top/jj/jsws$4K
 河北4K,https://event.pull.hebtv.com:443/live/live101.m3u8$4K
 苏州4K,https://tylive.kan0512.com/norecord/csztv4k_4k.m3u8$4K
+
+央卫高码,#genre#
+CCTV-01,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv1
+CCTV-02,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv2
+CCTV-03,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv3
+CCTV-04,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv4
+CCTV-05,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5
+CCTV-5+,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5p
+CCTV-06,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv6
+CCTV-07,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv7
+CCTV-08,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv8
+CCTV-09,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv9
+CCTV-10,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv10
+CCTV-11,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv11
+CCTV-12,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv12
+CCTV-13,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv13
+CCTV-14,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv14
+CCTV-15,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv15
+CCTV-16,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv16
+CCTV-17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17
+河南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hnws
+北京卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=bjws
+东方卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=dfws
+浙江卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=zjws
+江苏卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=jsws
+湖南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hunws
+广东卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=gdws
+深圳卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=szws
+天津卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=tjws
+安徽卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=ahws
+山东卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=sdws
+辽宁卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=lnws
+河北卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hbws
+江西卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=jxws
+四川卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=scws
+重庆卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cqws
+贵州卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=gzws
+湖北卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hubws
+广西卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=gxws
+东南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=dnws
+海南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hinws
+青海卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=qhws
+吉林卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=jlws
+黑龙江视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hljws
 
 河南频道,#genre#
 河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
@@ -752,18 +795,18 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
 
 纪 录 片,#genre#
-李子柒,http://81.70.10.196:35455/huya/21969336
-贝爷,https://tv1288.xyz/1002.php?id=20969143
-幻海航行,http://81.70.10.196:35455/huya/17105786
-生存记,https://tv1288.xyz/1002.php?id=20985861
-碎片记,http://free.frp.vip:10147/douyu/9412981
-宇宙视界,http://free.frp.vip:10147/douyu/9498354
-宇宙探索飞船,http://free.frp.vip:10147/douyu/9456028
-世界未解之谜,http://free.frp.vip:10147/douyu/9369468
-航拍中国专场,http://81.70.10.196:35455/huya/22414123
-中国通史,https://tv1288.xyz/1002.php?id=20985822
-云游故宫1,http://81.70.10.196:35455/huya/19743457
-云游故宫2,http://81.70.10.196:35455/huya/19743452
+李子柒,https://iptv.catvod.com/huya.php?id=21969336
+贝爷,https://iptv.catvod.com/huya.php?id=20969143
+幻海航行,https://iptv.catvod.com/huya.php?id=17105786
+生存记,https://iptv.catvod.com/huya.php?id=20985861
+碎片记,https://iptv.catvod.com/douyu.php?id=9412981
+宇宙视界,https://iptv.catvod.com/douyu.php?id=9498354
+宇宙探索飞船,https://iptv.catvod.com/douyu.php?id=9456028
+世界未解之谜,https://iptv.catvod.com/douyu.php?id=9369468
+航拍中国专场,https://iptv.catvod.com/huya.php?id=22414123
+中国通史,https://iptv.catvod.com/huya.php?id=20985822
+云游故宫1,https://iptv.catvod.com/huya.php?id=19743457
+云游故宫2,https://iptv.catvod.com/huya.php?id=19743452
 
 歌手合集,#genre#
 周杰伦精选120首(8小时),https://txmov2.a.kwimgs.com/upic/2023/06/18/23/BMjAyMzA2MTgyMzE1MjBfMzQ4MzI0MjA1OF8xMDU4Nzc4MzAzNjZfMF8z_b_B386baa1bb2c0c48626a830ff69393771.mp4
@@ -836,6 +879,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
