@@ -215,7 +215,7 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 云南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226986/1.m3u8?fmt=ts2hls
 重庆卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226982/1.m3u8?fmt=ts2hls
 
-超清4k,#genre#
+超高清4k,#genre#
 浙江卫视,http://j.s.bkpcp.top/jj/zjws$4K
 湖南卫视,http://j.s.bkpcp.top/jj/hunws$4K
 深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k$4K
@@ -224,16 +224,16 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 苏州4K,https://tylive.kan0512.com/norecord/csztv4k_4k.m3u8$4K
 
 央卫高码,#genre#
-CCTV-01,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv1
-CCTV-02,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv2
-CCTV-03,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv3
-CCTV-04,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv4
-CCTV-05,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5
+CCTV-1,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv1
+CCTV-2,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv2
+CCTV-3,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv3
+CCTV-4,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv4
+CCTV-5,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5
 CCTV-5+,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv5p
-CCTV-06,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv6
-CCTV-07,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv7
-CCTV-08,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv8
-CCTV-09,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv9
+CCTV-6,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv6
+CCTV-7,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv7
+CCTV-8,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv8
+CCTV-9,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv9
 CCTV-10,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv10
 CCTV-11,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv11
 CCTV-12,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv12
@@ -794,7 +794,7 @@ CCTV-17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17
 春晚2024,https://ikcdn01.ikzybf.com/20240205/QBNgom4j/2000kb/hls/index.m3u8
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
 
-纪 录 片,#genre#
+纪  录  片,#genre#
 李子柒,https://iptv.catvod.com/huya.php?id=21969336
 贝爷,https://iptv.catvod.com/huya.php?id=20969143
 幻海航行,https://iptv.catvod.com/huya.php?id=17105786
@@ -879,6 +879,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
