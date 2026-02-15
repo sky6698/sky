@@ -265,7 +265,7 @@ CCTV-17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17
 海南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hinws
 青海卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=qhws
 吉林卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=jlws
-黑龙江视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hljws
+黑龙江卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hljws
 
 河南频道,#genre#
 河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
@@ -879,6 +879,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
