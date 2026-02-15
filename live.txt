@@ -184,7 +184,7 @@ CCTV-17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17
 海南卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hinws
 青海卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=qhws
 吉林卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=jlws
-黑龙江视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hljws
+黑龙江卫视,http://cdn6.bkpcp.top/tl/tuiliu.php?id=hljws
 
 📡┃河南频道,#genre#
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls$移动
