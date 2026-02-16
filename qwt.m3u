@@ -1,7 +1,7 @@
 #EXTM3U x-tvg-url="https://epg.aptv.app/pp.xml.gz,https://epg.aptv.app/xml"
-#EXTINF:-1 tvg-name="CCTV4K" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",CCTV4K
+#EXTINF:-1 tvg-name="春晚1" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",春晚1
 http://101.35.240.114:88/live.php?id=春晚1
-#EXTINF:-1 tvg-name="CCTV4K" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",CCTV4K
+#EXTINF:-1 tvg-name="春晚2" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",春晚2
 http://101.35.240.114:88/live.php?id=春晚2
 #EXTINF:-1 tvg-name="CCTV1" http-user-agent="okHttp/Mod-1.5.0.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV1.png" group-title="央视频道",CCTV1
 https://live.ottiptv.cc/mcp/cctv1.m3u8?userid=1935186284&sign=d4cba87edc89f1378a0b0bf1cdfc2b355c260c5d55145cb030ef9bcfb44fc08d27c65e188de61116ba32395ee30dc5280ee2d247c27f77619d04d7a45b732519ddefba497782d9d26d0d159d8e&auth_token=9fd4968f9694d07426f806434b9d3dcc
