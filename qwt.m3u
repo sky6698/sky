@@ -1,4 +1,4 @@
-#EXTM3U x-tvg-url="https://live.fanmingming.cn/e.xml"
+#EXTM3U x-tvg-url="https://epg.aptv.app/pp.xml.gz,https://epg.aptv.app/xml"
 #EXTINF:-1 tvg-name="CCTV4K" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",CCTV4K
 http://101.35.240.114:88/live.php?id=春晚1
 #EXTINF:-1 tvg-name="CCTV4K" http-user-agent="okhttp/3.15,AptvPlayer/1.4.0" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV4K.png" group-title="央视春晚",CCTV4K
