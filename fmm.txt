@@ -269,6 +269,16 @@ CCTV-17,http://cdn6.bkpcp.top/tl/tuiliu.php?id=cctv17
 郑州妇女儿童,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv5
 郑州文体旅游,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv6
 
+河南卫视,https://tv1288.xyz/hntv.php?id=hnws
+河南都市,https://tv1288.xyz/hntv.php?id=hnds
+河南民生,https://tv1288.xyz/hntv.php?id=hnms
+河南法治,https://tv1288.xyz/hntv.php?id=hmfz
+河南电视剧,https://tv1288.xyz/hntv.php?id=hndsj
+河南新闻,https://tv1288.xyz/hntv.php?id=hnxw
+河南公共,https://tv1288.xyz/hntv.php?id=hngg
+河南乡村,https://tv1288.xyz/hntv.php?id=hnxc
+
+
 河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226936/1.m3u8?fmt=ts2hls
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 河南都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226911/1.m3u8?fmt=ts2hls
@@ -854,6 +864,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
