@@ -195,8 +195,8 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 重庆卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226982/1.m3u8?fmt=ts2hls
 
 超高清4k,#genre#
-北京卫视4K,http://106.53.99.30/tv/bj.php?id=bjws4k
-东方卫视4K,http://106.53.99.30/tv/api.php?id=dfws4k
+北京卫视,http://106.53.99.30/tv/bj.php?id=bjws4k
+东方卫视,http://106.53.99.30/tv/api.php?id=dfws4k
 浙江卫视,http://j.s.bkpcp.top/jj/zjws$4K
 湖南卫视,http://j.s.bkpcp.top/jj/hunws$4K
 深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k$4K
@@ -864,6 +864,7 @@ Tank精选15首(1小时),https://www.iesdouyin.com/aweme/v1/playwm/?video_id=v03
 中文DJ舞曲点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5225020119572067546_hlsb.m3u8
 DJ舞曲串烧点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5259923016524978973_hlsb.m3u8
 热门歌曲DJ点播,https://txmov2.a.kwimgs.com/bs3/video-hls/5232619944545910926_hlsb.m3u8
+
 
 
 
