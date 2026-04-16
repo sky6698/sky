@@ -4,7 +4,7 @@ CCTV2,https://live.ottiptv.cc/mcp/cctv2.m3u8?userid=8435283477&sign=5d9927024645
 CCTV3,https://live.ottiptv.cc/mcp/cctv3.m3u8?userid=8435283477&sign=1b250c56ca98c38a554eafab65161919f95d43d68376bc8e63d98ea1d54c98b401dfd42b7324faeaa9a8638e00550e94ad64764ad37d1917d9da44ee27b88d419e7983414586bf1e9d9c00677b&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 CCTV4,https://live.ottiptv.cc/mcp/cctv4.m3u8?userid=8435283477&sign=1f51bc6d372c6651eb49a1337c0c6e68055a0ee8de072ecdca941ce62c2cade535f2b7d9d373c5db121c3a47580a4e0356880346059bd6f0632dd01215d00206790b18e6315c7504fda869008f&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 CCTV5,https://live.ottiptv.cc/mcp/cctv5.m3u8?userid=8435283477&sign=bfebf5f68aacd84f381e3a420b505ca89b4e3620bbd1aaa4a0cc3a4c189d10cf0a413760e8255123eb6dc5873b22ddf3e6ec6de8d21576924653a91d14ec0da086be2b8847699e7cde7f0ecc8c&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
-CCTV5p,https://live.ottiptv.cc/mcp/cctv5p.m3u8?userid=8435283477&sign=acb65100b26e250c3f2273d0315232e09fb7cea76c60bd51aa958ab743c5ab2289edec45888f45444ea6c86d1707ec7833c565750922ff02ae67bd31e1774aaee3da0862bfb97a4ab4751e29a081&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
+CCTV5+,https://live.ottiptv.cc/mcp/cctv5p.m3u8?userid=8435283477&sign=acb65100b26e250c3f2273d0315232e09fb7cea76c60bd51aa958ab743c5ab2289edec45888f45444ea6c86d1707ec7833c565750922ff02ae67bd31e1774aaee3da0862bfb97a4ab4751e29a081&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 CCTV6,https://live.ottiptv.cc/mcp/cctv6.m3u8?userid=8435283477&sign=cf3dcb41759b7d335120c651e0a32a9da5358b9fac0c120e46b57bd2372c4bb8de3e59512651b4f09512cd5161de61e60854e6d1821e46f827ac6eb9a7565fd0e28290b4fbcb402a105fd7e5e2&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 CCTV7,https://live.ottiptv.cc/mcp/cctv7.m3u8?userid=8435283477&sign=1be71dc415c6549bf7a3d2b0f7401e057d331071afb4f1eb29c9422ee6a50d3ed697ce28446e3f2ddf53506cb4e1b13239ed94ef307af45517b16eb002e462c171766e53c3c01df594cb5f3ce3&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 CCTV8,https://live.ottiptv.cc/mcp/cctv8.m3u8?userid=8435283477&sign=05a3349c25f3b312aafb702ea50ef0eb351fd444e55f6adff73c1f039f57f184aedad21b3a4a52f476f643b93efa70031313a16689b7c6b1a2306a0cf58a791c31ded6373819741186e9adefea&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
@@ -212,18 +212,6 @@ CCTV17,http://8.129.103.180:1234/673168256
 重庆卫视,http://8.129.103.180:1234/738910914
 三沙卫视,http://8.129.103.180:1234/961023778
 
-📺┃超高清4k,#genre#
-北京卫视,http://106.53.99.30/tv/bj.php?id=bjws4k
-东方卫视,http://106.53.99.30/tv/api.php?id=dfws4k
-深圳卫视,http://nn.7x9d.cn/深圳最新.php?id=szws4k
-湖南卫视,http://j.s.bkpcp.top/jj/hunws
-浙江卫视,http://j.s.bkpcp.top/jj/zjws
-江苏卫视,http://j.s.bkpcp.top/jj/jsws
-东方卫视,http://t.061899.xyz/tl/tl.php?id=dfws
-苏州4K,https://tylive.kan0512.com/norecord/csztv4k_4k.m3u8
-河北4K,https://event.pull.hebtv.com:443/live/live101.m3u8
-
-
 
 📡┃河南频道,#genre#
 河南卫视,https://tv1288.xyz/hntv.php?id=hnws
@@ -270,6 +258,7 @@ CCTV17,http://8.129.103.180:1234/673168256
 河南武术频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=wssj
 河南文物宝库频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=wwbk
 河南晴彩中原,video://http://p2.ytelc.com/169l/henan/henan.php?id=hntv11 
+
 郑州新闻综合频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=zz1
 郑州商都频道,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv2
 郑州文体旅游频道,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv3
