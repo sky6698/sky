@@ -56,6 +56,7 @@ CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fm
 河南国际,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226925/1.m3u8?fmt=ts2hls
 河南民生,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226913/1.m3u8?fmt=ts2hls
 河南乡村,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226948/1.m3u8?fmt=ts2hls
+河南曲艺,video://http://p2.ytelc.com/169l/henan/henan.php?id=hntv11
 河南梨园频道,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226933/1.m3u8?fmt=ts2hls
 河南梨园频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=liyuan
 河南武术世界,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226962/1.m3u8?fmt=ts2hls
