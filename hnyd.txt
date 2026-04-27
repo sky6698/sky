@@ -599,7 +599,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 春晚2024,https://p2.bdstatic.com/rtmp.liveshow.lss-user.baidubce.com/live/stream_bduid_6488563992_8982723413/merged_1707497046297_88536_25144_41936.m3u8
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
 
-📽️┃综艺直播,#genre#
+综艺直播,#genre#
 李子柒,https://live.ottiptv.cc/huya/21969336
 搞笑_陈翔六点半,https://live.metshop.top/huya/11274154
 综艺-音乐石榴,https://live.metshop.top/huya/17091681
@@ -639,7 +639,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 变形计专场,https://live.ottiptv.cc/huya/23903164
 
 
-💽┃纪录片直播,#genre#
+纪录片直播,#genre#
 李子柒,https://live.ottiptv.cc/huya/21969336
 贝爷,https://live.ottiptv.cc/huya/20969143
 幻海航行,https://live.ottiptv.cc/huya/17105786
@@ -653,7 +653,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 云游故宫1,https://live.ottiptv.cc/huya/19743457
 云游故宫2,https://live.ottiptv.cc/huya/19743452
 
-🎹┃歌手集点播,#genre#
+歌手集点播,#genre#
 周杰伦精选120首(8小时),https://txmov2.a.kwimgs.com/upic/2023/06/18/23/BMjAyMzA2MTgyMzE1MjBfMzQ4MzI0MjA1OF8xMDU4Nzc4MzAzNjZfMF8z_b_B386baa1bb2c0c48626a830ff69393771.mp4
 林俊杰精选81首(5小时),https://txmov2.a.kwimgs.com/upic/2024/01/09/12/BMjAyNDAxMDkxMjA2MDdfMzQ4MzI0MjA1OF8xMjE2Nzg4Mjk4NTZfMF8z_b_Bc9f7d3b0c4b69136e61d8328a8538bd2.mp4?clientCacheKey=3xajh8b4u5j6uva_b.mp4
 潘玮柏精选28首(1小时),https://txmov2.a.kwimgs.com/upic/2021/02/18/21/BMjAyMTAyMTgyMTI0MzNfODI4NTk1NTQ0XzQ0NTk2NzM2MDU3XzJfMw==_b_B92f3c6849966ee988590af29cfd9237b.mp4?tag=1-1750435163-std-1-6qxcke5wod-82a7afd374de76aa&clientCacheKey=3xabaxhvbd3me8s_b.mp4
