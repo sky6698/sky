@@ -128,6 +128,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u
 河南曲艺频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=hntv11
 河南梨园频道,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226933/1.m3u8?fmt=ts2hls
 河南梨园频道,video://http://p2.ytelc.com/169l/henan/henan.php?id=liyuan
+河南豫剧频道,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226645/index.m3u8
 河南武术世界,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226962/1.m3u8?fmt=ts2hls
 河南武术世界,video://http://p2.ytelc.com/169l/henan/henan.php?id=wssj
 河南文物宝库,,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226931/1.m3u8?fmt=ts2hls
