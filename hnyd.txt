@@ -16,8 +16,8 @@ CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226958/1.m3u8?fm
 CCTV15,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226524/1.m3u8?fmt=ts2hls
 CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226954/1.m3u8?fmt=ts2hls
 CCTV5+,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226978/1.m3u8?fmt=ts2hls
-CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u8
 CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u8
+CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u8
 中国天气,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227129/1.m3u8?fmt=ts2hls
 
 CCTV1,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227262/index.m3u8
@@ -37,8 +37,8 @@ CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227173/index.m3u
 CCTV15,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227175/index.m3u8
 CCTV17,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227188/index.m3u8
 CCTV5+,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227348/index.m3u8
-CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u8
 CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u8
+CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u8
 中国教育1,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227190/index.m3u8
 中国教育2,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227329/index.m3u8
 中国教育3,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227352/index.m3u8
@@ -48,6 +48,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 中学生,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226666/index.m3u8
 
 卫视频道,#genre#
+河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226526/index.m3u8
 河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226936/1.m3u8?fmt=ts2hls
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 湖南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226961/1.m3u8?fmt=ts2hls
@@ -154,17 +155,20 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 郑州新闻,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226618/index.m3u8
 郑州商都,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226650/index.m3u8
 郑州文旅,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226627/index.m3u8
-郑州影戏,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226645/index.m3u8
+郑州豫剧,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226645/index.m3u8
 郑州妇儿,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226686/index.m3u8
 郑州都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226708/index.m3u8
 郑州教育,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227383/index.m3u8
+
 南阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226671/index.m3u8
 南阳科教,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226620/index.m3u8
 南阳公共,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226575/index.m3u8
-镇平电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226534/index.m3u8
 方城电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227254/index.m3u8
+镇平电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226534/index.m3u8
 邓州综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226348/index.m3u8
 唐河电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227063/index.m3u8
+淅川电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226631/index.m3u8
+
 洛阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226542/index.m3u8
 洛阳科教,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226554/index.m3u8
 洛阳文娱,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226537/index.m3u8
@@ -241,12 +245,10 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 新蔡电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226691/index.m3u8
 平桥广电,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226683/index.m3u8
 巩义综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227088/index.m3u8
-淅川电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226631/index.m3u8
 西平电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226680/index.m3u8
 舞阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226902/index.m3u8
 卢氏综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227023/index.m3u8
 宜阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227059/index.m3u8
-
 汝阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227067/index.m3u8
 淇县电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227061/index.m3u8
 温县融媒,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227245/index.m3u8
@@ -266,13 +268,6 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 遂平综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227396/index.m3u8
 襄城综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227403/index.m3u8
 
-
-地方频道,#genre#
-金鹰卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226965/1.m3u8?fmt=ts2hls
-湖南茶,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227129/1.m3u8?fmt=ts2hls
-湖南金鹰纪实,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226889/1.m3u8?fmt=ts2hls
-快乐垂钓,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226904/1.m3u8?fmt=ts2hls
-咪咕视频,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227258/1.m3u8?fmt=ts2hls
 
 数字频道,#genre#
 北京纪实科教,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227408/index.m3u8
@@ -302,7 +297,15 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 生活时尚,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226881/1.m3u8?fmt=ts2hls
 游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910/1.m3u8?fmt=ts2hls
 
+
+湖南茶,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227129/1.m3u8?fmt=ts2hls
+湖南金鹰纪实,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226889/1.m3u8?fmt=ts2hls
+快乐垂钓,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226904/1.m3u8?fmt=ts2hls
+咪咕视频,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227258/1.m3u8?fmt=ts2hls
+
 动漫卡通,#genre#
+CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226958/1.m3u8?fmt=ts2hls
+金鹰卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226965/1.m3u8?fmt=ts2hls
 金鹰卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226624/index.m3u8
 动漫秀场,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226608/index.m3u8
 优漫卡通,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226406/index.m3u8
@@ -637,7 +640,6 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227354/index.m3u
 12道锋味专场,https://live.ottiptv.cc/huya/30080162
 我们的客栈专场,https://live.ottiptv.cc/huya/24609812
 变形计专场,https://live.ottiptv.cc/huya/23903164
-
 
 纪录片直播,#genre#
 李子柒,https://live.ottiptv.cc/huya/21969336
