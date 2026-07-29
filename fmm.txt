@@ -642,6 +642,32 @@ CCTV8k,https://live.ottiptv.cc/mcp/cctv8k.m3u8?userid=8435283477&sign=b5e424f094
 春晚2025,https://res.cctvnews.cctv.com/video/3005/record/cctv/merge1/133396667284143308839013005/8fbd6180bdef4da19f6155cf6b4652e1-4.m3u8
 
 纪  录  片,#genre#
+李子柒,https://live.metshop.top/huya/21969336
+贝爷,https://live.metshop.top/huya/20969143
+幻海航行,https://live.metshop.top/huya/17105786
+生存记,https://live.metshop.top/huya/20985861
+碎片记,https://iptv.catvod.com/douyu.php?id=9412981
+宇宙视界,https://iptv.catvod.com/douyu.php?id=9498354
+宇宙探索飞船,https://iptv.catvod.com/douyu.php?id=9456028
+世界未解之谜,https://iptv.catvod.com/douyu.php?id=9369468
+航拍中国专场,https://live.metshop.top/huya/22414123
+中国通史,https://live.metshop.top/huya/20985822
+云游故宫1,https://live.metshop.top/huya/19743457
+云游故宫2,https://live.metshop.top/huya/19743452
+
+
+李子柒,https://iptv.catvod.com/huya/21969336
+贝爷,https://iptv.catvod.com/huya/20969143
+幻海航行,https://iptv.catvod.com/huya/17105786
+生存记,https://iptv.catvod.com/huya/20985861
+碎片记,https://iptv.catvod.com/douyu.php?id=9412981
+宇宙视界,https://iptv.catvod.com/douyu.php?id=9498354
+宇宙探索飞船,https://iptv.catvod.com/douyu.php?id=9456028
+世界未解之谜,https://iptv.catvod.com/douyu.php?id=9369468
+航拍中国专场,https://iptv.catvod.com/huya/22414123
+中国通史,https://iptv.catvod.com/huya/20985822
+云游故宫1,https://iptv.catvod.com/huya/19743457
+
 李子柒,https://live.ottiptv.cc/huya/21969336
 贝爷,https://live.ottiptv.cc/huya/20969143
 幻海航行,https://live.ottiptv.cc/huya/17105786
