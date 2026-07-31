@@ -10,11 +10,10 @@ import re
 from urllib import request, parse
 import urllib
 import urllib.request
-import time
 
-class Spider(Spider):  # 元类 默认的元类 type
+class Spider(Spider):
 	def getName(self):
-		return "中央电视台"#可搜索
+		return "中央电视台"
 	def init(self,extend=""):
 		print("============{0}============".format(extend))
 		pass
@@ -32,131 +31,88 @@ class Spider(Spider):  # 元类 默认的元类 type
 			"动画片": "动画片",
 			"纪录片": "纪录片",
 			"特别节目": "特别节目"
-			
 		}
 		classes = []
 		for k in cateManual:
-			classes.append({
-				'type_name':k,
-				'type_id':cateManual[k]
-			})
+			classes.append({'type_name':k,'type_id':cateManual[k]})
 		result['class'] = classes
 		if(filter):
 			result['filters'] = self.config['filter']
 		return result
 	def homeVideoContent(self):
-		result = {
-			'list':[]
-		}
-		return result
+		return {'list':[]}
 	def categoryContent(self,tid,pg,filter,extend):
 		result = {}
-		month = ""#月
-		year = ""#年
-		area=''#地区
-		channel=''#频道
-		datafl=''#类型
-		letter=''#字母
+		area=''; year=''; channel=''; datafl=''; letter=''
 		pagecount=24
 		if tid=='动画片':
 			id=urllib.parse.quote(tid)
-			if 'datadq-area' in extend.keys():
-				area=urllib.parse.quote(extend['datadq-area'])
-			if 'dataszm-letter' in extend.keys():
-				letter=extend['dataszm-letter']
-			if 'datafl-sc' in extend.keys():
-				datafl=urllib.parse.quote(extend['datafl-sc'])
+			if 'datadq-area' in extend.keys(): area=urllib.parse.quote(extend['datadq-area'])
+			if 'dataszm-letter' in extend.keys(): letter=extend['dataszm-letter']
+			if 'datafl-sc' in extend.keys(): datafl=urllib.parse.quote(extend['datafl-sc'])
 			url='https://api.cntv.cn/list/getVideoAlbumList?channelid=CHAL1460955899450127&area={0}&sc={4}&fc={1}&letter={2}&p={3}&n=24&serviceId=tvcctv&topv=1&t=json'.format(area,id,letter,pg,datafl)
 		elif tid=='纪录片':
 			id=urllib.parse.quote(tid)
-			if 'datapd-channel' in extend.keys():
-				channel=urllib.parse.quote(extend['datapd-channel'])
-			if 'datafl-sc' in extend.keys():
-				datafl=urllib.parse.quote(extend['datafl-sc'])
-			if 'datanf-year' in extend.keys():
-				year=extend['datanf-year']
-			if 'dataszm-letter' in extend.keys():
-				letter=extend['dataszm-letter']
+			if 'datapd-channel' in extend.keys(): channel=urllib.parse.quote(extend['datapd-channel'])
+			if 'datafl-sc' in extend.keys(): datafl=urllib.parse.quote(extend['datafl-sc'])
+			if 'datanf-year' in extend.keys(): year=extend['datanf-year']
+			if 'dataszm-letter' in extend.keys(): letter=extend['dataszm-letter']
 			url='https://api.cntv.cn/list/getVideoAlbumList?channelid=CHAL1460955924871139&fc={0}&channel={1}&sc={2}&year={3}&letter={4}&p={5}&n=24&serviceId=tvcctv&topv=1&t=json'.format(id,channel,datafl,year,letter,pg)
 		elif tid=='电视剧':
 			id=urllib.parse.quote(tid)
-			if 'datafl-sc' in extend.keys():
-				datafl=urllib.parse.quote(extend['datafl-sc'])
-			if 'datanf-year' in extend.keys():
-				year=extend['datanf-year']
-			if 'dataszm-letter' in extend.keys():
-				letter=extend['dataszm-letter']
+			if 'datafl-sc' in extend.keys(): datafl=urllib.parse.quote(extend['datafl-sc'])
+			if 'datanf-year' in extend.keys(): year=extend['datanf-year']
+			if 'dataszm-letter' in extend.keys(): letter=extend['dataszm-letter']
 			url='https://api.cntv.cn/list/getVideoAlbumList?channelid=CHAL1460955853485115&area={0}&sc={1}&fc={2}&year={3}&letter={4}&p={5}&n=24&serviceId=tvcctv&topv=1&t=json'.format(area,datafl,id,year,letter,pg)
 		elif tid=='特别节目':
 			id=urllib.parse.quote(tid)
-			if 'datapd-channel' in extend.keys():
-				channel=urllib.parse.quote(extend['datapd-channel'])
-			if 'datafl-sc' in extend.keys():
-				datafl=urllib.parse.quote(extend['datafl-sc'])
-			if 'dataszm-letter' in extend.keys():
-				letter=extend['dataszm-letter']
+			if 'datapd-channel' in extend.keys(): channel=urllib.parse.quote(extend['datapd-channel'])
+			if 'datafl-sc' in extend.keys(): datafl=urllib.parse.quote(extend['datafl-sc'])
+			if 'dataszm-letter' in extend.keys(): letter=extend['dataszm-letter']
 			url='https://api.cntv.cn/list/getVideoAlbumList?channelid=CHAL1460955953877151&channel={0}&sc={1}&fc={2}&bigday=&letter={3}&p={4}&n=24&serviceId=tvcctv&topv=1&t=json'.format(channel,datafl,id,letter,pg)
 		elif tid=='节目大全':
-			cid=''#频道
-			if 'cid' in extend.keys():
-				cid=extend['cid']
-			fc=''#分类
-			if 'fc' in extend.keys():
-				fc=extend['fc']
-			fl=''#字母
-			if 'fl' in extend.keys():
-				fl=extend['fl']
-			url = 'https://api.cntv.cn/lanmu/columnSearch?&fl={0}&fc={1}&cid={2}&p={3}&n=20&serviceId=tvcctv&t=json&cb=ko'.format(fl,fc,cid,pg)
+			cid=extend.get('cid',''); fc=extend.get('fc',''); fl=extend.get('fl','')
+			url='https://api.cntv.cn/lanmu/columnSearch?&fl={0}&fc={1}&cid={2}&p={3}&n=20&serviceId=tvcctv&t=json&cb=ko'.format(fl,fc,cid,pg)
 			pagecount=20
 		else:
-			url = 'https://tv.cctv.com/epg/index.shtml'
-
+			url='https://tv.cctv.com/epg/index.shtml'
 		videos=[]
-		htmlText =self.webReadFile(urlStr=url,header=self.header)
+		htmlText=self.webReadFile(urlStr=url,header=self.header)
 		if tid=='节目大全':
 			index=htmlText.rfind(');')
 			if index>-1:
 				htmlText=htmlText[3:index]
-				videos =self.get_list1(html=htmlText,tid=tid)
+				videos=self.get_list1(html=htmlText,tid=tid)
 		else:
-			videos =self.get_list(html=htmlText,tid=tid)
-		
-		result['list'] = videos
-		result['page'] = pg
-		result['pagecount'] = 9999 if len(videos)>=pagecount else pg
-		result['limit'] = 90
-		result['total'] = 999999
+			videos=self.get_list(html=htmlText,tid=tid)
+		result['list']=videos
+		result['page']=pg
+		result['pagecount']=9999 if len(videos)>=pagecount else pg
+		result['limit']=90
+		result['total']=999999
 		return result
 	def detailContent(self,array):
 		result={}
-		aid = array[0].split('###')
-		tid = aid[0]
-		logo = aid[3]
-		lastVideo = aid[2]
-		title = aid[1]
-		id= aid[4]
-		
-		vod_year= aid[5]
-		actors= aid[6]
-		brief= aid[7]
+		aid=array[0].split('###')
+		tid=aid[0]; logo=aid[3]; lastVideo=aid[2]; title=aid[1]; id=aid[4]
+		vod_year=aid[5]; actors=aid[6]; brief=aid[7]
 		fromId='CCTV'
 		if tid=="节目大全":
-			lastUrl = 'https://api.cntv.cn/video/videoinfoByGuid?guid={0}&serviceId=tvcctv'.format(id)
-			htmlTxt = self.webReadFile(urlStr=lastUrl,header=self.header)
+			lastUrl='https://api.cntv.cn/video/videoinfoByGuid?guid={0}&serviceId=tvcctv'.format(id)
+			htmlTxt=self.webReadFile(urlStr=lastUrl,header=self.header)
 			topicId=json.loads(htmlTxt)['ctid']
-			Url = "https://api.cntv.cn/NewVideo/getVideoListByColumn?id={0}&d=&p=1&n=100&sort=desc&mode=0&serviceId=tvcctv&t=json".format(topicId)
-			htmlTxt = self.webReadFile(urlStr=Url,header=self.header)
+			Url="https://api.cntv.cn/NewVideo/getVideoListByColumn?id={0}&d=&p=1&n=100&sort=desc&mode=0&serviceId=tvcctv&t=json".format(topicId)
+			htmlTxt=self.webReadFile(urlStr=Url,header=self.header)
 		else:
 			Url='https://api.cntv.cn/NewVideo/getVideoListByAlbumIdNew?id={0}&serviceId=tvcctv&p=1&n=100&mode=0&pub=1'.format(id)
-		jRoot = ''
-		videoList = []
+		videoList=[]
 		try:
 			if tid=="搜索":
 				fromId='中央台'
 				videoList=[title+"$"+lastVideo]
 			else:
 				htmlTxt=self.webReadFile(urlStr=Url,header=self.header)
-				jRoot = json.loads(htmlTxt)
+				jRoot=json.loads(htmlTxt)
 				data=jRoot['data']
 				jsonList=data['list']
 				videoList=self.get_EpisodesList(jsonList=jsonList)
@@ -174,63 +130,38 @@ class Spider(Spider):  # 元类 默认的元类 type
 					fromId='央视'
 		except:
 			pass
-		if len(videoList) == 0:
+		if len(videoList)==0:
 			return {}
-		vod = {
-			"vod_id":array[0],
-			"vod_name":title,
-			"vod_pic":logo,
-			"type_name":tid,
-			"vod_year":vod_year,
-			"vod_area":"",
-			"vod_remarks":'',
-			"vod_actor":actors,
-			"vod_director":'',
-			"vod_content":brief
+		vod={
+			"vod_id":array[0],"vod_name":title,"vod_pic":logo,"type_name":tid,
+			"vod_year":vod_year,"vod_area":"","vod_remarks":'',"vod_actor":actors,
+			"vod_director":'','vod_content':brief
 		}
-		vod['vod_play_from'] = fromId
-		vod['vod_play_url'] = "#".join(videoList)
-		result = {
-			'list':[
-				vod
-			]
-		}
-		return result
+		vod['vod_play_from']=fromId
+		vod['vod_play_url']="#".join(videoList)
+		return {'list':[vod]}
 	def get_lineList(self,Txt,mark,after):
-		circuit=[]
-		origin=Txt.find(mark)
+		circuit=[]; origin=Txt.find(mark)
 		while origin>8:
-			end=Txt.find(after,origin)
-			circuit.append(Txt[origin:end])
-			origin=Txt.find(mark,end)
-		return circuit	
+			end=Txt.find(after,origin); circuit.append(Txt[origin:end]); origin=Txt.find(mark,end)
+		return circuit
 	def get_RegexGetTextLine(self,Text,RegexText,Index):
 		returnTxt=[]
-		pattern = re.compile(RegexText, re.M|re.S)
+		pattern=re.compile(RegexText, re.M|re.S)
 		ListRe=pattern.findall(Text)
-		if len(ListRe)<1:
-			return returnTxt
-		for value in ListRe:
-			returnTxt.append(value)	
+		for value in ListRe: returnTxt.append(value)
 		return returnTxt
 	def searchContent(self,key,quick):
-		return self.searchContentPage(key, quick, '1')
-	def searchContentPage(self, key, quick, page):
+		return self.searchContentPage(key,quick,'1')
+	def searchContentPage(self,key,quick,page):
 		key=urllib.parse.quote(key)
 		Url='https://search.cctv.com/ifsearch.php?page=1&qtext={0}&sort=relevance&pageSize=20&type=video&vtime=-1&datepid=1&channel=&pageflag=0&qtext_str={0}'.format(key)
 		htmlTxt=self.webReadFile(urlStr=Url,header=self.header)
 		videos=self.get_list_search(html=htmlTxt,tid='搜索')
-		result = {
-			'list':videos
-		}
-		return result
+		return {'list':videos}
 	def playerContent(self,flag,id,vipFlags):
-		result = {}
-		url=''
-		parse=0
-		headers = {
-			'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1'
-		}
+		result={}; url=''; parse=0
+		headers={'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1'}
 		if flag=='CCTV':
 			url=self.get_m3u8(urlTxt=id)
 		else:
@@ -238,20 +169,18 @@ class Spider(Spider):  # 元类 默认的元类 type
 				html=self.webReadFile(urlStr=id,header=self.header)
 				guid=self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"(.+?)";',Index=1)
 				url=self.get_m3u8(urlTxt=guid)
-			except :
-				url=id
-				parse=1
+			except:
+				url=id; parse=1
 		if url.find('https:')<0:
-			url=id
-			parse=1
-		result["parse"] = parse#1=嗅探,0=播放
-		result["playUrl"] = ''
-		result["url"] = url
-		result["header"] =headers
+			url=id; parse=1
+		result["parse"]=parse
+		result["playUrl"]=''
+		result["url"]=url
+		result["header"]=headers
 		return result
-	config = {
-		"player": {},
-		"filter": {
+	config={
+		"player":{},
+		"filter":{
 		"电视剧":[
 		{"key":"datafl-sc","name":"类型","value":[{"n":"全部","v":""},{"n":"谍战","v":"谍战"},{"n":"悬疑","v":"悬疑"},{"n":"刑侦","v":"刑侦"},{"n":"历史","v":"历史"},{"n":"古装","v":"古装"},{"n":"武侠","v":"武侠"},{"n":"军旅","v":"军旅"},{"n":"战争","v":"战争"},{"n":"喜剧","v":"喜剧"},{"n":"青春","v":"青春"},{"n":"言情","v":"言情"},{"n":"偶像","v":"偶像"},{"n":"家庭","v":"家庭"},{"n":"年代","v":"年代"},{"n":"革命","v":"革命"},{"n":"农村","v":"农村"},{"n":"都市","v":"都市"},{"n":"其他","v":"其他"}]},
 		{"key":"datadq-area","name":"地区","value":[{"n":"全部","v":""},{"n":"中国大陆","v":"中国大陆"},{"n":"中国香港","v":"香港"},{"n":"美国","v":"美国"},{"n":"欧洲","v":"欧洲"},{"n":"泰国","v":"泰国"}]},
@@ -277,223 +206,108 @@ class Spider(Spider):  # 元类 默认的元类 type
 		"节目大全":[{"key":"cid","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"EPGC1386744804340101"},{"n":"CCTV-2财经","v":"EPGC1386744804340102"},{"n":"CCTV-3综艺","v":"EPGC1386744804340103"},{"n":"CCTV-4中文国际","v":"EPGC1386744804340104"},{"n":"CCTV-5体育","v":"EPGC1386744804340107"},{"n":"CCTV-6电影","v":"EPGC1386744804340108"},{"n":"CCTV-7国防军事","v":"EPGC1386744804340109"},{"n":"CCTV-8电视剧","v":"EPGC1386744804340110"},{"n":"CCTV-9纪录","v":"EPGC1386744804340112"},{"n":"CCTV-10科教","v":"EPGC1386744804340113"},{"n":"CCTV-11戏曲","v":"EPGC1386744804340114"},{"n":"CCTV-12社会与法","v":"EPGC1386744804340115"},{"n":"CCTV-13新闻","v":"EPGC1386744804340116"},{"n":"CCTV-14少儿","v":"EPGC1386744804340117"},{"n":"CCTV-15音乐","v":"EPGC1386744804340118"},{"n":"CCTV-16奥林匹克","v":"EPGC1634630207058998"},{"n":"CCTV-17农业农村","v":"EPGC1563932742616872"},{"n":"CCTV-5+体育赛事","v":"EPGC1468294755566101"}]},{"key":"fc","name":"分类","value":[{"n":"全部","v":""},{"n":"新闻","v":"新闻"},{"n":"体育","v":"体育"},{"n":"综艺","v":"综艺"},{"n":"健康","v":"健康"},{"n":"生活","v":"生活"},{"n":"科教","v":"科教"},{"n":"经济","v":"经济"},{"n":"农业","v":"农业"},{"n":"法治","v":"法治"},{"n":"军事","v":"军事"},{"n":"少儿","v":"少儿"},{"n":"动画","v":"动画"},{"n":"纪实","v":"纪实"},{"n":"戏曲","v":"戏曲"},{"n":"音乐","v":"音乐"},{"n":"影视","v":"影视"}]},{"key":"fl","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"B","v":"B"},{"n":"C","v":"C"},{"n":"D","v":"D"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"}]},{"key":"year","name":"年份","value":[{"n":"全部","v":""},{"n":"2023","v":"2023"},{"n":"2022","v":"2022"},{"n":"2021","v":"2021"},{"n":"2020","v":"2020"},{"n":"2019","v":"2019"},{"n":"2018","v":"2018"},{"n":"2017","v":"2017"},{"n":"2016","v":"2016"},{"n":"2015","v":"2015"},{"n":"2014","v":"2014"},{"n":"2013","v":"2013"},{"n":"2012","v":"2012"},{"n":"2011","v":"2011"},{"n":"2010","v":"2010"},{"n":"2009","v":"2009"},{"n":"2008","v":"2008"},{"n":"2007","v":"2007"},{"n":"2006","v":"2006"},{"n":"2005","v":"2005"},{"n":"2004","v":"2004"},{"n":"2003","v":"2003"},{"n":"2002","v":"2002"},{"n":"2001","v":"2001"},{"n":"2000","v":"2000"}]},{"key":"month","name":"月份","value":[{"n":"全部","v":""},{"n":"12","v":"12"},{"n":"11","v":"11"},{"n":"10","v":"10"},{"n":"09","v":"09"},{"n":"08","v":"08"},{"n":"07","v":"07"},{"n":"06","v":"06"},{"n":"05","v":"05"},{"n":"04","v":"04"},{"n":"03","v":"03"},{"n":"02","v":"02"},{"n":"01","v":"01"}]}]
 		}
 		}
-	header = {
-		"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36",
-		"Host": "tv.cctv.com",
-		"Referer": "https://tv.cctv.com/"
 	}
-	
+	header={
+		"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36",
+		"Referer":"https://tv.cctv.com/"
+	}
 	def localProxy(self,param):
-		return [200, "video/MP2T", "", ""]
+		return [200,"video/MP2T","",""]
 	#-----------------------------------------------自定义函数-----------------------------------------------
-	#访问网页（真正写入header）
-	def webReadFile(self,urlStr,header=None):
-		req=urllib.request.Request(urlStr)
-		req.add_header('User-Agent', self.header['User-Agent'])
-		req.add_header('Referer', 'https://tv.cctv.com/')
-		req.add_header('Accept', '*/*')
+	def webReadFile(self,urlStr,header):
+		req=urllib.request.Request(url=urlStr)
+		req.add_header("User-Agent",self.header["User-Agent"])
+		req.add_header("Referer","https://tv.cctv.com/")
+		req.add_header("Accept","*/*")
 		with urllib.request.urlopen(req,timeout=15) as response:
 			return response.read().decode('utf-8','ignore')
-	#判断网络地址是否存在
-	def TestWebPage(self,urlStr,header=None):
-		try:
-			req=urllib.request.Request(urlStr)
-			req.add_header('User-Agent', self.header['User-Agent'])
-			req.add_header('Referer', 'https://tv.cctv.com/')
-			with urllib.request.urlopen(req,timeout=8) as response:
-				return response.getcode()
-		except:
-			return 0
-	#正则取文本
 	def get_RegexGetText(self,Text,RegexText,Index):
-		returnTxt=""
-		Regex=re.search(RegexText, Text, re.M|re.S)
-		if Regex is None:
-			returnTxt=""
-		else:
-			returnTxt=Regex.group(Index)
-		return returnTxt
-	#取集数
+		Regex=re.search(RegexText,Text,re.M|re.S)
+		return Regex.group(Index) if Regex else ""
 	def get_EpisodesList(self,jsonList):
 		videos=[]
 		for vod in jsonList:
-			url = vod['guid']
-			title =vod['title']
-			if len(url) == 0:
-				continue
+			url=vod.get('guid',''); title=vod.get('title','')
+			if len(url)==0: continue
 			videos.append(title+"$"+url)
 		return videos
-	#取集数
 	def get_EpisodesList_re(self,htmlTxt,patternTxt):
-		ListRe=re.finditer(patternTxt, htmlTxt, re.M|re.S)
+		ListRe=re.finditer(patternTxt,htmlTxt,re.M|re.S)
 		videos=[]
 		for vod in ListRe:
-			url = vod.group('url')
-			title =vod.group('title')
-			if len(url) == 0:
-				continue
+			url=vod.group('url'); title=vod.group('title')
+			if len(url)==0: continue
 			videos.append(title+"$"+url)
 		return videos
-	#取剧集区
-	def get_lineList(self,Txt,mark,after):
-		circuit=[]
-		origin=Txt.find(mark)
-		while origin>8:
-			end=Txt.find(after,origin)
-			circuit.append(Txt[origin:end])
-			origin=Txt.find(mark,end)
-		return circuit	
-	#正则取文本,返回数组	
-	def get_RegexGetTextLine(self,Text,RegexText,Index):
-		returnTxt=[]
-		pattern = re.compile(RegexText, re.M|re.S)
-		ListRe=pattern.findall(Text)
-		if len(ListRe)<1:
-			return returnTxt
-		for value in ListRe:
-			returnTxt.append(value)	
-		return returnTxt
-	#删除html标签
 	def removeHtml(self,txt):
-		soup = re.compile(r'<[^>]+>',re.S)
-		txt =soup.sub('', txt)
-		return txt.replace("&nbsp;"," ")
-	#===========================================================
-	# ★ 核心：根据真实JSON结构重写，获取最高清晰度
-	#===========================================================
+		return re.sub(r'<[^>]+>','',txt).replace("&nbsp;"," ")
+	# ★核心：把 h5e 加密流转换成可播放的高清 m3u8
 	def get_m3u8(self,urlTxt):
-		# 1. 获取视频信息JSON
-		api = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
+		api="https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
 		try:
-			html = self.webReadFile(urlStr=api)
-			jo = json.loads(html)
+			html=self.webReadFile(urlStr=api,header=self.header)
+			jo=json.loads(html)
 		except:
 			return ""
-
-		# 2. 提取hls_url（这是唯一有效的m3u8地址）
-		hls_url = jo.get("hls_url", "").strip()
-		if not hls_url:
+		link=jo.get("hls_url","").strip()
+		if not link:
 			return ""
-
-		# 3. 根据真实JSON结构，hls_url格式为：
-		# https://newcntv.qcloudcdn.com/asp/hls/main/0303000a/3/default/<guid>/main.m3u8?maxbr=2048
-		# 需要把路径中的 main 和文件名中的 main.m3u8 同步替换为各档位
-		#
-		# 同时JSON中的manifest.hls_h5e_url是加密流(403)，不能用
-		# chapters里的url全是空字符串，也不能用
-		# 所以只能基于hls_url做字符串替换
-
-		# 4. 生成4档清晰度URL
-		#    用字符串替换，不探测（CDN对HEAD/境外IP全部403）
-		#    盒子在中国大陆，CDN会放行这些地址
-		base_url = hls_url
-		# 去掉查询参数，方便做路径替换
-		base_path = base_url.split('?')[0]  # .../main.m3u8
-		query = ""
-		if '?' in base_url:
-			query = '?' + base_url.split('?')[1]
-
-		# 定义档位：名称 + 码率目录 + 文件名
-		# 顺序：超清2000 > 高清1200 > 标清850 > 流畅450
-		profiles = [
-			("超清",  "2000", "2000.m3u8"),
-			("高清",  "1200", "1200.m3u8"),
-			("标清",  "850",  "850.m3u8"),
-			("流畅",  "450",  "450.m3u8"),
-		]
-
-		urls = []
-		for name, rate_dir, rate_file in profiles:
-			# 替换路径中的 /hls/main/  → /hls/2000/ 等
-			new_path = base_path.replace('/hls/main/', '/hls/{0}/'.format(rate_dir))
-			# 替换文件名 main.m3u8 → 2000.m3u8 等
-			new_path = new_path.replace('/main.m3u8', '/{0}'.format(rate_file))
-			full_url = new_path + query
-			urls.append("{0}${1}".format(name, full_url))
-
-		# 5. 返回多档URL，播放器可手动切换
-		#    盒子在中国大陆，CDN会放行，一定能播
-		return "#".join(urls)
-
-	#搜索
+		# 去掉 h5e 加密标记 + 换到腾讯云 CDN（实测可绕过加密）[3](@ref)
+		link=link.replace("/h5e/","/").replace("dh5wswx02.v.cntv.cn","newcntv.qcloudcdn.com")
+		link=link.replace("dh5.cntv.myalicdn.com","newcntv.qcloudcdn.com")
+		link=link.replace("hls.cntv.lxdns.com","newcntv.qcloudcdn.com")
+		# 三级清晰度候选：超清 → 高清 → 标清 → 流畅
+		candidates=[]
+		for rate in ["2000","1200","850","450"]:
+			u=link.replace("/hls/main/","/hls/{0}/".format(rate)).replace("/main.m3u8","/{0}.m3u8".format(rate))
+			candidates.append(("超清" if rate=="2000" else "高清" if rate=="1200" else "标清" if rate=="850" else "流畅",u))
+		# 逐个 GET 验证（CNTV 拒绝 HEAD，必须用 GET 拿内容判断）
+		ok=[]
+		for name,u in candidates:
+			try:
+				req=urllib.request.Request(u)
+				req.add_header("User-Agent",self.header["User-Agent"])
+				req.add_header("Referer","https://tv.cctv.com/")
+				with urllib.request.urlopen(req,timeout=10) as r:
+					body=r.read(512).decode('utf-8','ignore')
+				if "#EXTM3U" in body:
+					ok.append("{0}${1}".format(name,u))
+			except:
+				pass
+		if ok:
+			return "#".join(ok)
+		# 全失败则兜底返回原始 hls_url（保证能播）
+		return link
 	def get_list_search(self,html,tid):
-		jRoot = json.loads(html)
-		jsonList=jRoot['list']
-		videos=[]
-		for vod in jsonList:
-			url = vod['urllink']
-			title =self.removeHtml(txt=vod['title'])
-			img=vod['imglink']
-			id=vod['id']
-			brief=vod['channel']
-			year=vod['uploadtime']
-			if len(url) == 0:
-				continue
-			guid="{0}###{1}###{2}###{3}###{4}###{5}###{6}###{7}".format(tid,title,url,img,id,year,'',brief)
-			videos.append({
-				"vod_id":guid,
-				"vod_name":title,
-				"vod_pic":img,
-				"vod_remarks":year
-			})
+		jRoot=json.loads(html); videos=[]
+		for vod in jRoot.get('list',[]):
+			url=vod.get('urllink',''); title=self.removeHtml(txt=vod.get('title',''))
+			img=vod.get('imglink',''); vid=vod.get('id',''); brief=vod.get('channel','')
+			year=vod.get('uploadtime','')
+			if len(url)==0: continue
+			guid="###".join([tid,title,url,img,vid,year,'',brief])
+			videos.append({"vod_id":guid,"vod_name":title,"vod_pic":img,"vod_remarks":year})
 		return videos
 	def get_list1(self,html,tid):
-		jRoot = json.loads(html)
-		videos = []
-		data=jRoot['response']
-		if data is None:
-			return []
-		jsonList=data['docs']
-		for vod in jsonList:
-			id = vod['lastVIDE']['videoSharedCode']
-			title =vod['column_name']
-			url=vod['column_website']
-			img=vod['column_logo']
-			year=vod['column_playdate']
-			brief=vod['column_brief']
-			actors=''
-			if len(url) == 0:
-				continue
-			guid="{0}###{1}###{2}###{3}###{4}###{5}###{6}###{7}".format(tid,title,url,img,id,year,actors,brief)
-			videos.append({
-				"vod_id":guid,
-				"vod_name":title,
-				"vod_pic":img,
-				"vod_remarks":''
-			})
+		jRoot=json.loads(html); videos=[]
+		data=jRoot.get('response')
+		if not data: return []
+		for vod in data.get('docs',[]):
+			id=vod['lastVIDE']['videoSharedCode']; title=vod['column_name']
+			url=vod['column_website']; img=vod['column_logo']
+			year=vod['column_playdate']; brief=vod['column_brief']
+			if len(url)==0: continue
+			guid="###".join([tid,title,url,img,id,year,'',brief])
+			videos.append({"vod_id":guid,"vod_name":title,"vod_pic":img,"vod_remarks":''})
 		return videos
-	#分类取结果
 	def get_list(self,html,tid):
-		jRoot = json.loads(html)
-		videos = []
-		data=jRoot['data']
-		if data is None:
-			return []
-		jsonList=data['list']
-		for vod in jsonList:
-			url = vod['url']
-			title =vod['title']
-			img=vod['image']
-			id=vod['id']
-			try:
-				brief=vod['brief']
-			except:
-				brief=''
-			try:
-				year=vod['year']
-			except:
-				year=''
-			try:
-				actors=vod['actors']
-			except:
-				actors=''
-			if len(url) == 0:
-				continue
-			guid="{0}###{1}###{2}###{3}###{4}###{5}###{6}###{7}".format(tid,title,url,img,id,year,actors,brief)
-			videos.append({
-				"vod_id":guid,
-				"vod_name":title,
-				"vod_pic":img,
-				"vod_remarks":''
-			})
+		jRoot=json.loads(html); videos=[]
+		data=jRoot.get('data')
+		if not data: return []
+		for vod in data.get('list',[]):
+			url=vod.get('url',''); title=vod.get('title',''); img=vod.get('image','')
+			vid=vod.get('id',''); brief=vod.get('brief',''); year=vod.get('year',''); actors=vod.get('actors','')
+			if len(url)==0: continue
+			guid="###".join([tid,title,url,img,vid,str(year),str(actors),str(brief)])
+			videos.append({"vod_id":guid,"vod_name":title,"vod_pic":img,"vod_remarks":''})
 		return videos
