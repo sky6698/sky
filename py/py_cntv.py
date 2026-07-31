@@ -352,14 +352,33 @@ class Spider(Spider):
         txt = soup.sub('', txt)
         return txt.replace("&nbsp;", " ").strip()
 
+    # ========== 重点修改这里：自动获取720P(1200码率) ==========
     def get_m3u8(self, urlTxt):
         try:
-            url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
-            html = self.webReadFile(urlStr=url, header=self.header)
+            apiUrl = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
+            html = self.webReadFile(urlStr=apiUrl, header=self.header)
             jo = json.loads(html)
-            link = jo['hls_url'].strip()
-            # 优先返回原始hls链接，部分环境拼接1200清晰度会404
-            return link
+            mainM3u8 = jo['hls_url'].strip()
+
+            # 下载主m3u8清单
+            m3u8Content = self.webReadFile(mainM3u8, self.header)
+            if not m3u8Content:
+                return mainM3u8
+
+            # 优先匹配 1200 = 720P
+            match = re.search(r'(\S+1200\.m3u8)', m3u8Content)
+            if match:
+                targetUrl = match.group(1)
+                # 相对路径补全域名
+                if not targetUrl.startswith("http"):
+                    baseUrl = mainM3u8.rsplit("/", 1)[0]
+                    targetUrl = f"{baseUrl}/{targetUrl}"
+                return targetUrl
+            else:
+                # 没有720P资源，返回原始链接自动降级
+                print("当前视频无720P，使用默认清晰度")
+                return mainM3u8
+
         except Exception as e:
             print("get_m3u8 failed:", str(e))
             return ""
