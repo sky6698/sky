@@ -265,14 +265,14 @@ class Spider(Spider):  # 元类 默认的元类 type
 		{"key":"dataszm-letter","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"C","v":"C"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"},{"n":"0-9","v":"0-9"}]}
 		],
 		"纪录片":[
-		{"key":"datapd-channel","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV{1 综合","v":"CCTV{1 综合"},{"n":"CCTV{2 财经","v":"CCTV{2 财经"},{"n":"CCTV{3 综艺","v":"CCTV{3 综艺"},{"n":"CCTV{4 中文国际","v":"CCTV{4 中文国际"},{"n":"CCTV{5 体育","v":"CCTV{5 体育"},{"n":"CCTV{6 电影","v":"CCTV{6 电影"},{"n":"CCTV{7 国防军事","v":"CCTV{7 国防军事"},{"n":"CCTV{8 电视剧","v":"CCTV{8 电视剧"},{"n":"CCTV{9 纪录","v":"CCTV{9 纪录"},{"n":"CCTV{10 科教","v":"CCTV{10 科教"},{"n":"CCTV{11 戏曲","v":"CCTV{11 戏曲"},{"n":"CCTV{12 社会与法","v":"CCTV{12 社会与法"},{"n":"CCTV{13 新闻","v":"CCTV{13 新闻"},{"n":"CCTV{14 少儿","v":"CCTV{14 少儿"},{"n":"CCTV{15 音乐","v":"CCTV{15 音乐"},{"n":"CCTV{17 农业农村","v":"CCTV{17 农业农村"}]},
+		{"key":"datapd-channel","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"CCTV-1 综合"},{"n":"CCTV-2财经","v":"CCTV-2 财经"},{"n":"CCTV-3综艺","v":"CCTV-3 综艺"},{"n":"CCTV-4中文国际","v":"CCTV-4 中文国际"},{"n":"CCTV-5体育","v":"CCTV-5 体育"},{"n":"CCTV-6电影","v":"CCTV-6 电影"},{"n":"CCTV-7国防军事","v":"CCTV-7 国防军事"},{"n":"CCTV-8电视剧","v":"CCTV-8 电视剧"},{"n":"CCTV-9纪录","v":"CCTV-9 纪录"},{"n":"CCTV-10科教","v":"CCTV-10 科教"},{"n":"CCTV-11戏曲","v":"CCTV-11 戏曲"},{"n":"CCTV-12社会与法","v":"CCTV-12 社会与法"},{"n":"CCTV-13新闻","v":"CCTV-13 新闻"},{"n":"CCTV-14少儿","v":"CCTV-14 少儿"},{"n":"CCTV-15音乐","v":"CCTV-15 音乐"},{"n":"CCTV-17农业农村","v":"CCTV-17 农业农村"}]},
 		{"key":"datafl-sc","name":"类型","value":[{"n":"全部","v":""},{"n":"人文历史","v":"人文历史"},{"n":"人物","v":"人物"},{"n":"军事","v":"军事"},{"n":"探索","v":"探索"},{"n":"社会","v":"社会"},{"n":"时政","v":"时政"},{"n":"经济","v":"经济"},{"n":"科技","v":"科技"}]},
 		{"key":"datanf-year","name":"年份","value":[{"n":"全部","v":""},{"n":"2023","v":"2023"},{"n":"2022","v":"2022"},{"n":"2021","v":"2021"},{"n":"2020","v":"2020"},{"n":"2019","v":"2019"},{"n":"2018","v":"2018"},{"n":"2017","v":"2017"},{"n":"2016","v":"2016"},{"n":"2015","v":"2015"},{"n":"2014","v":"2014"},{"n":"2013","v":"2013"},{"n":"2012","v":"2012"},{"n":"2011","v":"2011"},{"n":"2010","v":"2010"},{"n":"2009","v":"2009"},{"n":"2008","v":"2008"}]},
 		{"key":"dataszm-letter","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"C","v":"C"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"},{"n":"0-9","v":"0-9"}]}
 		],
 		"特别节目":[
-		{"key":"datapd-channel","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV{1 综合","v":"CCTV{1 综合"},{"n":"CCTV{2 财经","v":"CCTV{2 财经"},{"n":"CCTV{3 综艺","v":"CCTV{3 综艺"},{"n":"CCTV{4 中文国际","v":"CCTV{4 中文国际"},{"n":"CCTV{5 体育","v":"CCTV{5 体育"},{"n":"CCTV{6 电影","v":"CCTV{6 电影"},{"n":"CCTV{7 国防军事","v":"CCTV{7 国防军事"},{"n":"CCTV{8 电视剧","v":"CCTV{8 电视剧"},{"n":"CCTV{9 纪录","v":"CCTV{9 纪录"},{"n":"CCTV{10 科教","v":"CCTV{10 科教"},{"n":"CCTV{11 戏曲","v":"CCTV{11 戏曲"},{"n":"CCTV{12 社会与法","v":"CCTV{12 社会与法"},{"n":"CCTV{13 新闻","v":"CCTV{13 新闻"},{"n":"CCTV{14 少儿","v":"CCTV{14 少儿"},{"n":"CCTV{15 音乐","v":"CCTV{15 音乐"},{"n":"CCTV{17 农业农村","v":"CCTV{17 农业农村"}]},
-		{"key":"datafl-sc","name":"类型","value":[{"n":"全部","v":""},{"n":"全部","v":"全部"},{"n":"新闻","v":"新闻"},{"n":"经济","v":"经济"},{"n":"综艺","v":"综艺"},{"n":"体育","v":"体育"},{"n":"军事","v":"军事"},{"n":"影视","v":"影视"},{"n":"科教","v":"科教"},{"n":"戏曲","v":"戏曲"},{"n":"青少","v":"青少"},{"n":"音乐","v":"音乐"},{"n":"社会","v":"社会"},{"n":"公益","v":"公益"},{"n":"其他","v":"其他"}]},
+		{"key":"datapd-channel","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"CCTV-1 综合"},{"n":"CCTV-2财经","v":"CCTV-2 财经"},{"n":"CCTV-3综艺","v":"CCTV-3 综艺"},{"n":"CCTV-4中文国际","v":"CCTV-4 中文国际"},{"n":"CCTV-5体育","v":"CCTV-5 体育"},{"n":"CCTV-6电影","v":"CCTV-6 电影"},{"n":"CCTV-7国防军事","v":"CCTV-7 国防军事"},{"n":"CCTV-8电视剧","v":"CCTV-8 电视剧"},{"n":"CCTV-9纪录","v":"CCTV-9 纪录"},{"n":"CCTV-10科教","v":"CCTV-10 科教"},{"n":"CCTV-11戏曲","v":"CCTV-11 戏曲"},{"n":"CCTV-12社会与法","v":"CCTV-12 社会与法"},{"n":"CCTV-13新闻","v":"CCTV-13 新闻"},{"n":"CCTV-14少儿","v":"CCTV-14 少儿"},{"n":"CCTV-15音乐","v":"CCTV-15 音乐"},{"n":"CCTV-17农业农村","v":"CCTV-17 农业农村"}]},
+		{"key":"datafl-sc","name":"类型","value":[{"n":"全部","v":""},{"n":"新闻","v":"新闻"},{"n":"经济","v":"经济"},{"n":"综艺","v":"综艺"},{"n":"体育","v":"体育"},{"n":"军事","v":"军事"},{"n":"影视","v":"影视"},{"n":"科教","v":"科教"},{"n":"戏曲","v":"戏曲"},{"n":"青少","v":"青少"},{"n":"音乐","v":"音乐"},{"n":"社会","v":"社会"},{"n":"公益","v":"公益"},{"n":"其他","v":"其他"}]},
 		{"key":"dataszm-letter","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"C","v":"C"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"},{"n":"0-9","v":"0-9"}]}
 		],
 		"节目大全":[{"key":"cid","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"EPGC1386744804340101"},{"n":"CCTV-2财经","v":"EPGC1386744804340102"},{"n":"CCTV-3综艺","v":"EPGC1386744804340103"},{"n":"CCTV-4中文国际","v":"EPGC1386744804340104"},{"n":"CCTV-5体育","v":"EPGC1386744804340107"},{"n":"CCTV-6电影","v":"EPGC1386744804340108"},{"n":"CCTV-7国防军事","v":"EPGC1386744804340109"},{"n":"CCTV-8电视剧","v":"EPGC1386744804340110"},{"n":"CCTV-9纪录","v":"EPGC1386744804340112"},{"n":"CCTV-10科教","v":"EPGC1386744804340113"},{"n":"CCTV-11戏曲","v":"EPGC1386744804340114"},{"n":"CCTV-12社会与法","v":"EPGC1386744804340115"},{"n":"CCTV-13新闻","v":"EPGC1386744804340116"},{"n":"CCTV-14少儿","v":"EPGC1386744804340117"},{"n":"CCTV-15音乐","v":"EPGC1386744804340118"},{"n":"CCTV-16奥林匹克","v":"EPGC1634630207058998"},{"n":"CCTV-17农业农村","v":"EPGC1563932742616872"},{"n":"CCTV-5+体育赛事","v":"EPGC1468294755566101"}]},{"key":"fc","name":"分类","value":[{"n":"全部","v":""},{"n":"新闻","v":"新闻"},{"n":"体育","v":"体育"},{"n":"综艺","v":"综艺"},{"n":"健康","v":"健康"},{"n":"生活","v":"生活"},{"n":"科教","v":"科教"},{"n":"经济","v":"经济"},{"n":"农业","v":"农业"},{"n":"法治","v":"法治"},{"n":"军事","v":"军事"},{"n":"少儿","v":"少儿"},{"n":"动画","v":"动画"},{"n":"纪实","v":"纪实"},{"n":"戏曲","v":"戏曲"},{"n":"音乐","v":"音乐"},{"n":"影视","v":"影视"}]},{"key":"fl","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"B","v":"B"},{"n":"C","v":"C"},{"n":"D","v":"D"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"}]},{"key":"year","name":"年份","value":[{"n":"全部","v":""},{"n":"2023","v":"2023"},{"n":"2022","v":"2022"},{"n":"2021","v":"2021"},{"n":"2020","v":"2020"},{"n":"2019","v":"2019"},{"n":"2018","v":"2018"},{"n":"2017","v":"2017"},{"n":"2016","v":"2016"},{"n":"2015","v":"2015"},{"n":"2014","v":"2014"},{"n":"2013","v":"2013"},{"n":"2012","v":"2012"},{"n":"2011","v":"2011"},{"n":"2010","v":"2010"},{"n":"2009","v":"2009"},{"n":"2008","v":"2008"},{"n":"2007","v":"2007"},{"n":"2006","v":"2006"},{"n":"2005","v":"2005"},{"n":"2004","v":"2004"},{"n":"2003","v":"2003"},{"n":"2002","v":"2002"},{"n":"2001","v":"2001"},{"n":"2000","v":"2000"}]},{"key":"month","name":"月份","value":[{"n":"全部","v":""},{"n":"12","v":"12"},{"n":"11","v":"11"},{"n":"10","v":"10"},{"n":"09","v":"09"},{"n":"08","v":"08"},{"n":"07","v":"07"},{"n":"06","v":"06"},{"n":"05","v":"05"},{"n":"04","v":"04"},{"n":"03","v":"03"},{"n":"02","v":"02"},{"n":"01","v":"01"}]}]
@@ -355,31 +355,69 @@ class Spider(Spider):  # 元类 默认的元类 type
 		soup = re.compile(r'<[^>]+>',re.S)
 		txt =soup.sub('', txt)
 		return txt.replace("&nbsp;"," ")
-	#取m3u8 ★改为自动选取最高清晰度（不再锁定1200，不再用HEAD探测）
+	#取m3u8 ★多清晰度可切换：超清#高清#标清#流畅
 	def get_m3u8(self,urlTxt):
-		url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
-		html=self.webReadFile(urlStr=url,header=self.header)
-		jo =json.loads(html)
-		link = jo['hls_url'].strip()
-		html = self.webReadFile(urlStr=link,header=self.header)
-		content = html.strip()
-		arr = content.split('\n')
-		urlPrefix = self.get_RegexGetText(Text=link,RegexText='(http[s]?://[a-zA-z0-9.]+)/',Index=1)
-		# 收集主播放列表中所有清晰度，按数值从大到小取最高
-		rates = []
-		for line in arr:
-			line = line.strip()
-			if line.endswith('.m3u8'):
-				m = re.search(r'/(\d+)\.m3u8', line)
-				if m:
-					rates.append((int(m.group(1)), line))
-		if not rates:
-			return ''
-		rates.sort(reverse=True)
-		best = rates[0][1]
-		if best.startswith('http'):
-			return best
-		return urlPrefix.rstrip('/') + best
+		api = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
+		try:
+			html = self.webReadFile(urlStr=api,header=self.header)
+			jo = json.loads(html)
+		except:
+			return ""
+		# 先拿 hls_url 作为兜底
+		link = jo.get('hls_url','').strip()
+		# 解析所有可用清晰度
+		rate_map = {
+			'2000': '超清',
+			'1200': '高清',
+			'850':  '标清',
+			'450':  '流畅'
+		}
+		candidates = []
+		# 方式1：从 hls_url 主列表里提取各档位
+		if link:
+			try:
+				m3u8_text = self.webReadFile(urlStr=link,header=self.header)
+				urlPrefix = self.get_RegexGetText(Text=link,RegexText=r'(http[s]?://[^/]+)/',Index=1)
+				for line in m3u8_text.strip().split('\n'):
+					line = line.strip()
+					if not line.endswith('.m3u8'):
+						continue
+					m = re.search(r'/(\d+)\.m3u8', line)
+					if not m:
+						continue
+					rate = m.group(1)
+					name = rate_map.get(rate, rate)
+					full = line if line.startswith('http') else urlPrefix.rstrip('/') + line
+					candidates.append((int(rate), name, full))
+			except:
+				pass
+		# 方式2：从 chapters 里补充
+		try:
+			for ch in jo.get('video',{}).get('chapters',[]):
+				u = ch.get('url','')
+				if not u or not u.endswith('.m3u8'):
+					continue
+				m = re.search(r'/(\d+)\.m3u8', u)
+				if not m:
+					continue
+				rate = m.group(1)
+				name = rate_map.get(rate, rate)
+				candidates.append((int(rate), name, u))
+		except:
+			pass
+		# 去重，按码率从高到低排序
+		seen = set()
+		unique = []
+		for rate, name, u in sorted(candidates, key=lambda x:-x[0]):
+			if u in seen:
+				continue
+			seen.add(u)
+			unique.append((rate, name, u))
+		if not unique:
+			# 最终兜底：返回原始 hls_url
+			return link
+		# 拼成 超清$url#高清$url#标清$url#流畅$url
+		return "#".join(["{0}${1}".format(name,u) for _,name,u in unique])
 	#搜索
 	def get_list_search(self,html,tid):
 		jRoot = json.loads(html)
@@ -402,7 +440,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				"vod_remarks":year
 			})
 		return videos
-		return videos
 	def get_list1(self,html,tid):
 		jRoot = json.loads(html)
 		videos = []
@@ -421,14 +458,12 @@ class Spider(Spider):  # 元类 默认的元类 type
 			if len(url) == 0:
 				continue
 			guid="{0}###{1}###{2}###{3}###{4}###{5}###{6}###{7}".format(tid,title,url,img,id,year,actors,brief)
-			#print(vod_id)
 			videos.append({
 				"vod_id":guid,
 				"vod_name":title,
 				"vod_pic":img,
 				"vod_remarks":''
 			})
-		#print(videos)
 		return videos
 	#分类取结果
 	def get_list(self,html,tid):
@@ -458,7 +493,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 			if len(url) == 0:
 				continue
 			guid="{0}###{1}###{2}###{3}###{4}###{5}###{6}###{7}".format(tid,title,url,img,id,year,actors,brief)
-			#print(vod_id)
 			videos.append({
 				"vod_id":guid,
 				"vod_name":title,
