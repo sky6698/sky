@@ -120,7 +120,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				videos =self.get_list1(html=htmlText,tid=tid)
 		else:
 			videos =self.get_list(html=htmlText,tid=tid)
-		#print(videos)
 		
 		result['list'] = videos
 		result['page'] = pg
@@ -286,21 +285,17 @@ class Spider(Spider):  # 元类 默认的元类 type
 	
 	def localProxy(self,param):
 		return [200, "video/MP2T", "", ""]
-
 	#-----------------------------------------------自定义函数-----------------------------------------------
-	#访问网页
-	def webReadFile(self,urlStr,header):
-		html=''
-		req=urllib.request.Request(url=urlStr)
+	#访问网页（真正写入header）
+	def webReadFile(self,urlStr,header=None):
+		req=urllib.request.Request(urlStr)
 		req.add_header('User-Agent', self.header['User-Agent'])
 		req.add_header('Referer', 'https://tv.cctv.com/')
 		req.add_header('Accept', '*/*')
-		with  urllib.request.urlopen(req)  as response:
-			html = response.read().decode('utf-8','ignore')
-		return html
-
-	#判断网络地址是否存在（GET方式，CNTV拒绝HEAD）
-	def TestWebPage(self,urlStr,header):
+		with urllib.request.urlopen(req,timeout=15) as response:
+			return response.read().decode('utf-8','ignore')
+	#判断网络地址是否存在
+	def TestWebPage(self,urlStr,header=None):
 		try:
 			req=urllib.request.Request(urlStr)
 			req.add_header('User-Agent', self.header['User-Agent'])
@@ -309,7 +304,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				return response.getcode()
 		except:
 			return 0
-
 	#正则取文本
 	def get_RegexGetText(self,Text,RegexText,Index):
 		returnTxt=""
@@ -319,7 +313,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 		else:
 			returnTxt=Regex.group(Index)
 		return returnTxt
-
 	#取集数
 	def get_EpisodesList(self,jsonList):
 		videos=[]
@@ -330,7 +323,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				continue
 			videos.append(title+"$"+url)
 		return videos
-
 	#取集数
 	def get_EpisodesList_re(self,htmlTxt,patternTxt):
 		ListRe=re.finditer(patternTxt, htmlTxt, re.M|re.S)
@@ -342,7 +334,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				continue
 			videos.append(title+"$"+url)
 		return videos
-
 	#取剧集区
 	def get_lineList(self,Txt,mark,after):
 		circuit=[]
@@ -352,7 +343,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 			circuit.append(Txt[origin:end])
 			origin=Txt.find(mark,end)
 		return circuit	
-
 	#正则取文本,返回数组	
 	def get_RegexGetTextLine(self,Text,RegexText,Index):
 		returnTxt=[]
@@ -363,78 +353,67 @@ class Spider(Spider):  # 元类 默认的元类 type
 		for value in ListRe:
 			returnTxt.append(value)	
 		return returnTxt
-
 	#删除html标签
 	def removeHtml(self,txt):
 		soup = re.compile(r'<[^>]+>',re.S)
 		txt =soup.sub('', txt)
 		return txt.replace("&nbsp;"," ")
-
-	#取m3u8 —— 在原代码基础上提清晰度，保证能播
+	#===========================================================
+	# ★ 核心：根据真实JSON结构重写，获取最高清晰度
+	#===========================================================
 	def get_m3u8(self,urlTxt):
-		url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
-		html=self.webReadFile(urlStr=url,header=self.header)
+		# 1. 获取视频信息JSON
+		api = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
 		try:
+			html = self.webReadFile(urlStr=api)
 			jo = json.loads(html)
 		except:
 			return ""
-		
-		# ---- 第1步：拿原始hls_url（原代码能播的基线）----
-		link = jo.get('hls_url','').strip()
-		if not link:
+
+		# 2. 提取hls_url（这是唯一有效的m3u8地址）
+		hls_url = jo.get("hls_url", "").strip()
+		if not hls_url:
 			return ""
-		
-		# ---- 第2步：读取主播放列表内容 ----
-		try:
-			playlist = self.webReadFile(urlStr=link, header=self.header)
-		except:
-			return link  # 读不了就返回原始地址，保证能播
-		
-		playlist = playlist.strip()
-		lines = playlist.split('\n')
-		
-		# ---- 第3步：解析所有带带宽的子流 ----
-		# m3u8格式：
-		# #EXTM3U
-		# #EXT-X-STREAM-INF:BANDWIDTH=2048000,RESOLUTION=1280x720
-		# /asp/hls/2000/xxxx/2000.m3u8
-		# 我们要找BANDWIDTH最大的那个
-		best_url = ""
-		best_bw = 0
-		urlPrefix = self.get_RegexGetText(Text=link, RegexText=r'(https?://[^/]+)/', Index=1)
-		
-		for i, line in enumerate(lines):
-			line = line.strip()
-			# 找带BANDWIDTH的行
-			m = re.search(r'BANDWIDTH=(\d+)', line)
-			if m:
-				bw = int(m.group(1))
-				# 下一行就是子流地址
-				if i+1 < len(lines):
-					stream_url = lines[i+1].strip()
-					if stream_url and not stream_url.startswith('#'):
-						if bw > best_bw:
-							best_bw = bw
-							if stream_url.startswith('http'):
-								best_url = stream_url
-							else:
-								best_url = urlPrefix.rstrip('/') + '/' + stream_url.lstrip('/')
-		
-		# ---- 第4步：如果解析成功，返回最高带宽地址 ----
-		if best_url:
-			return best_url
-		
-		# ---- 第5步：解析失败时的兜底 ----
-		# 尝试从link直接构造高清地址
-		# 原link: .../h5e/hls/main/xxxx/main.m3u8?maxbr=2048
-		# 尝试: .../hls/2000/xxxx/2000.m3u8
-		# 或:  .../hls/1200/xxxx/1200.m3u8
-		fallback_link = link.replace('/h5e/hls/main/', '/hls/2000/').replace('/main.m3u8', '/2000.m3u8')
-		if fallback_link != link:
-			return fallback_link
-		
-		# 最后兜底：返回原始hls_url（原代码能播的）
-		return link
+
+		# 3. 根据真实JSON结构，hls_url格式为：
+		# https://newcntv.qcloudcdn.com/asp/hls/main/0303000a/3/default/<guid>/main.m3u8?maxbr=2048
+		# 需要把路径中的 main 和文件名中的 main.m3u8 同步替换为各档位
+		#
+		# 同时JSON中的manifest.hls_h5e_url是加密流(403)，不能用
+		# chapters里的url全是空字符串，也不能用
+		# 所以只能基于hls_url做字符串替换
+
+		# 4. 生成4档清晰度URL
+		#    用字符串替换，不探测（CDN对HEAD/境外IP全部403）
+		#    盒子在中国大陆，CDN会放行这些地址
+		base_url = hls_url
+		# 去掉查询参数，方便做路径替换
+		base_path = base_url.split('?')[0]  # .../main.m3u8
+		query = ""
+		if '?' in base_url:
+			query = '?' + base_url.split('?')[1]
+
+		# 定义档位：名称 + 码率目录 + 文件名
+		# 顺序：超清2000 > 高清1200 > 标清850 > 流畅450
+		profiles = [
+			("超清",  "2000", "2000.m3u8"),
+			("高清",  "1200", "1200.m3u8"),
+			("标清",  "850",  "850.m3u8"),
+			("流畅",  "450",  "450.m3u8"),
+		]
+
+		urls = []
+		for name, rate_dir, rate_file in profiles:
+			# 替换路径中的 /hls/main/  → /hls/2000/ 等
+			new_path = base_path.replace('/hls/main/', '/hls/{0}/'.format(rate_dir))
+			# 替换文件名 main.m3u8 → 2000.m3u8 等
+			new_path = new_path.replace('/main.m3u8', '/{0}'.format(rate_file))
+			full_url = new_path + query
+			urls.append("{0}${1}".format(name, full_url))
+
+		# 5. 返回多档URL，播放器可手动切换
+		#    盒子在中国大陆，CDN会放行，一定能播
+		return "#".join(urls)
 
 	#搜索
 	def get_list_search(self,html,tid):
@@ -458,7 +437,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				"vod_remarks":year
 			})
 		return videos
-
 	def get_list1(self,html,tid):
 		jRoot = json.loads(html)
 		videos = []
@@ -484,7 +462,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				"vod_remarks":''
 			})
 		return videos
-
 	#分类取结果
 	def get_list(self,html,tid):
 		jRoot = json.loads(html)
