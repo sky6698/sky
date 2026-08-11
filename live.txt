@@ -948,6 +948,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 洪金宝,https://live.metshop.top/huya/11279251
 梁家辉,https://live.metshop.top/huya/11342429
 许冠英,https://live.metshop.top/huya/11601972
+宫崎骏,https://live.metshop.top/huya/21059614
 星爷-电影解读,https://live.metshop.top/huya/21136378
 电影_强森,https://live.metshop.top/huya/21059581
 电影_斯坦森,https://live.metshop.top/huya/21059588
@@ -1068,6 +1069,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 洪金宝,https://iptv.catvod.com/huya/11279251
 梁家辉,https://iptv.catvod.com/huya/11342429
 许冠英,https://iptv.catvod.com/huya/11601972
+宫崎骏,https://iptv.catvod.com/huya/21059614
 星爷-电影解读,https://iptv.catvod.com/huya/21136378
 电影_强森,https://iptv.catvod.com/huya/21059581
 电影_斯坦森,https://iptv.catvod.com/huya/21059588
@@ -1185,6 +1187,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 洪金宝,https://live.ottiptv.cc/huya/11279251
 梁家辉,https://live.ottiptv.cc/huya/11342429
 许冠英,https://live.ottiptv.cc/huya/11601972
+宫崎骏,https://live.ottiptv.cc/huya/21059614
 星爷-电影解读,https://live.ottiptv.cc/huya/21136378
 电影_强森,https://live.ottiptv.cc/huya/21059581
 电影_斯坦森,https://live.ottiptv.cc/huya/21059588
