@@ -210,6 +210,7 @@ CCTV8k,https://live.ottiptv.cc/mcp/cctv8k.m3u8?userid=8435283477&sign=b5e424f094
 洪金宝,https://live.metshop.top/huya/11279251
 梁家辉,https://live.metshop.top/huya/11342429
 许冠英,https://live.metshop.top/huya/11601972
+宫崎骏,https://live.metshop.top/huya/21059614
 星爷-电影解读,https://live.metshop.top/huya/21136378
 电影_强森,https://live.metshop.top/huya/21059581
 电影_斯坦森,https://live.metshop.top/huya/21059588
