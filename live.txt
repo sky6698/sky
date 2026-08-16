@@ -1024,11 +1024,12 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 剧集-庆余年,https://live.metshop.top/huya/11352960
 剧集-芈月传,https://live.metshop.top/huya/11352975
 剧集-还珠格格,https://live.metshop.top/huya/30080241
+剧集-封神榜yy,https://live.metshop.top/yy/1353426319
 剧集-封神榜,https://live.metshop.top/huya/20432237
 剧集-包青天,https://live.metshop.top/huya/20985820
-剧集-新白娘子传奇,https://live.metshop.top/huya/26355768
+剧集-新白娘子传奇,https://live.metshop.top/yy/1354490667
 剧集-白蛇传,https://live.metshop.top/huya/21241798
-剧集-亮剑,https://live.metshop.top/huya/30080238
+剧集-亮剑,https://live.metshop.top/yy/1356043643
 剧集-士兵突击,https://live.metshop.top/huya/11342430
 剧集-征服,https://live.metshop.top/huya/30311494
 剧集-乡村爱情系列,https://live.metshop.top/huya/30080255
@@ -1040,6 +1041,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 剧集-康熙微服私访,https://live.metshop.top/huya/11342418
 剧集-铁齿铜牙纪晓岚,https://live.metshop.top/huya/11342396
 剧集-鹿鼎记-陈小春版,https://live.metshop.top/huya/11342412
+剧集-神雕侠侣-古天乐版,https://live.metshop.top/yy/1356043643
 剧集-神貂侠侣-陈晓版,https://live.metshop.top/huya/11352964
 剧集-天龙八部03版,https://live.metshop.top/huya/20985816
 剧集-倚天屠龙记,https://live.metshop.top/huya/11342403
@@ -1048,6 +1050,7 @@ SiTV游戏风云,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226910
 剧集-地下交通站,https://live.metshop.top/huya/11342433
 剧集-家有儿女,https://live.metshop.top/huya/11352872
 剧集-神医喜来乐,https://live.metshop.top/huya/11601978
+剧集-济公,https://live.metshop.top/yy/1355265814
 小品,https://live.metshop.top/huya/11352938
 小品-重温经典,https://live.metshop.top/huya/29982631
 小品-开心麻花,https://live.metshop.top/huya/30080154
