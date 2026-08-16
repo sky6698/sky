@@ -423,8 +423,12 @@ CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226958/1.m3u8?fm
 剧集-庆余年,https://live.metshop.top/huya/11352960
 剧集-芈月传,https://live.metshop.top/huya/11352975
 剧集-还珠格格,https://live.metshop.top/huya/30080241
-剧集-新白娘子传奇,https://live.metshop.top/huya/26355768
-剧集-亮剑,https://live.metshop.top/huya/30080238
+剧集-封神榜yy,https://live.metshop.top/yy/1353426319
+剧集-封神榜,https://live.metshop.top/huya/20432237
+剧集-包青天,https://live.metshop.top/huya/20985820
+剧集-新白娘子传奇,https://live.metshop.top/yy/1354490667
+剧集-白蛇传,https://live.metshop.top/huya/21241798
+剧集-亮剑,https://live.metshop.top/yy/1356043643
 剧集-士兵突击,https://live.metshop.top/huya/11342430
 剧集-征服,https://live.metshop.top/huya/30311494
 剧集-乡村爱情系列,https://live.metshop.top/huya/30080255
@@ -435,6 +439,8 @@ CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226958/1.m3u8?fm
 剧集-铁齿铜牙纪晓岚[8],https://live.metshop.top/huya/11342396
 剧集-康熙微服私访,https://live.metshop.top/huya/11342418
 剧集-铁齿铜牙纪晓岚,https://live.metshop.top/huya/11342396
+剧集-鹿鼎记-陈小春版,https://live.metshop.top/huya/11342412
+剧集-神雕侠侣-古天乐版,https://live.metshop.top/yy/1356043643
 剧集-神貂侠侣-陈晓版,https://live.metshop.top/huya/11352964
 剧集-天龙八部03版,https://live.metshop.top/huya/20985816
 剧集-倚天屠龙记,https://live.metshop.top/huya/11342403
@@ -443,16 +449,13 @@ CCTV14,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226958/1.m3u8?fm
 剧集-地下交通站,https://live.metshop.top/huya/11342433
 剧集-家有儿女,https://live.metshop.top/huya/11352872
 剧集-神医喜来乐,https://live.metshop.top/huya/11601978
+剧集-济公,https://live.metshop.top/yy/1355265814
 小品,https://live.metshop.top/huya/11352938
 小品-重温经典,https://live.metshop.top/huya/29982631
 小品-开心麻花,https://live.metshop.top/huya/30080154
 小品-宋小宝,https://live.metshop.top/huya/30080192
-搞笑_陈翔六点半,https://live.metshop.top/huya/11274154
-综艺-音乐石榴,https://live.metshop.top/huya/17091681
-综艺-脱口秀来了,https://live.metshop.top/huya/11352875
-综艺-德云斗笑社第一季,https://live.metshop.top/huya/30080153
-王牌对王牌系列,https://live.metshop.top/huya/11352905
-综艺-跑男1-4季,https://live.metshop.top/huya/29465875
+喜剧大赛,https://alicoccdncmnet-hd.inter.71edge.com/tslive/l1/c51_lb_728_300_t10/S2SosBg_68g057-zBj7nmfrgs91iP37_pf6vxKx85ogguLIU3CU8SW_Y7H-1PHvyi99Ii2JFYijxYOei6iZner8QzyvFSNdDHH4HKjClgQKWGTbBdcHKOCHdsU3b1N-BrKiw3S7j3SCX6dyCTs7rcy64zcIPximAOEVgehMq3yBKfCmtJcbxGNJTLBalpWxFnS9TqEPfTjxnpz6YXBKxsqktgAuvSZh0YMwgtqXXpGW4Acf6eDoCMetaXupxvOjeXiYwJ8PWE2EHCz8E5RUSVIkgzqdr0H_UCDMLBgDOxh9Fx5wQklSuDVjds1N736MIdknpyHFEh4FV_aYUv-nsSA/1dd9185f7c7a34c902ab9b23bf6e849c8/c51_lb_728_300_t10.m3u8?key=0baa5db205ac0d2962788b935d5dc8a5c&dis_t=1752408293&random=1&rand_hash=0&uuid=6f1d53dc-6873a0e5-454&qdpv=3&qd_bid=1&qd_sft=0&pv=0.1&cpt=0
+
 
 周星驰,https://iptv.catvod.com/huya/11342412
 林正英,https://iptv.catvod.com/huya/11342421
