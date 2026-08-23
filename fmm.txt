@@ -150,16 +150,6 @@ CCTV8k,https://goodiptv.club/mcp/cctv8k.m3u8?userid=8435283477&sign=b5e424f094d3
 郑州妇女儿童,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv5
 郑州文体旅游,video://http://p2.ytelc.com/169l/henan/zhengzhou.php?id=zztv6
 
-河南卫视,https://tv1288.xyz/hntv.php?id=hnws
-河南都市,https://tv1288.xyz/hntv.php?id=hnds
-河南民生,https://tv1288.xyz/hntv.php?id=hnms
-河南法治,https://tv1288.xyz/hntv.php?id=hmfz
-河南电视剧,https://tv1288.xyz/hntv.php?id=hndsj
-河南新闻,https://tv1288.xyz/hntv.php?id=hnxw
-河南公共,https://tv1288.xyz/hntv.php?id=hngg
-河南乡村,https://tv1288.xyz/hntv.php?id=hnxc
-
-
 河南4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226936/1.m3u8?fmt=ts2hls
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 河南都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226911/1.m3u8?fmt=ts2hls
