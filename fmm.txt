@@ -121,6 +121,15 @@ CCTV8k,https://goodiptv.club/mcp/cctv8k.m3u8?userid=8435283477&sign=b5e424f094d3
 国学频道,https://goodiptv.club/mcp/guoxue.m3u8?userid=8435283477&sign=300daec416d60f854abcf16ba7956884f087724f724f655614b32c54d19edabcac3a73e505741a741665b9fec4e569d18ed51e5e8e667ca5daecabb13f46a07eb5e087b7652b2463c1354f0bd3be&auth_token=ce8a9ab069df5cb8806ad0f5f5ff8f9a
 
 河南频道,#genre#
+河南卫视,https://tv1288.xyz/hntv.php?id=hnws
+河南都市,https://tv1288.xyz/hntv.php?id=hnds
+河南民生,https://tv1288.xyz/hntv.php?id=hnms
+河南法治,https://tv1288.xyz/hntv.php?id=hmfz
+河南电视剧,https://tv1288.xyz/hntv.php?id=hndsj
+河南新闻,https://tv1288.xyz/hntv.php?id=hnxw
+河南公共,https://tv1288.xyz/hntv.php?id=hngg
+河南乡村,https://tv1288.xyz/hntv.php?id=hnxc
+
 河南卫视,video://http://p2.ytelc.com/169l/henan/henan.php?id=henan
 河南都市,video://http://p2.ytelc.com/169l/henan/henan.php?id=hntv2
 河南民生,video://http://p2.ytelc.com/169l/henan/henan.php?id=hntv3
