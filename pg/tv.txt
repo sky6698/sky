@@ -17,8 +17,8 @@ CCTV14,http://127.0.0.1:35456/ysptx/cctv14.m3u8$低码
 CCTV15,http://127.0.0.1:35456/ysptx/cctv15.m3u8$低码
 CCTV16,http://127.0.0.1:35456/ysptx/cctv16.m3u8$低码
 CCTV17,http://127.0.0.1:35456/ysptx/cctv17.m3u8$低码
-CCTV4K-真低码,http://127.0.0.1:35456/ysptx/cctv4k.m3u8
-CCTV8K-真低码,http://127.0.0.1:35456/ysptx/cctv8k.m3u8
+CCTV4K,http://127.0.0.1:35456/ysptx/cctv4k.m3u8
+CCTV8K,http://127.0.0.1:35456/ysptx/cctv8k.m3u8
 CCTV第一剧场,http://127.0.0.1:35456/ysptx/cctv_dyjc.m3u8$低码
 CCTV风云剧场,http://127.0.0.1:35456/ysptx/cctv_fyjc.m3u8$低码
 CCTV怀旧剧场,http://127.0.0.1:35456/ysptx/cctv_hjjc.m3u8$低码
