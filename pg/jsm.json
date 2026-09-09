@@ -816,12 +816,6 @@
 				"logo": "http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png"
 			},
 			{
-				"name": "YTLive",
-				"type": 0,
-				
-				"url": "./lib/yo21.txt"
-			},
-			{
 				"group":"redirect",
 				"channels":[
 					{
