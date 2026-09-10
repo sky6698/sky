@@ -14,7 +14,7 @@
             "changeable": 1,
             "ext": {
                 "class": "FileSpider",
-                "ext": "/storage/emulated/0/lz/wj/直播/"
+                "ext": "./wj/"
             }
         },
         {
