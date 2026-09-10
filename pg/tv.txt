@@ -78,6 +78,23 @@ CCTV16-4K,http://127.0.0.1:35456/gaoma/cctv4k16.m3u8$高码
 CCTV8K,http://127.0.0.1:35456/gaoma/cctv8k_36m.m3u8$高码36m
 CCTV8K,http://127.0.0.1:35456/gaoma/cctv8k.m3u8$高码
 
+CCTV1,http://127.0.0.1:35457/ysptx/cctv1.m3u8?defn=sfhd$AV3A
+CCTV2,http://127.0.0.1:35457/ysptx/cctv2.m3u8?defn=sfhd$AV3A
+CCTV3,http://127.0.0.1:35457/ysptx/cctv3.m3u8?defn=sfhd$AV3A
+CCTV4,http://127.0.0.1:35457/ysptx/cctv4.m3u8?defn=sfhd$AV3A
+CCTV5,http://127.0.0.1:35457/ysptx/cctv5.m3u8?defn=sfhd$AV3A
+CCTV5+,http://127.0.0.1:35457/ysptx/cctv5p.m3u8?defn=sfhd$AV3A
+CCTV7,http://127.0.0.1:35457/ysptx/cctv7.m3u8?defn=sfhd$AV3A
+CCTV8,http://127.0.0.1:35457/ysptx/cctv8.m3u8?defn=sfhd$AV3A
+CCTV9,http://127.0.0.1:35457/ysptx/cctv9.m3u8?defn=sfhd$AV3A
+CCTV10,http://127.0.0.1:35457/ysptx/cctv10.m3u8?defn=sfhd$AV3A
+CCTV11,http://127.0.0.1:35457/ysptx/cctv11.m3u8?defn=sfhd$AV3A
+CCTV12,http://127.0.0.1:35457/ysptx/cctv12.m3u8?defn=sfhd$AV3A
+CCTV13,http://127.0.0.1:35457/ysptx/cctv13.m3u8?defn=sfhd$AV3A
+CCTV14,http://127.0.0.1:35457/ysptx/cctv14.m3u8?defn=sfhd$AV3A
+CCTV15,http://127.0.0.1:35457/ysptx/cctv15.m3u8?defn=sfhd$AV3A
+CCTV17,http://127.0.0.1:35457/ysptx/cctv17.m3u8?defn=sfhd$AV3A
+
 卫视频道,#genre#
 河南卫视,http://127.0.0.1:35456/ysptx/henan.m3u8$低码
 北京卫视,http://127.0.0.1:35456/ysptx/beijing.m3u8$低码
