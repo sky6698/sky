@@ -109,11 +109,6 @@
             "changeable": 1
         },
 
-
-
-
-
-
          {
             "key": "Jianpian",
             "name": "🧲┆荐片┆磁力",
@@ -1314,30 +1309,6 @@
             "changeable": 0,
             "indexs": 0,
             "timeout": 60
-        },
-        {
-            "key": "Fishdrive",
-            "name": "🐠┆鱼鱼┆媒体库",
-            "type": 3,
-            "api": "csp_FishDrive",
-            "indexs": 0,
-            "searchable": 1,
-            "filterable": 1,
-            "ext": "./ext/2.json"
-        },
-        {
-            "key": "Wallpaper",
-            "name": "🖼️┆鱼鱼┆壁纸库",
-            "type": 3,
-            "api": "csp_Wallpaper",
-            "searchable": 0,
-            "indexs": 0,
-            "quickSearch": 0,
-            "filterable": 0,
-            "style": {
-                "type": "rect",
-                "ratio": 0.56
-            }
         }
     ],
     "lives": [
