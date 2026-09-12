@@ -5,96 +5,116 @@
 "logo": "https://gitee.com/ghtxhe/sky/raw/master/jar/logo.gif",
 
 "sites":[
-    		//{"key": "szys","name": "🌈┃无名┃影视","type": 3,"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/山楂影视.py"},
-            {"key": "nmvm","name": "🌈┃无名┃影视","type": 3,"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/农民影视.py"},
+    		//{"key": "szys","name": "🌈┃无名┃影视","type": 3,"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/山楂影视.py"},
+            {"key": "nmvm","name": "🌈┃无名┃影视","type": 3,"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/农民影视.py"},
             { "key": "py_豆瓣", "name": "🌱┃豆瓣┃推荐", "type": 3,  "searchable": 1, "playerType": 2, "quickSearch": 1, "filterable": 1, "api":"https://gh.927223.xyz/https://raw.githubusercontent.com/sky6698/sky/main/py/豆瓣.py"},
 
-        { "key": "枫叶影院", "name": "🍁┃枫叶┃影院", "type": 3, "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/枫叶影院🍀TG @hshsjk9.py", "changeable": 0},        
-        //{ "key": "枫叶影院", "name": "🍁┃枫叶┃影院", "type": 3, "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/枫叶4K.py", "changeable": 0},
+
+        //{ "key": "枫叶影院", "name": "🍁┃枫叶┃影院", "type": 3, "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/枫叶影院🍀TG @hshsjk9.py", "changeable": 0},        
+        { "key": "枫叶影院", "name": "🍁┃枫叶┃影院", "type": 3, "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/枫叶4K.py", "changeable": 0},
+        {
+            "key": "云朵影视",
+            "name": "☁┃云朵┃影视",
+            "type": 3,
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/云朵影视.py"
+        },
+        {
+            "key": "橘汁视频",
+            "name": "🍊┃橘汁┃视频",
+            "type": 3,
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/橘汁视频.py"
+        },
+        {
+            "key": "华谊影视",
+            "name": "🐡┃华谊┃影视",
+            "type": 3,
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/华谊影视.py"
+        },
+
 		{
 			"key": "rb",
 			"name": "📔┃热播┃APP",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/热播APP.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/热播APP.py"
 		},
 		{
 			"key": "JP",
 			"name": "🥇┃金牌┃APP",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/金牌APP.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/金牌APP.py"
 		},
 		{
 			"key": "GZ",
 			"name": "🌰┃瓜子┃APP",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/瓜子APP.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/瓜子APP.py"
 		},
 		//{"key": "szys","name": "🍒┃山楂┃影视","type": 3,"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/sky6698/sky/main/py/山楂影视.py"},
                 {
             "key": "SZ",
             "name": "🍒┃山楂┃影视",
             "type": 3,
-            "api": "https://ghfast.top/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/山楂影视.py"
+            "api": "https://ghfast.top/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/山楂影视.py"
         },
 		{
 			"key": "hstv",
 			"name": "🐣┃华数┃TV",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/华数TV.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/华数TV.py"
 		},
 
 	{
 			"key": "袋鼠影视",
 			"name": "🦘┃袋鼠┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/袋鼠影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/袋鼠影视.py"
 		},
 		{
 			"key": "4K影视",
 			"name": "📺┃4K┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/4K影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/4K影视.py"
 		},
 		{
 			"key": "蝶卡影视",
 			"name": "🦋┃蝶卡┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/蝶卡影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/蝶卡影视.py"
 		},
 
         {
             "key": "多多影视",
             "name": "🧭┃多多┃影视",
             "type": 3,
-            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/多多影视🍀TG @hshsjk9.py"
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/多多影视🍀TG @hshsjk9.py"
         },
         
           {
             "key": "厂长影视",
             "name": "🏬┃厂长┃影视",
             "type": 3,
-            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/厂长影视.py"
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/厂长影视.py"
         },      
         
             {
             "key": "FreeOK",
             "name": "🚅┃Free┃影视",
             "type": 3,
-            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/FreeOK.py"
+            "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/FreeOK.py"
         },  
 
 		{
 			"key": "ddvm",
 			"name": "🍪┃嘀嗒┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/嘀嗒影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/嘀嗒影视.py"
 		},
 
 		{
 			"key": "豆花影视",
 			"name": "🌸┃豆花┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/豆花影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/豆花影视.py"
 		},
 
 		{
@@ -111,28 +131,28 @@
 			"key": "qlys",
 			"name": "✨┃麒麟┃影视",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/麒麟影视.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/麒麟影视.py"
 		},
 
 		{
 			"key": "hxq",
 			"name": "⭕┃韩小┃圈圈",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/韩小圈.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/韩小圈.py"
 		},
 
 		{
 			"key": "ww",
 			"name": "🌼┃哇哇┃APP",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/哇哇APP.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/哇哇APP.py"
 		},
 
 		{
                                                "key": "yl",
                                                "name": "🌷┃永乐┃视频",
                                                "type": 3,
-                                               "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/永乐视频.py"
+                                               "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/永乐视频.py"
                                  },
 
 
@@ -142,13 +162,13 @@
                                               "key": "ikbot",
                                               "name": "🚏┃爱看┃机器",
                                               "type": 3,
-                                              "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/爱看机器人.py"
+                                              "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/爱看机器人.py"
                                  },
 		{
                                                "key": "XH",
                                                "name": "🥏┃星河┃影视",
                                                "type": 3,
-                                              "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/星河影视.py"
+                                              "api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/星河影视.py"
                                },
 
 	
@@ -156,54 +176,59 @@
 			"key": "blzb",
 			"name": "🎨┃哔哩┃直播",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/哔哩直播.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/哔哩直播.py"
 		},
 
-
+		{
+			"key": "悟圣短剧",
+			"name": "🍅┃红果┃短剧",
+			"type": 3,
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/sky6698/sky/main/py/红果.py"
+		},
 
 		{
 			"key": "悟圣短剧",
 			"name": "🐧┃悟圣┃短剧",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/悟圣短剧.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/悟圣短剧.py"
 		},
 		{
 			"key": "喜福网",
 			"name": "🐥┃喜福┃短剧",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/喜福短剧.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/喜福短剧.py"
 		},
 
 		{
 			"key": "hmjc",
 			"name": "🦃┃河马┃剧场",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/河马剧场.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/河马剧场.py"
 		},
 
 		{
 			"key": "ytb",
 			"name": "🐦┃悦听┃音乐",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/悦听吧.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/悦听吧.py"
 		},
 		{
 			"key": "275ts",
 			"name": "📚┃275┃听书",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/275听书.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/275听书.py"
 		},
 		{
 			"key": "枫叶音乐",
 			"name": "📀┃枫叶┃音乐",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/枫叶音乐.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/枫叶音乐.py"
 		},
 		{
 			"key": "kwms",
 			"name": "🎵┃酷我┃音乐",
 			"type": 3,
-			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/FGBLH/HKL/refs/heads/main/py/酷我音乐.py"
+			"api": "https://gh.927223.xyz/https://raw.githubusercontent.com/phu889/kjh998/refs/heads/main/py/酷我音乐.py"
 		},
 
 {
