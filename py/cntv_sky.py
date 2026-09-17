@@ -245,30 +245,31 @@ class Spider(Spider):  # 元类 默认的元类 type
 				# 兜底：id 本身就是 guid（32位hex）
 				if re.match(r'^[0-9a-f]{32}$', id or ''):
 					guid=id
-		# 修复：探测真实可用清晰度，返回多清晰度列表（TVBox 多源格式，按高清到低清排列）
-		qualityMap={'2048':'1080P','1200':'720P','850':'480P','450':'360P','270':'270P'}
-		results=[]
-		if guid:
-			for bit,u in self.probe_bits(guid):
-				results.append({
-					"parse":0,
-					"playUrl":'',
-					"url":u,
-					"header":headers,
-					"name":qualityMap.get(bit,bit)
-				})
-		if len(results)>0:
-			return results
+		# 修复：探测真实可用清晰度，返回标准 dict（返回 list 会导致壳解析失败、获取播放地址失败）
+		# 多清晰度放在 playUrl 里用 # 分隔（高清到低清），url 取最高清，播放器清晰度选择器可切档
+		good=self.probe_bits(guid) if guid else []
+		if len(good)>0:
+			playUrl='#'.join([u for b,u in good])
+			return {
+				"parse":0,
+				"jx":0,
+				"playUrl":playUrl,
+				"url":good[0][1],
+				"header":headers,
+				"format":"application/x-mpegURL"
+			}
 		# 全部探测失败时兜底：交给播放器嗅探
 		if flag!='CCTV' and (id or '').find('http')==0:
 			return {
 				"parse":1,
+				"jx":0,
 				"playUrl":'',
 				"url":id,
 				"header":headers
 			}
 		return {
 			"parse":1,
+			"jx":0,
 			"playUrl":'',
 			"url":'',
 			"header":headers
