@@ -363,11 +363,21 @@ class Spider(Spider):  # 元类 默认的元类 type
 		html=self.webReadFile(urlStr=url,header=self.header)
 		jo =json.loads(html)
 		man = jo.get('manifest') or {}
-		#h5e=官网网页同用源(网页可正常播超清)，enc=央视App原生客户端专用转码
-		#实测两源720P档文件内容不同，enc高档位在部分设备TVBox播放器上解码花屏，故h5e优先
-		#hls_audio_url已移除：纯音频流，误返回会出现有声音无画面
-		for key in ('hls_h5e_url','hls_enc_url','hls_enc2_url'):
-			master = (man.get(key) or '').strip()
+		#实测结论：
+		#hls_url=明文CDN，无UDRM，不花屏，但通常只有 480x270 单档
+		#enc/h5e/enc2=UDRM加密（视频轨加密、音频轨不加密），有 270P~720P 四档；
+		#TVBox(Android)无UDRM解密模块，直接播加密流=画面花屏（音频正常），
+		#故只作 hls_url 缺失时的最后兜底（宁可花屏不黑屏）
+		#hls_audio_url不用：纯音频流，误返回会只有声音无画面
+		candidates=[]
+		link = (jo.get('hls_url') or '').strip()
+		if link:
+			candidates.append(link)
+		for key in ('hls_enc_url','hls_h5e_url','hls_enc2_url'):
+			m = (man.get(key) or '').strip()
+			if m and m not in candidates:
+				candidates.append(m)
+		for master in candidates:
 			if not master:
 				continue
 			try:
@@ -399,15 +409,6 @@ class Spider(Spider):  # 元类 默认的元类 type
 				#单档 media：master 本身就是最高清
 				if '#EXTINF' in txt:
 					return master
-			except:
-				pass
-		#兜底：hls_url（CDN 按 IP 派发，保底能播）
-		link = (jo.get('hls_url') or '').strip()
-		if link:
-			try:
-				txt=self.webReadFile(urlStr=link,header=self.header)
-				if '#EXT-X-STREAM-INF' in txt or '#EXTINF' in txt:
-					return link
 			except:
 				pass
 		return ''
