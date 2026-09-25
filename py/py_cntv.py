@@ -363,7 +363,10 @@ class Spider(Spider):  # 元类 默认的元类 type
 		html=self.webReadFile(urlStr=url,header=self.header)
 		jo =json.loads(html)
 		man = jo.get('manifest') or {}
-		for key in ('hls_enc_url','hls_enc2_url','hls_h5e_url','hls_audio_url'):
+		#h5e=官网网页同用源(网页可正常播超清)，enc=央视App原生客户端专用转码
+		#实测两源720P档文件内容不同，enc高档位在部分设备TVBox播放器上解码花屏，故h5e优先
+		#hls_audio_url已移除：纯音频流，误返回会出现有声音无画面
+		for key in ('hls_h5e_url','hls_enc_url','hls_enc2_url'):
 			master = (man.get(key) or '').strip()
 			if not master:
 				continue
