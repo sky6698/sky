@@ -63,9 +63,6 @@ def _aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
 
 SITE = "https://hongguoduanju.com"
 EPISODE_PREFIX = "hg-episode-v1:"
-# 五档清晰度（显示名, 接口 definition 档位），按用户要求从高到低排列。
-# 选集 id 编码为 "第N集$hg-episode-v1:<vid>@<档位>"，播放时按档位就近降级。
-QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流畅", "480"), ("极速", "360"))
 VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
 API_HOST = "https://api5-normal-sinfonlineb.fqnovel.com"
 UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -601,13 +598,6 @@ class _StreamSession:
 
 
 def _stream_session(video_id: str, config: Mapping[str, Any]) -> "_StreamSession":
-    # 选集 id 可能带清晰度档位: "vid@1080"，按档位就近降级取流
-    wanted = "1080"
-    bare = video_id
-    if "@" in video_id:
-        bare, tier = video_id.rsplit("@", 1)
-        if tier.isdigit():
-            wanted = tier
     with _STREAM_LOCK:
         sessions = _STREAM_STATE["sessions"]
         for key in [key for key, item in sessions.items() if item.expired()]:
@@ -615,8 +605,8 @@ def _stream_session(video_id: str, config: Mapping[str, Any]) -> "_StreamSession
         session = sessions.get(video_id)
     if session is not None:
         return session
-    model = _video_model(bare, config)
-    _, item = _select_quality(_video_list_from_model(model), wanted)
+    model = _video_model(video_id, config)
+    _, item = _select_quality(_video_list_from_model(model), "1080")
     url = _media_url(item)
     spade = _spade_value(item)
     if not url or not spade:
@@ -678,10 +668,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         video_id = (query.get("vid") or query.get("id") or [""])[0]
         if not video_id:
             video_id = parsed.path.rsplit("/", 1)[-1].split(".")[0]
-        # 允许 "vid" 或 "vid@档位" 两种形式（%40 已由 parse_qs 解码为 @）
-        vid = video_id if re.match(r"^\d+(@\d+)?$", video_id) else ""
         return {
-            "vid": vid,
+            "vid": video_id if video_id.isdigit() else "",
             "device_id": (query.get("did") or [""])[0],
             "install_id": (query.get("iid") or [""])[0],
         }
@@ -3362,42 +3350,23 @@ class Spider(Spider):
         # 优先走 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
         meta, eps = _app_episode_detail(sid, config)
         if eps:
-            # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, vid)
-            pairs = []
-            for e in eps:
-                title, _, ep = str(e).partition("$")
-                pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
-            # 五档清晰度各自一个源: 选集 id 编码 "vid@档位"，播放时就近降级
-            play_from = "$$$".join(name for name, _ in QUALITY_TIERS)
-            play_url = "$$$".join(
-                "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier)
-                         for title, vid in pairs)
-                for _, tier in QUALITY_TIERS
-            )
             return {"list": [{
                 "vod_id": sid, "vod_name": meta.get("title") or sid,
                 "vod_pic": meta.get("cover") or "", "vod_year": "", "vod_area": "",
                 "vod_director": "", "vod_actor": meta.get("actors") or "",
                 "vod_content": meta.get("intro") or "", "vod_remarks": meta.get("remarks") or "",
-                "vod_play_from": play_from, "vod_play_url": play_url
+                "vod_play_from": "红果", "vod_play_url": "#".join(eps)
             }]}
         # 兜底: 官网详情
         p = ((_data(SITE + "/detail?series_id=" + quote(sid, safe="")).get("loaderData") or {}).get("detail_page") or {})
         s = p.get("seriesDetail") or {}
         vids = s.get("vid_list") or []
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
-        pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
-        play_from = "$$$".join(name for name, _ in QUALITY_TIERS)
-        play_url = "$$$".join(
-            "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier) for title, vid in pairs)
-            for _, tier in QUALITY_TIERS
-        )
-        return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": str(s.get("episode_right_text") or ""), "vod_play_from": play_from, "vod_play_url": play_url}]}
+        eps = "#".join("第%d集%s%s" % (i + 1, "$", EPISODE_PREFIX + str(v)) for i, v in enumerate(vids))
+        return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": str(s.get("episode_right_text") or ""), "vod_play_from": "红果", "vod_play_url": eps}]}
 
     def playerContent(self, flag, id, vipFlags=None):
-        raw = str(id).replace(EPISODE_PREFIX, "")
-        # "vid@档位" 形式：vid 用于校验与取流，档位由本地流服务按 vid@档位 解析
-        vid = raw.split("@")[0]
+        vid = str(id).replace(EPISODE_PREFIX, "")
         try:
             port = _start_stream_server()
         except Exception:
@@ -3405,7 +3374,7 @@ class Spider(Spider):
         if port and vid.isdigit():
             query = urlencode(
                 {
-                    "vid": raw,
+                    "vid": vid,
                     "did": self.device_id or "",
                     "iid": self.install_id or "",
                 }
@@ -3422,18 +3391,12 @@ class Spider(Spider):
         return {"parse": 1, "jx": 0, "playUrl": "", "url": SITE + "/", "header": {"User-Agent": UA}}
 
     def localProxy(self, param):
-        raw = str((param or {}).get("vid") or (param or {}).get("id") or "")
-        if not raw:
+        vid = str((param or {}).get("vid") or (param or {}).get("id") or "")
+        if not vid:
             return [400, "text/plain", b"missing vid"]
-        wanted = "1080"
-        vid = raw
-        if "@" in raw:
-            vid, tier = raw.rsplit("@", 1)
-            if tier.isdigit():
-                wanted = tier
         try:
             model = _video_model(vid, {"device_id": self.device_id, "install_id": self.install_id})
-            _, item = _select_quality(_video_list_from_model(model), wanted)
+            _, item = _select_quality(_video_list_from_model(model), "1080")
             url = _media_url(item)
             spade = _spade_value(item)
             if not url or not spade:
