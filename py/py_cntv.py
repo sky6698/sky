@@ -4,6 +4,7 @@ import sys
 sys.path.append('..') 
 from base.spider import Spider
 import json
+import struct
 import time
 import base64
 import re
@@ -12,25 +13,72 @@ import urllib
 import urllib.request
 import time
 
-# ==================== 清晰度配置 ====================
-# CNTV 的 HLS 按码率分档，地址形如 /asp/hls/{档位}/0303000a/3/default/{pid}/{档位}.m3u8
-# 实测（解 ts 内 H.264 的 SPS，并与 CNTV 自己的 master 清单交叉验证，多个视频一致）：
-#   450  -> 480x270  @25fps 约 0.5Mbps
-#   850  -> 640x360  @25fps 约 0.9Mbps
-#   1200 -> 1280x720 @25fps 约 1.25Mbps
-#   2000 -> 1280x720 @25fps 约 1.9Mbps   ← 同分辨率高码率版，是站内最高档（站点没有 1080P 档）
-# 另外实测：普通 /asp/hls/ 链路里 1200 与 2000 会被 CDN 降级成 450 的画面（分片字节完全一致），
-#          只有走 /asp/h5e/ 链路才是真高清（明文 TS，无 #EXT-X-KEY，PAT/PMT 标准）。
-# 重要：h5e 的 CDN 域由接口随机下发，其中会夹带第三方域（*.cntv.kfcbest.com / *.bytecdn.cn），
-#      这类域在部分网络下"清单能拉、分片拉不动"，播放器就会花屏。统一收敛到官方域。
+# ==================== 清晰度配置（逐切片实测结论，不是猜的）====================
+# 【一句话】
+#   央视的 720P 是加密的（DRM），密钥算法在央视自己的 WASM 播放器里，纯 py 源解不了；
+#   不加密能拿到的最高画质只有 640x360；另有少数节目额外附带不加密的 720P MP4 分章文件。
+#   所以本源：720P 只在「该节目确有明文 MP4 分章」时才出现，且拆成单文件分段播（任何播放器都能放）；
+#   其余情况给明文 640x360 / 480x270。全程绝不把加密流喂给播放器 —— 那正是花屏的原因。
+#
+# 【实测 1：HLS 三条通道逐档比对（取首切片算 md5 + 解 H.264 SPS 量分辨率）】
+#              450          850          1200          2000
+#   明文通道   480x270 好   640x360 好   480x270 假    480x270 假   （1200/2000 的首切片与 450 字节数完全相同 = 服务端静默降级）
+#   enc 通道   480x270      640x360      1280x720 好   1280x720 好  （每帧多一枚非标准 NAL type 24）
+#   h5e 通道   480x270      640x360      1280x720 好   1280x720 好  （每帧多一枚非标准 NAL type 25）
+#   enc2 通道  403          403          403           403
+#   → 明文通道天花板 = 850 = 640x360；它的 master 清单里甚至只列 1 档（480x270），850 要自己拼。
+#   → 全站不存在「不加密的 720P HLS」，720P 只出现在 enc/h5e 上。
+#
+# 【实测 2：加密方式 —— 为什么喂给播放器就是花屏】
+#   · 明文流与加密流的切片头、切片长度逐字节一致，只有切片内容不同 → 属于「切片级选择性加密」。
+#   · 每帧视频数据里插了一枚非标准 NAL 当标志位：enc 用 type 24、h5e 用 type 25；
+#     h5e 那枚 NAL 的载荷首字节 = 0x01，正对应公开解密器里的 "payload[0] === 1 才解密"；
+#     enc 的 type 24 里能看到 udrmGetLicense 字样 → 是许可/密钥协商。
+#   · 解密靠央视的 WASM 播放器内核（cctv.worker.js，3.18MB，emscripten 产物）+ 服务端下发密钥。
+#     开源界（cctv-h5e-decrypt 等）也只能靠在 Node/浏览器里跑那坨 WASM 实现，没有纯算法版本。
+#     → py 源做不到，只能绕开。
+#   · 其它绕行尝试全部失败：去掉 contentid、换 iPhone/Android UA、跨主机换路径前缀、
+#     在明文主机上改清晰度层级目录 —— 清一色 403/404，或者拿到的仍是降级流。
+#
+# 【实测 3：不加密的 720P 藏在 MP4 分章接口里，但只对部分节目开放】
+#   接口 video 字段带 4 组明文 MP4 分章（央视网页播放器默认档就是 chapters3）：
+#     chapters  (418000)  480x270   |  chapters2 (818000)  640x360
+#     chapters3 (1200000) 1280x720  |  chapters4 (2000000) 1280x720
+#   标准明文 MP4（ftyp mp42 + avcC / H.264 High L3.1），免鉴权、不限 UA、支持 Range、响应 0.06s。
+#   但 chapters[i].url 是「内容级」开关，不是随机：
+#     《新闻联播》10/10 次都有真实 url；
+#     电视剧 / 纪录片 / 动画片 / 特别节目 / 焦点访谈 / 百家讲坛 → 0/10 次，url 恒为空串
+#     （版权内容只走加密 HLS，自制的新闻类才给明文 MP4）。
+#   → 所以 720P 线路必须「有才给、没有就不出现」。
+#
+# 【实测 4：为什么 720P 要拆成分段，而不是做成一条 HLS】
+#   每段自带 ftyp+moov，是「独立完整 MP4」。实测把它当成 HLS 的 segment：
+#     · ffmpeg 系（IJKplayer）：只播得出第 1 段，日志报 "Found duplicated MOOV Atom. Skipped it"；
+#     · ExoPlayer：官方支持矩阵里 HLS 容器只有 MPEG-TS 与 fMP4/CMAF，非分片 MP4 不在列。
+#   → 做成一条 HLS 只会「放 2 分钟就断」。所以本源把每段单列成一条选集（parse=0 直接播单文件 MP4），
+#     任何播放器都能放，代价是选集条目变长。
+#
+# 【站点没有 1080P】HLS 的 3000/4000 实测 404；2000 与 1200 同为 1280x720，只是码率更高。
 QUALITY_LEVELS = [
-	("1200", "高清720P"),
-	("2000", "超清720P"),
-	("850", "标清360P"),
-	("450", "流畅270P")
+	("超清720P", "chapters4", 2000),   # 明文 MP4 分章，1280x720 / 2.0Mbps（仅部分节目有）
+	("高清720P", "chapters3", 1200),   # 明文 MP4 分章，1280x720 / 1.2Mbps（央视自身默认档）
+	("标清360P", "plain", 850),        # 明文 HLS，640x360 —— 通用最高画质
+	("流畅270P", "plain", 450)         # 明文 HLS，480x270
 ]
-PLAIN_SAFE_QUALITY = ("850", "450")   # 普通链路里真实可用的档位
-HD_OFFICIAL_HOST = "dh5ws01.v.cntv.cn"   # h5e 官方 CDN 域（证书 cctv.com）
+MP4_LEVELS = [(n, s) for n, s, c in QUALITY_LEVELS if s != 'plain']   # 依赖明文 MP4 分章的两条线路
+MAX_MP4_EPISODE = 6                      # 铺分段时最多展开多少集：一集 15 段，展开 6 集 ≈ 90 条，
+                                         # 再往后就还是按原样列（那些集仍可用 360P/270P 线路看）。
+                                         # 展开会让 720P 线路的条目数比 360P 线路多，切线路时选集下标会错位，
+                                         # 这是「把独立 MP4 拆成一段一条」的固有代价。
+PLAIN_SAFE_QUALITY = ("850", "450")      # 明文通道里真实可用的档位
+QUALITY_BITRATE = {"450": 450, "850": 850}
+SIZE_RATIO_MIN = 0.55                    # 分片实收体积不得低于该档位理论码率的 55%，用于识别被降级的假高清
+UA_STR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36"
+REFERER_STR = "https://tv.cctv.com/"
+PROXY_TS = "http://127.0.0.1:9978/proxy?do=py&url={0}"   # localProxy 兜底改写清单时用的分片代理前缀
+_VINFO_CACHE = {}                        # pid -> (时间戳, 接口结果)，同一集在 detail/player 之间复用，省一次请求
+_VINFO_TTL = 90
+
 
 class Spider(Spider):  # 元类 默认的元类 type
 	def getName(self):
@@ -150,7 +198,18 @@ class Spider(Spider):  # 元类 默认的元类 type
 		return result
 	def detailContent(self,array):
 		result={}
+		#参数兼容：ids 可能是字符串/列表/元组，也可能是空
+		if isinstance(array,(list,tuple)):
+			if len(array)==0:
+				return {}
+			array=[str(array[0])]
+		elif array is None:
+			return {}
+		else:
+			array=[str(array)]
 		aid = array[0].split('###')
+		while len(aid) < 8:
+			aid.append('')
 		tid = aid[0]
 		logo = aid[3]
 		lastVideo = aid[2]
@@ -209,11 +268,17 @@ class Spider(Spider):  # 元类 默认的元类 type
 			"vod_director":'',
 			"vod_content":brief
 		}
-		# 多清晰度：每条线路的选集完全相同，播放时按线路名取对应档位
-		froms = [name for code, name in QUALITY_LEVELS]
+		# ---- 线路组装 ----
+		#   标清360P / 流畅270P：同一条选集，播放时走不同的明文档位，任何节目都有
+		#   超清720P / 高清720P：只有该节目确有「明文 MP4 分章」时才出现，
+		#     并把分章铺成一条条选集（每段就是 CDN 上一个独立完整的 MP4，parse=0 直出）
 		episodes = "#".join(videoList)
-		vod['vod_play_from'] = "$$$".join(froms)
-		vod['vod_play_url'] = "$$$".join([episodes for _ in froms])
+		lines = []
+		lines.extend(self.buildMp4Lines(videoList))
+		lines.append(("标清360P", episodes))
+		lines.append(("流畅270P", episodes))
+		vod['vod_play_from'] = "$$$".join([n for n, _ in lines])
+		vod['vod_play_url'] = "$$$".join([e for _, e in lines])
 		result = {
 			'list':[
 				vod
@@ -253,23 +318,47 @@ class Spider(Spider):  # 元类 默认的元类 type
 		url=''
 		parse=0
 		headers = {
-			'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36',
-			'Referer':'https://tv.cctv.com/'
+			'User-Agent':UA_STR,
+			'Referer':REFERER_STR
 		}
-		# flag 现在是清晰度线路名（1080P/720P/360P/270P），同时兼容旧线路名
-		quality='' if flag in ('CCTV','央视','中央台') else flag
+		# flag 是清晰度线路名；兼容旧线路名（CCTV/央视/中央台）时回落到最低档，保证一定有画面
+		quality = str(flag) if flag is not None else ''
+		src = ''
+		for name, s, code in QUALITY_LEVELS:
+			if name == quality:
+				src = s
+		if len(src) == 0:
+			quality = QUALITY_LEVELS[-1][0]
+			src = QUALITY_LEVELS[-1][1]
+		#参数兼容：id 可能是字符串/列表/元组
+		if isinstance(id,(list,tuple)):
+			id = str(id[0]) if len(id)>0 else ''
+		elif id is None:
+			id = ''
+		else:
+			id = str(id)
 		try:
-			if id.find('http')==0:
-				# 视频页地址：先取页面里的真实 pid
-				html=self.webReadFile(urlStr=id,header=self.header)
-				pid=self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"([^"]+)"',Index=1)
+			if self.isMediaUrl(id):
+				# 720P 线路的选集条目本身就是 CDN 上的单文件 MP4，直接播，不用再解析
+				url = id
 			else:
-				pid=id
-			if pid:
-				url=self.get_m3u8(urlTxt=pid,quality=quality)
+				if str(id).find('http')==0:
+					# 视频页地址：先取页面里的真实 pid
+					html=self.webReadFile(urlStr=id,header=self.header)
+					pid=self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"([^"]+)"',Index=1)
+				else:
+					pid=id
+				if len(pid)>0:
+					if src=='plain':
+						# 明文 HLS 普通通道（标清360P / 流畅270P）
+						url=self.get_m3u8(urlTxt=pid,quality=quality)
+					else:
+						# 720P 兜底：正常情况 detailContent 已经确认过「这一集确有分章」才列出该线路；
+						# 万一这一刻接口变了，就退回明文最高档 —— 绝不去碰 enc/h5e 加密流
+						url=self.get_m3u8(urlTxt=pid,quality='标清360P')
 		except :
 			url=''
-		if url.find('https:')<0:
+		if url.find('http')!=0:
 			url=id
 			parse=1
 		result["parse"] = parse#1=嗅探,0=播放
@@ -305,14 +394,80 @@ class Spider(Spider):  # 元类 默认的元类 type
 		"节目大全":[{"key":"cid","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"EPGC1386744804340101"},{"n":"CCTV-2财经","v":"EPGC1386744804340102"},{"n":"CCTV-3综艺","v":"EPGC1386744804340103"},{"n":"CCTV-4中文国际","v":"EPGC1386744804340104"},{"n":"CCTV-5体育","v":"EPGC1386744804340107"},{"n":"CCTV-6电影","v":"EPGC1386744804340108"},{"n":"CCTV-7国防军事","v":"EPGC1386744804340109"},{"n":"CCTV-8电视剧","v":"EPGC1386744804340110"},{"n":"CCTV-9纪录","v":"EPGC1386744804340112"},{"n":"CCTV-10科教","v":"EPGC1386744804340113"},{"n":"CCTV-11戏曲","v":"EPGC1386744804340114"},{"n":"CCTV-12社会与法","v":"EPGC1386744804340115"},{"n":"CCTV-13新闻","v":"EPGC1386744804340116"},{"n":"CCTV-14少儿","v":"EPGC1386744804340117"},{"n":"CCTV-15音乐","v":"EPGC1386744804340118"},{"n":"CCTV-16奥林匹克","v":"EPGC1634630207058998"},{"n":"CCTV-17农业农村","v":"EPGC1563932742616872"},{"n":"CCTV-5+体育赛事","v":"EPGC1468294755566101"}]},{"key":"fc","name":"分类","value":[{"n":"全部","v":""},{"n":"新闻","v":"新闻"},{"n":"体育","v":"体育"},{"n":"综艺","v":"综艺"},{"n":"健康","v":"健康"},{"n":"生活","v":"生活"},{"n":"科教","v":"科教"},{"n":"经济","v":"经济"},{"n":"农业","v":"农业"},{"n":"法治","v":"法治"},{"n":"军事","v":"军事"},{"n":"少儿","v":"少儿"},{"n":"动画","v":"动画"},{"n":"纪实","v":"纪实"},{"n":"戏曲","v":"戏曲"},{"n":"音乐","v":"音乐"},{"n":"影视","v":"影视"}]},{"key":"fl","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"B","v":"B"},{"n":"C","v":"C"},{"n":"D","v":"D"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"}]},{"key":"year","name":"年份","value":[{"n":"全部","v":""},{"n":"2023","v":"2023"},{"n":"2022","v":"2022"},{"n":"2021","v":"2021"},{"n":"2020","v":"2020"},{"n":"2019","v":"2019"},{"n":"2018","v":"2018"},{"n":"2017","v":"2017"},{"n":"2016","v":"2016"},{"n":"2015","v":"2015"},{"n":"2014","v":"2014"},{"n":"2013","v":"2013"},{"n":"2012","v":"2012"},{"n":"2011","v":"2011"},{"n":"2010","v":"2010"},{"n":"2009","v":"2009"},{"n":"2008","v":"2008"},{"n":"2007","v":"2007"},{"n":"2006","v":"2006"},{"n":"2005","v":"2005"},{"n":"2004","v":"2004"},{"n":"2003","v":"2003"},{"n":"2002","v":"2002"},{"n":"2001","v":"2001"},{"n":"2000","v":"2000"}]},{"key":"month","name":"月份","value":[{"n":"全部","v":""},{"n":"12","v":"12"},{"n":"11","v":"11"},{"n":"10","v":"10"},{"n":"09","v":"09"},{"n":"08","v":"08"},{"n":"07","v":"07"},{"n":"06","v":"06"},{"n":"05","v":"05"},{"n":"04","v":"04"},{"n":"03","v":"03"},{"n":"02","v":"02"},{"n":"01","v":"01"}]}]
 		}
 		}
-	#注意：这里不能带 Host 头——同一个 header 还要用于请求 CDN 域（如 dh5ws01.v.cntv.cn）
+	#注意：这里不能带 Host 头——同一个 header 还要用于请求 CDN 域
 	header = {
-		"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36",
-		"Referer": "https://tv.cctv.com/"
+		"User-Agent":UA_STR,
+		"Referer": REFERER_STR
 	}
 	
+	#本地代理（兜底用：正常情况下本源直接把 CDN 原址交给播放器，不做中转）
+	#  type=m3u8 -> 拉取清单，把分片/KEY 改写成代理地址后再交给播放器
+	#  其它      -> 直接转发字节
 	def localProxy(self,param):
-		return [404, "text/plain", "", ""]
+		if isinstance(param, str):
+			try:
+				param = json.loads(param)
+			except :
+				param = {}
+		if not isinstance(param, dict):
+			param = {}
+		low = {}
+		for k in param:
+			low[str(k).lower()] = param[k]
+		target = low.get('url') or low.get('u') or low.get('src') or ''
+		try:
+			target = target.decode('utf-8')
+		except :
+			pass
+		target = str(target)
+		#宿主传进来的 url 可能是 URL 编码过的（https%3A%2F%2F...），必须按 '://' 判断后再解码
+		if target.find('://') < 0:
+			for _ in range(2):
+				try:
+					dec = urllib.parse.unquote(target)
+				except :
+					break
+				if dec == target:
+					break
+				target = dec
+		if target.find('http') != 0:
+			return [404, "text/plain", b'', {'Access-Control-Allow-Origin':'*'}]
+		hd = {'User-Agent':UA_STR, 'Referer':REFERER_STR}
+		try:
+			req = urllib.request.Request(url=target, headers=hd)
+			with urllib.request.urlopen(req, timeout=20) as rsp:
+				data = rsp.read()
+				ctype = rsp.headers.get('Content-Type') or ''
+		except :
+			return [502, "text/plain", b'', {'Access-Control-Allow-Origin':'*'}]
+		isM3u8 = target.split('?')[0].endswith('.m3u8') or ('mpegurl' in ctype.lower()) or (data[:64].find(b'#EXTM3U')>=0)
+		if isM3u8:
+			text = data.decode('utf-8', 'ignore')
+			base = target.split('?')[0].rsplit('/', 1)[0] + '/'
+			out = []
+			for line in text.replace('\r', '').split('\n'):
+				s = line.strip()
+				if len(s)==0:
+					out.append(line)
+					continue
+				if s[0]=='#':
+					if 'URI="' in s:
+						try:
+							i0 = s.find('URI="') + 5
+							i1 = s.find('"', i0)
+							ku = s[i0:i1]
+							if ku.find('http')!=0:
+								ku = base + ku
+							s = s[:i0] + PROXY_TS.format(urllib.parse.quote(ku, safe='')) + s[i1:]
+						except :
+							pass
+					out.append(s)
+					continue
+				su = s if s.find('http')==0 else base + s
+				out.append(PROXY_TS.format(urllib.parse.quote(su, safe='')))
+			body = '\n'.join(out).encode('utf-8')
+			return [200, "application/vnd.apple.mpegurl", body, {'Access-Control-Allow-Origin':'*'}]
+		return [200, ctype if len(ctype)>0 else "video/mp2t", data, {'Access-Control-Allow-Origin':'*'}]
 	#-----------------------------------------------自定义函数-----------------------------------------------
 	#访问网页
 	def webReadFile(self,urlStr,header):
@@ -385,67 +540,190 @@ class Spider(Spider):  # 元类 默认的元类 type
 		soup = re.compile(r'<[^>]+>',re.S)
 		txt =soup.sub('', txt)
 		return txt.replace("&nbsp;"," ")
-	#候选 h5e 官方 CDN 域（同一份内容在多域都有；择优可规避"单节点慢/不通"造成的丢包花屏）
-	HD_HOST_POOL = ["dh5ws01.v.cntv.cn", "dh5wswx02.v.cntv.cn", "dh5qq01.v.cntv.cn"]
-	#替换 URL 的 host
-	def swapHost(self,u,host):
-		if len(u) == 0:
-			return u
-		head, sep, tail = u.partition('//')
-		h, sep2, rest = tail.partition('/')
-		return head + '//' + host + sep2 + rest
-	#在候选域里挑一个"确实能拉到目标档、且最快"的域
-	def pickHdTemplate(self,hdUrl,code):
-		if len(hdUrl) == 0:
-			return ''
-		cur = hdUrl.partition('//')[2].partition('/')[0]
-		cands = [cur]
-		for h in self.HD_HOST_POOL:
-			if h != cur:
-				cands.append(h)
-		best = ''
-		bestCost = 99.0
-		for host in cands:
-			try:
-				base = self.swapHost(hdUrl, host)
-				t0 = time.time()
-				if self.probePlayable(self.buildQualityUrl(base, code)):
-					cost = time.time() - t0
-					if cost < bestCost:
-						bestCost = cost
-						best = base
-			except:
-				pass
-		return best
-	#把 h5e 的第三方 CDN 域收敛成官方域（规避"清单可达、分片拉不动"的第三方节点）
-	def normalizeHdHost(self,u):
-		if len(u) == 0:
-			return u
+	#小体积探针：用 Range 只取前 4KB，靠 Content-Range / Content-Length 拿到分片总大小
+	def readSmall(self,u,timeout=8):
+		req=urllib.request.Request(url=u)
+		req.add_header('User-Agent', UA_STR)
+		req.add_header('Referer', REFERER_STR)
+		req.add_header('Range', 'bytes=0-4095')
+		with urllib.request.urlopen(req, timeout=timeout) as rsp:
+			status=rsp.getcode()
+			hh=rsp.headers
+			data=rsp.read(4096)
+		total=0
+		cr=hh.get('Content-Range') or ''
+		if '/' in cr:
+			try :
+				total=int(cr.split('/')[1])
+			except :
+				total=0
+		if total==0:
+			try :
+				total=int(hh.get('Content-Length') or 0)
+			except :
+				total=0
+		return status,total,data
+	#探活：清单可拉 + 抽查首/中/尾三个分片
+	#  ① 必须是 MPEG-TS（188 字节同步，0x47）
+	#  ② 分片体积不得低于该档位理论码率的 55%（专门用来排除"清单 200 但画面被降级"的假高清）
+	#只探清单是不够的：普通通道会返回 200 却把 1200 降级成 450 的画面，播出来就是花屏/糊成一片
+	def probePlayable(self,u,quality=''):
+		if len(u)==0:
+			return False
 		try:
-			head, sep, tail = u.partition('//')
-			host, sep2, rest = tail.partition('/')
-			if len(host) > 0 and '.v.cntv.cn' not in host:
-				return head + '//' + HD_OFFICIAL_HOST + sep2 + rest
-		except:
-			pass
-		return u
-	#取播放地址模板：返回 [高清模板(h5e，真高清), 普通模板(只用于兜底低档)]
-	def getPlayTemplate(self,urlTxt):
-		url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
-		html=self.webReadFile(urlStr=url,header=self.header)
-		jo =json.loads(html)
-		if jo.get('ack') != 'yes':
-			return ['','']
-		man = jo.get('manifest') or {}
-		plain = (jo.get('hls_url') or '').strip()
-		hd = ''
-		for key in ('hls_h5e_url','hls_enc_url'):
-			if man.get(key):
-				hd = self.normalizeHdHost(man[key].strip())
-				break
-		if len(hd) == 0:
-			hd = plain
-		return [hd,plain]
+			req=urllib.request.Request(url=u)
+			req.add_header('User-Agent', UA_STR)
+			req.add_header('Referer', REFERER_STR)
+			with urllib.request.urlopen(req, timeout=8) as rsp:
+				if rsp.getcode()!=200:
+					return False
+				txt=rsp.read().decode('utf-8','ignore')
+		except :
+			return False
+		if '#EXTM3U' not in txt:
+			return False
+		segs=[]
+		dur=10.0
+		for line in txt.replace('\r','').split('\n'):
+			s=line.strip()
+			if s.find('#EXTINF')==0:
+				dur=10.0
+				try :
+					dur=float(s.split(':')[1].split(',')[0])
+				except :
+					dur=10.0
+			elif len(s)>0 and s[0]!='#':
+				segs.append((s,dur))
+		if len(segs)==0:
+			return False
+		base=u.split('?')[0].rsplit('/',1)[0]+'/'
+		picks=[0, len(segs)//2, len(segs)-1]
+		br=QUALITY_BITRATE.get(quality,0)
+		for i in picks:
+			s,dur=segs[i]
+			seg = s if s.find('http')==0 else base+s
+			try :
+				st,total,data=self.readSmall(seg)
+			except :
+				return False
+			if st not in (200,206):
+				return False
+			sync=0
+			for o in range(0,min(len(data),1880),188):
+				if data[o]==0x47:
+					sync+=1
+			if sync<5:
+				return False
+			if br>0 and total>0 and dur>0:
+				need=int(br*1000/8.0*dur*SIZE_RATIO_MIN)
+				if total<need:
+					return False
+		return True
+	#取视频信息（接口每次下发的 CDN host 都是随机的；同一 pid 短时间缓存，避免一集请求两次）
+	def getVideoInfo(self,pid):
+		now=time.time()
+		hit=_VINFO_CACHE.get(pid)
+		if hit is not None and now-hit[0] < _VINFO_TTL:
+			return hit[1]
+		jo=None
+		try :
+			url="https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(pid)
+			txt=self.webReadFile(urlStr=url,header=self.header)
+			jo=json.loads(txt)
+			if jo.get('ack')!='yes':
+				jo=None
+			elif len((jo.get('hls_url') or '').strip())==0 and not jo.get('manifest'):
+				jo=None
+		except :
+			jo=None
+		#只缓存成功结果：接口偶发抖动不该被锁住 90 秒
+		if jo is not None:
+			if len(_VINFO_CACHE) > 128:
+				_VINFO_CACHE.clear()
+			_VINFO_CACHE[pid]=(now,jo)
+		return jo
+	#取出某档 MP4 分章的真实地址列表 [(url,duration)]
+	#  chapters 数组本身永远存在（长度还挺像样），但 url 字段可能是空串 —— 空串代表"这条节目没开放明文 MP4"，
+	#  这时必须当作没有，绝不能硬拼地址。
+	def getMp4Chapters(self,pid,key):
+		jo=self.getVideoInfo(pid)
+		if jo is None:
+			return []
+		chapters=((jo.get('video') or {}).get(key) or [])
+		segs=[]
+		for c in chapters:
+			try :
+				u=(c.get('url') or '').strip()
+			except :
+				u=''
+			if len(u)==0:
+				continue
+			try :
+				dur=float(c.get('duration') or 0)
+			except :
+				dur=0.0
+			if dur <= 0:
+				dur=120.0
+			segs.append((u,dur))
+		return segs
+	#该节目是否真的开放了明文 MP4 分章
+	def hasMp4Chapters(self,pid,key):
+		return len(self.getMp4Chapters(pid,key)) > 0
+	#是不是"可直接播的媒体地址"（720P 线路的选集条目就是这种）
+	def isMediaUrl(self,val):
+		low=str(val).lower().split('?')[0]
+		return low.endswith('.mp4') or low.endswith('.m3u8') or low.endswith('.ts') or low.endswith('.flv')
+	#从选集条目 "名称$地址" 里取出可播的 pid：地址可能是 guid，也可能是需要解析的视频页
+	def episodePid(self,item):
+		parts=str(item).split('$')
+		if len(parts) < 2:
+			return ''
+		val=parts[-1].strip()
+		if len(val)==0:
+			return ''
+		if val.find('http') != 0:
+			return val
+		try :
+			html=self.webReadFile(urlStr=val,header=self.header)
+			return self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"([^"]+)"',Index=1)
+		except :
+			return ''
+	#把「明文 MP4 分章」铺成 720P 线路的选集。
+	#  为什么拆成分段而不是做成一条 HLS：见文件头【实测 4】—— 各段是独立完整 MP4，
+	#  ffmpeg(IJK) 与 ExoPlayer 都不支持把非分片 MP4 当 HLS 分片，只会播第 1 段。
+	#  先探第 1 集：没有分章就整条 720P 线路都不出现，后面一集都不必再请求。
+	def buildMp4Lines(self,videoList):
+		if len(videoList) == 0:
+			return []
+		first=self.episodePid(videoList[0])
+		if len(first) == 0:
+			return []
+		plan=[]
+		for name,key in MP4_LEVELS:
+			if self.hasMp4Chapters(first,key):
+				plan.append((name,key))
+		if len(plan) == 0:
+			return []
+		lines=[]
+		for name,key in plan:
+			eps=[]
+			for i in range(len(videoList)):
+				item=videoList[i]
+				if i >= MAX_MP4_EPISODE:
+					# 超过展开上限的集：原样列出（这些集仍可用 360P/270P 线路看）
+					eps.append(item)
+					continue
+				pid=self.episodePid(item) if i > 0 else first
+				segs=self.getMp4Chapters(pid,key) if len(pid) > 0 else []
+				if len(segs) == 0:
+					# 这一集没分章（同栏目里个别集可能不同）-> 原样列出，交给 360P 兜底
+					eps.append(item)
+					continue
+				title=item.split('$')[0]
+				for n in range(len(segs)):
+					eps.append("{0} [{1}/{2}]${3}".format(title,n+1,len(segs),segs[n][0]))
+			lines.append((name,"#".join(eps)))
+		return lines
 	#把模板里的档位占位(main)换成目标档位（保留官方 query，CDN 路由/鉴权可能依赖它）
 	def buildQualityUrl(self,templateUrl,quality):
 		if len(templateUrl) == 0:
@@ -460,78 +738,36 @@ class Spider(Spider):  # 元类 默认的元类 type
 		if len(qs) > 0:
 			url = url + '?' + qs
 		return url
-	#真探活：m3u8 能拉 + 首个分片真能拉且是 MPEG-TS（0x47 同步）
-	#只探清单是不够的：CDN 可能"清单 200、分片 403 / 被劫持成 HTML"，播放器拿到的就是花屏
-	def probePlayable(self,m3u8Url):
-		if len(m3u8Url) == 0:
-			return False
-		try:
-			req = urllib.request.Request(url=m3u8Url)
-			req.add_header('User-Agent', self.header['User-Agent'])
-			with urllib.request.urlopen(req, timeout=8) as response:
-				if response.getcode() != 200:
-					return False
-				txt = response.read().decode('utf-8', 'ignore')
-			if '#EXTM3U' not in txt:
-				return False
-			seg = ''
-			for line in txt.split('\n'):
-				line = line.strip()
-				if len(line) > 0 and line[0] != '#':
-					seg = line
-					break
-			if len(seg) == 0:
-				return False
-			if seg.find('http') != 0:
-				seg = m3u8Url.split('?')[0].rsplit('/', 1)[0] + '/' + seg
-			req2 = urllib.request.Request(url=seg)
-			req2.add_header('User-Agent', self.header['User-Agent'])
-			req2.add_header('Range', 'bytes=0-187')
-			with urllib.request.urlopen(req2, timeout=8) as response2:
-				if response2.getcode() not in (200, 206):
-					return False
-				head = response2.read(188)
-			if len(head) < 188 or head[0] != 0x47:
-				return False
-			return True
-		except:
-			return False
-	#目标档位优先，其余按 高清->低清 依次兜底
+	#普通通道的档位顺序：目标档位优先，其余按 高清 -> 低清 兜底
 	def getQualityOrder(self,quality):
-		codes = [code for code, name in QUALITY_LEVELS]
+		codes = list(PLAIN_SAFE_QUALITY)
 		want = ''
-		for code, name in QUALITY_LEVELS:
-			if name == quality:
-				want = code
-		if len(want) > 0:
+		for name, src, code in QUALITY_LEVELS:
+			if name == quality and src == 'plain':
+				want = str(code)
+		if len(want) > 0 and want in codes:
 			codes.remove(want)
 			codes.insert(0, want)
 		return codes
-	#取指定清晰度的 m3u8 地址
+	#取明文 HLS 普通通道的 m3u8 地址
+	#  普通通道只提供 450/850；硬写 1200/2000 会拿到与 450 字节完全相同的降级流，
+	#  所以必须靠 probePlayable 的分片体积校验把它挡掉，再逐档降级兜底。
 	def get_m3u8(self,urlTxt,quality=''):
-		hdTpl, plainTpl = self.getPlayTemplate(urlTxt)
-		if len(hdTpl) == 0 and len(plainTpl) == 0:
+		try:
+			jo = self.getVideoInfo(urlTxt)
+		except :
+			jo = None
+		if jo is None:
 			return ''
-		order = self.getQualityOrder(quality)
-		want = order[0]
-		#低档：优先走普通链路（全网 CDN，最稳），拉不动再走高清链路
-		if want in PLAIN_SAFE_QUALITY and len(plainTpl) > 0:
-			u = self.buildQualityUrl(plainTpl, want)
-			if self.probePlayable(u):
+		plain = (jo.get('hls_url') or '').strip()
+		if len(plain) == 0:
+			return ''
+		for code in self.getQualityOrder(quality):
+			u = self.buildQualityUrl(plain, code)
+			if len(u) == 0:
+				continue
+			if self.probePlayable(u, code):
 				return u
-		#高清：在候选域里择优，挑"确实能拉到分片且最快"的域，规避丢包花屏
-		if len(hdTpl) > 0:
-			fast = self.pickHdTemplate(hdTpl, want)
-			if len(fast) > 0:
-				return self.buildQualityUrl(fast, want)
-		#兜底：按优先序逐个试
-		for code in order:
-			for tpl in (hdTpl, plainTpl):
-				if len(tpl) == 0:
-					continue
-				u = self.buildQualityUrl(tpl, code)
-				if self.probePlayable(u):
-					return u
 		return ''
 	#搜索
 	def get_list_search(self,html,tid):
