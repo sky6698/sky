@@ -20,14 +20,17 @@ import time
 #   1200 -> 1280x720 @25fps 约 1.25Mbps
 #   2000 -> 1280x720 @25fps 约 1.9Mbps   ← 同分辨率高码率版，是站内最高档（站点没有 1080P 档）
 # 另外实测：普通 /asp/hls/ 链路里 1200 与 2000 会被 CDN 降级成 450 的画面（分片字节完全一致），
-#          只有走 /asp/h5e/ 或 /asp/enc/ 链路才是真高清（明文 TS，无 #EXT-X-KEY）。
+#          只有走 /asp/h5e/ 链路才是真高清（明文 TS，无 #EXT-X-KEY，PAT/PMT 标准）。
+# 重要：h5e 的 CDN 域由接口随机下发，其中会夹带第三方域（*.cntv.kfcbest.com / *.bytecdn.cn），
+#      这类域在部分网络下"清单能拉、分片拉不动"，播放器就会花屏。统一收敛到官方域。
 QUALITY_LEVELS = [
-	("2000", "超清720P"),
 	("1200", "高清720P"),
+	("2000", "超清720P"),
 	("850", "标清360P"),
 	("450", "流畅270P")
 ]
 PLAIN_SAFE_QUALITY = ("850", "450")   # 普通链路里真实可用的档位
+HD_OFFICIAL_HOST = "dh5ws01.v.cntv.cn"   # h5e 官方 CDN 域（证书 cctv.com）
 
 class Spider(Spider):  # 元类 默认的元类 type
 	def getName(self):
@@ -250,7 +253,8 @@ class Spider(Spider):  # 元类 默认的元类 type
 		url=''
 		parse=0
 		headers = {
-			'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1'
+			'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36',
+			'Referer':'https://tv.cctv.com/'
 		}
 		# flag 现在是清晰度线路名（1080P/720P/360P/270P），同时兼容旧线路名
 		quality='' if flag in ('CCTV','央视','中央台') else flag
@@ -301,19 +305,19 @@ class Spider(Spider):  # 元类 默认的元类 type
 		"节目大全":[{"key":"cid","name":"频道","value":[{"n":"全部","v":""},{"n":"CCTV-1综合","v":"EPGC1386744804340101"},{"n":"CCTV-2财经","v":"EPGC1386744804340102"},{"n":"CCTV-3综艺","v":"EPGC1386744804340103"},{"n":"CCTV-4中文国际","v":"EPGC1386744804340104"},{"n":"CCTV-5体育","v":"EPGC1386744804340107"},{"n":"CCTV-6电影","v":"EPGC1386744804340108"},{"n":"CCTV-7国防军事","v":"EPGC1386744804340109"},{"n":"CCTV-8电视剧","v":"EPGC1386744804340110"},{"n":"CCTV-9纪录","v":"EPGC1386744804340112"},{"n":"CCTV-10科教","v":"EPGC1386744804340113"},{"n":"CCTV-11戏曲","v":"EPGC1386744804340114"},{"n":"CCTV-12社会与法","v":"EPGC1386744804340115"},{"n":"CCTV-13新闻","v":"EPGC1386744804340116"},{"n":"CCTV-14少儿","v":"EPGC1386744804340117"},{"n":"CCTV-15音乐","v":"EPGC1386744804340118"},{"n":"CCTV-16奥林匹克","v":"EPGC1634630207058998"},{"n":"CCTV-17农业农村","v":"EPGC1563932742616872"},{"n":"CCTV-5+体育赛事","v":"EPGC1468294755566101"}]},{"key":"fc","name":"分类","value":[{"n":"全部","v":""},{"n":"新闻","v":"新闻"},{"n":"体育","v":"体育"},{"n":"综艺","v":"综艺"},{"n":"健康","v":"健康"},{"n":"生活","v":"生活"},{"n":"科教","v":"科教"},{"n":"经济","v":"经济"},{"n":"农业","v":"农业"},{"n":"法治","v":"法治"},{"n":"军事","v":"军事"},{"n":"少儿","v":"少儿"},{"n":"动画","v":"动画"},{"n":"纪实","v":"纪实"},{"n":"戏曲","v":"戏曲"},{"n":"音乐","v":"音乐"},{"n":"影视","v":"影视"}]},{"key":"fl","name":"字母","value":[{"n":"全部","v":""},{"n":"A","v":"A"},{"n":"B","v":"B"},{"n":"C","v":"C"},{"n":"D","v":"D"},{"n":"E","v":"E"},{"n":"F","v":"F"},{"n":"G","v":"G"},{"n":"H","v":"H"},{"n":"I","v":"I"},{"n":"J","v":"J"},{"n":"K","v":"K"},{"n":"L","v":"L"},{"n":"M","v":"M"},{"n":"N","v":"N"},{"n":"O","v":"O"},{"n":"P","v":"P"},{"n":"Q","v":"Q"},{"n":"R","v":"R"},{"n":"S","v":"S"},{"n":"T","v":"T"},{"n":"U","v":"U"},{"n":"V","v":"V"},{"n":"W","v":"W"},{"n":"X","v":"X"},{"n":"Y","v":"Y"},{"n":"Z","v":"Z"}]},{"key":"year","name":"年份","value":[{"n":"全部","v":""},{"n":"2023","v":"2023"},{"n":"2022","v":"2022"},{"n":"2021","v":"2021"},{"n":"2020","v":"2020"},{"n":"2019","v":"2019"},{"n":"2018","v":"2018"},{"n":"2017","v":"2017"},{"n":"2016","v":"2016"},{"n":"2015","v":"2015"},{"n":"2014","v":"2014"},{"n":"2013","v":"2013"},{"n":"2012","v":"2012"},{"n":"2011","v":"2011"},{"n":"2010","v":"2010"},{"n":"2009","v":"2009"},{"n":"2008","v":"2008"},{"n":"2007","v":"2007"},{"n":"2006","v":"2006"},{"n":"2005","v":"2005"},{"n":"2004","v":"2004"},{"n":"2003","v":"2003"},{"n":"2002","v":"2002"},{"n":"2001","v":"2001"},{"n":"2000","v":"2000"}]},{"key":"month","name":"月份","value":[{"n":"全部","v":""},{"n":"12","v":"12"},{"n":"11","v":"11"},{"n":"10","v":"10"},{"n":"09","v":"09"},{"n":"08","v":"08"},{"n":"07","v":"07"},{"n":"06","v":"06"},{"n":"05","v":"05"},{"n":"04","v":"04"},{"n":"03","v":"03"},{"n":"02","v":"02"},{"n":"01","v":"01"}]}]
 		}
 		}
+	#注意：这里不能带 Host 头——同一个 header 还要用于请求 CDN 域（如 dh5ws01.v.cntv.cn）
 	header = {
 		"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36",
-		"Host": "tv.cctv.com",
 		"Referer": "https://tv.cctv.com/"
 	}
 	
 	def localProxy(self,param):
-		return [200, "video/MP2T", action, ""]
+		return [404, "text/plain", "", ""]
 	#-----------------------------------------------自定义函数-----------------------------------------------
 	#访问网页
 	def webReadFile(self,urlStr,header):
 		html=''
-		req=urllib.request.Request(url=urlStr)#,headers=header
+		req=urllib.request.Request(url=urlStr,headers=self.header)
 		with  urllib.request.urlopen(req,timeout=20)  as response:
 			html = response.read().decode('utf-8')
 		return html
@@ -381,7 +385,51 @@ class Spider(Spider):  # 元类 默认的元类 type
 		soup = re.compile(r'<[^>]+>',re.S)
 		txt =soup.sub('', txt)
 		return txt.replace("&nbsp;"," ")
-	#取播放地址模板：返回 [高清模板(h5e/enc，真高清), 普通模板(只用于兜底低档)]
+	#候选 h5e 官方 CDN 域（同一份内容在多域都有；择优可规避"单节点慢/不通"造成的丢包花屏）
+	HD_HOST_POOL = ["dh5ws01.v.cntv.cn", "dh5wswx02.v.cntv.cn", "dh5qq01.v.cntv.cn"]
+	#替换 URL 的 host
+	def swapHost(self,u,host):
+		if len(u) == 0:
+			return u
+		head, sep, tail = u.partition('//')
+		h, sep2, rest = tail.partition('/')
+		return head + '//' + host + sep2 + rest
+	#在候选域里挑一个"确实能拉到目标档、且最快"的域
+	def pickHdTemplate(self,hdUrl,code):
+		if len(hdUrl) == 0:
+			return ''
+		cur = hdUrl.partition('//')[2].partition('/')[0]
+		cands = [cur]
+		for h in self.HD_HOST_POOL:
+			if h != cur:
+				cands.append(h)
+		best = ''
+		bestCost = 99.0
+		for host in cands:
+			try:
+				base = self.swapHost(hdUrl, host)
+				t0 = time.time()
+				if self.probePlayable(self.buildQualityUrl(base, code)):
+					cost = time.time() - t0
+					if cost < bestCost:
+						bestCost = cost
+						best = base
+			except:
+				pass
+		return best
+	#把 h5e 的第三方 CDN 域收敛成官方域（规避"清单可达、分片拉不动"的第三方节点）
+	def normalizeHdHost(self,u):
+		if len(u) == 0:
+			return u
+		try:
+			head, sep, tail = u.partition('//')
+			host, sep2, rest = tail.partition('/')
+			if len(host) > 0 and '.v.cntv.cn' not in host:
+				return head + '//' + HD_OFFICIAL_HOST + sep2 + rest
+		except:
+			pass
+		return u
+	#取播放地址模板：返回 [高清模板(h5e，真高清), 普通模板(只用于兜底低档)]
 	def getPlayTemplate(self,urlTxt):
 		url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
 		html=self.webReadFile(urlStr=url,header=self.header)
@@ -393,21 +441,61 @@ class Spider(Spider):  # 元类 默认的元类 type
 		hd = ''
 		for key in ('hls_h5e_url','hls_enc_url'):
 			if man.get(key):
-				hd = man[key].strip()
+				hd = self.normalizeHdHost(man[key].strip())
 				break
 		if len(hd) == 0:
 			hd = plain
 		return [hd,plain]
-	#把模板里的档位占位(main)换成目标档位
+	#把模板里的档位占位(main)换成目标档位（保留官方 query，CDN 路由/鉴权可能依赖它）
 	def buildQualityUrl(self,templateUrl,quality):
 		if len(templateUrl) == 0:
 			return ''
-		parts = templateUrl.split('?')[0].split('/')
+		base, sep, qs = templateUrl.partition('?')
+		parts = base.split('/')
 		for i in range(len(parts)):
 			if parts[i] == 'main':
 				parts[i] = quality
 		parts[-1] = quality + '.m3u8'
-		return '/'.join(parts)
+		url = '/'.join(parts)
+		if len(qs) > 0:
+			url = url + '?' + qs
+		return url
+	#真探活：m3u8 能拉 + 首个分片真能拉且是 MPEG-TS（0x47 同步）
+	#只探清单是不够的：CDN 可能"清单 200、分片 403 / 被劫持成 HTML"，播放器拿到的就是花屏
+	def probePlayable(self,m3u8Url):
+		if len(m3u8Url) == 0:
+			return False
+		try:
+			req = urllib.request.Request(url=m3u8Url)
+			req.add_header('User-Agent', self.header['User-Agent'])
+			with urllib.request.urlopen(req, timeout=8) as response:
+				if response.getcode() != 200:
+					return False
+				txt = response.read().decode('utf-8', 'ignore')
+			if '#EXTM3U' not in txt:
+				return False
+			seg = ''
+			for line in txt.split('\n'):
+				line = line.strip()
+				if len(line) > 0 and line[0] != '#':
+					seg = line
+					break
+			if len(seg) == 0:
+				return False
+			if seg.find('http') != 0:
+				seg = m3u8Url.split('?')[0].rsplit('/', 1)[0] + '/' + seg
+			req2 = urllib.request.Request(url=seg)
+			req2.add_header('User-Agent', self.header['User-Agent'])
+			req2.add_header('Range', 'bytes=0-187')
+			with urllib.request.urlopen(req2, timeout=8) as response2:
+				if response2.getcode() not in (200, 206):
+					return False
+				head = response2.read(188)
+			if len(head) < 188 or head[0] != 0x47:
+				return False
+			return True
+		except:
+			return False
 	#目标档位优先，其余按 高清->低清 依次兜底
 	def getQualityOrder(self,quality):
 		codes = [code for code, name in QUALITY_LEVELS]
@@ -425,25 +513,26 @@ class Spider(Spider):  # 元类 默认的元类 type
 		if len(hdTpl) == 0 and len(plainTpl) == 0:
 			return ''
 		order = self.getQualityOrder(quality)
-		trys = []
+		want = order[0]
+		#低档：优先走普通链路（全网 CDN，最稳），拉不动再走高清链路
+		if want in PLAIN_SAFE_QUALITY and len(plainTpl) > 0:
+			u = self.buildQualityUrl(plainTpl, want)
+			if self.probePlayable(u):
+				return u
+		#高清：在候选域里择优，挑"确实能拉到分片且最快"的域，规避丢包花屏
 		if len(hdTpl) > 0:
-			for code in order:
-				trys.append((hdTpl, code))
-		if len(plainTpl) > 0:
-			for code in order:
-				if code in PLAIN_SAFE_QUALITY:
-					trys.append((plainTpl, code))
-		url=''
-		for tpl, code in trys:
-			probe = self.buildQualityUrl(tpl, code)
-			try:
-				rsp = self.TestWebPage(urlStr=probe,header=self.header)
-			except :
-				rsp = 0
-			if rsp == 200:
-				url = probe
-				break
-		return url
+			fast = self.pickHdTemplate(hdTpl, want)
+			if len(fast) > 0:
+				return self.buildQualityUrl(fast, want)
+		#兜底：按优先序逐个试
+		for code in order:
+			for tpl in (hdTpl, plainTpl):
+				if len(tpl) == 0:
+					continue
+				u = self.buildQualityUrl(tpl, code)
+				if self.probePlayable(u):
+					return u
+		return ''
 	#搜索
 	def get_list_search(self,html,tid):
 		jRoot = json.loads(html)
