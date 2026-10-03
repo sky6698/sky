@@ -6,6 +6,13 @@
 作者 丢丢喵 🚓 内容均从互联网收集而来 仅供交流学习使用 版权归原创者所有 如侵犯了您的权益 请通知作者 将及时删除侵权内容
                     ====================Diudiumiao====================
 
+改造说明：
+    二级歌单不再使用 vod_tag:"folder" 进入三级列表，
+    点击歌单时直接把该歌单的全部歌曲拼成 vod_play_url 交给播放器整单连播。
+    vod_id 约定：
+        歌单  ->  "歌单ID@歌单名"
+        单曲  ->  歌曲直链（http 开头）
+
 """
 
 from Crypto.Util.Padding import unpad
@@ -56,6 +63,13 @@ headerx = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
     "Accept-Encoding": "gzip, deflate"
           }
+
+PLAY_FROM = "音乐专线"          # 详情页线路名
+PLAY_ID_SEP = "@"               # vod_id 中歌单ID与歌单名的分隔符
+MAX_TRACKS = 1000               # 单个歌单最多拼入的歌曲数，防止 vod_play_url 过长
+TRACKS_TIMEOUT = 30             # 歌单歌曲接口超时（大歌单会慢）
+
+_PLAYLIST_CACHE = {}            # 歌单ID -> (歌单名, 封面)，用于详情页补封面
 
 class Spider(Spider):
     global xurl
@@ -170,9 +184,12 @@ class Spider(Spider):
 
     def fetch_playlist_tracks_data(self, playlist_id):
         url = f'{xurl}/meting/?server=netease&type=playlist&id={playlist_id}'
-        detail = requests.get(url=url, headers=headerx)
-        detail.encoding = "utf-8"
-        return detail.json()
+        try:
+            detail = requests.get(url=url, headers=headerx, timeout=TRACKS_TIMEOUT)
+            detail.encoding = "utf-8"
+            return detail.json()
+        except Exception:
+            return {}
 
     def process_track_item(self, vod):
         name = vod['name']
@@ -204,11 +221,16 @@ class Spider(Spider):
         id = vod['id']
         pic = vod['coverImgUrl']
         remark = vod['playCount']
+        # 缓存歌单名与封面，详情页可补图
+        try:
+            _PLAYLIST_CACHE[str(id)] = (name, pic)
+        except Exception:
+            pass
+        # 不再标记 folder：点击歌单直接进入详情页，由 detailContent 输出整单播放列表
         return {
-            "vod_id": f"{id}@",
+            "vod_id": f"{id}{PLAY_ID_SEP}{name}",
             "vod_name": name,
             "vod_pic": pic,
-            "vod_tag": "folder",
             "vod_remarks": f"{remark} 播放量"
                }
 
@@ -232,7 +254,7 @@ class Spider(Spider):
 
     def categoryContent(self, cid, pg, filter, ext):
         videos = []
-        if '@' in cid:
+        if PLAY_ID_SEP in cid:
             fenge = self.split_cid(cid)
             data = self.fetch_playlist_tracks_data(fenge[0])
             videos = self.process_playlist_tracks(data)
@@ -242,10 +264,72 @@ class Spider(Spider):
         result = self.build_category_result(videos, pg)
         return result
 
+    # ==================== 歌单（二级项）整单连播 ====================
+
+    def get_playlist_info(self, did):
+        """从 vod_id 中拆出 歌单ID 与 歌单名"""
+        did = str(did)
+        if PLAY_ID_SEP in did:
+            playlist_id, name = did.split(PLAY_ID_SEP, 1)
+        else:
+            playlist_id, name = did, ''
+        return playlist_id, name
+
+    def clean_text(self, text):
+        """清掉会破坏 vod_play_url 分隔符（$ # 换行）的字符"""
+        text = str(text or '')
+        text = text.replace('$', '').replace('#', '')
+        text = text.replace('\r', ' ').replace('\n', ' ')
+        return text.strip()
+
+    def build_playlist_play_url(self, tracks):
+        """把歌单歌曲数组拼成 TVBox 播放列表：歌名$地址#歌名$地址"""
+        play_list = []
+        used = {}
+        for vod in tracks:
+            if not isinstance(vod, dict):
+                continue
+            url = self.clean_text(vod.get('url'))
+            if not url or 'http' not in url:
+                continue
+            name = self.clean_text(vod.get('name')) or '未知歌曲'
+            # 歌名去重，避免同名曲目导致选集列表塌陷成只显示一条
+            used[name] = used.get(name, 0) + 1
+            if used[name] > 1:
+                name = f'{name}({used[name]})'
+            play_list.append(f'{name}${url}')
+            if len(play_list) >= MAX_TRACKS:
+                break
+        return '#'.join(play_list)
+
+    def create_playlist_detail_item(self, did):
+        playlist_id, name = self.get_playlist_info(did)
+        pic = _PLAYLIST_CACHE.get(str(playlist_id), ('', ''))[1]
+        data = self.fetch_playlist_tracks_data(playlist_id)
+        tracks = data.get('tracks') if isinstance(data, dict) else None
+        play_url = self.build_playlist_play_url(tracks or [])
+        if play_url:
+            remarks = f"共{len(play_url.split('#'))}首"
+        else:
+            remarks = "歌单解析失败，请返回重试"
+        return {
+            "vod_id": did,
+            "vod_name": name or "歌单",
+            "vod_pic": pic,
+            "vod_remarks": remarks,
+            "vod_play_from": PLAY_FROM,
+            "vod_play_url": play_url
+               }
+
+    def create_playlist_detail_list(self, did):
+        return [self.create_playlist_detail_item(did)]
+
+    # ==================== 单曲（搜索结果等） ====================
+
     def create_video_detail_item(self, did):
         return {
             "vod_id": did,
-            "vod_play_from": '音乐专线',
+            "vod_play_from": PLAY_FROM,
             "vod_play_url": did
                }
 
@@ -261,14 +345,25 @@ class Spider(Spider):
         return result
 
     def detailContent(self, ids):
-        did = ids[0]
-        videos = self.create_videos_detail_list(did)
+        if isinstance(ids, (list, tuple)):
+            did = ids[0] if len(ids) > 0 else ''
+        else:
+            did = str(ids)
+        if str(did).startswith('http'):
+            # 单曲：直接把地址当作播放项
+            videos = self.create_videos_detail_list(did)
+        else:
+            # 歌单：把三级（歌单内歌曲）内容直接作为该二级项的播放列表
+            videos = self.create_playlist_detail_list(did)
         result = self.build_detail_result(videos)
         return result
 
     def get_redirect_location(self, id):
-        response = requests.get(url=id, headers=headerx, allow_redirects=False)
-        return response.headers.get('Location')
+        try:
+            response = requests.get(url=id, headers=headerx, allow_redirects=False, timeout=15)
+            return response.headers.get('Location')
+        except Exception:
+            return None
 
     def build_player_result(self, url):
         result = {}
@@ -279,7 +374,7 @@ class Spider(Spider):
         return result
 
     def playerContent(self, flag, id, vipFlags):
-        url = self.get_redirect_location(id)
+        url = self.get_redirect_location(id) or id
         result = self.build_player_result(url)
         return result
 
@@ -341,11 +436,3 @@ class Spider(Spider):
         elif params['type'] == "ts":
             return self.proxyTs(params)
         return None
-
-
-
-
-
-
-
-
