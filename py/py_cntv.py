@@ -12,6 +12,23 @@ import urllib
 import urllib.request
 import time
 
+# ==================== 清晰度配置 ====================
+# CNTV 的 HLS 按码率分档，地址形如 /asp/hls/{档位}/0303000a/3/default/{pid}/{档位}.m3u8
+# 实测（解 ts 内 H.264 的 SPS，并与 CNTV 自己的 master 清单交叉验证，多个视频一致）：
+#   450  -> 480x270  @25fps 约 0.5Mbps
+#   850  -> 640x360  @25fps 约 0.9Mbps
+#   1200 -> 1280x720 @25fps 约 1.25Mbps
+#   2000 -> 1280x720 @25fps 约 1.9Mbps   ← 同分辨率高码率版，是站内最高档（站点没有 1080P 档）
+# 另外实测：普通 /asp/hls/ 链路里 1200 与 2000 会被 CDN 降级成 450 的画面（分片字节完全一致），
+#          只有走 /asp/h5e/ 或 /asp/enc/ 链路才是真高清（明文 TS，无 #EXT-X-KEY）。
+QUALITY_LEVELS = [
+	("2000", "超清720P"),
+	("1200", "高清720P"),
+	("850", "标清360P"),
+	("450", "流畅270P")
+]
+PLAIN_SAFE_QUALITY = ("850", "450")   # 普通链路里真实可用的档位
+
 class Spider(Spider):  # 元类 默认的元类 type
 	def getName(self):
 		return "中央电视台"#可搜索
@@ -189,8 +206,11 @@ class Spider(Spider):  # 元类 默认的元类 type
 			"vod_director":'',
 			"vod_content":brief
 		}
-		vod['vod_play_from'] = fromId
-		vod['vod_play_url'] = "#".join(videoList)
+		# 多清晰度：每条线路的选集完全相同，播放时按线路名取对应档位
+		froms = [name for code, name in QUALITY_LEVELS]
+		episodes = "#".join(videoList)
+		vod['vod_play_from'] = "$$$".join(froms)
+		vod['vod_play_url'] = "$$$".join([episodes for _ in froms])
 		result = {
 			'list':[
 				vod
@@ -214,8 +234,8 @@ class Spider(Spider):  # 元类 默认的元类 type
 		for value in ListRe:
 			returnTxt.append(value)	
 		return returnTxt
-	def searchContent(self,key,quick):
-		return self.searchContentPage(key, quick, '1')
+	def searchContent(self,key,quick,pg='1'):
+		return self.searchContentPage(key, quick, pg)
 	def searchContentPage(self, key, quick, page):
 		key=urllib.parse.quote(key)
 		Url='https://search.cctv.com/ifsearch.php?page=1&qtext={0}&sort=relevance&pageSize=20&type=video&vtime=-1&datepid=1&channel=&pageflag=0&qtext_str={0}'.format(key)
@@ -232,16 +252,19 @@ class Spider(Spider):  # 元类 默认的元类 type
 		headers = {
 			'User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1'
 		}
-		if flag=='CCTV':
-			url=self.get_m3u8(urlTxt=id)
-		else:
-			try:
+		# flag 现在是清晰度线路名（1080P/720P/360P/270P），同时兼容旧线路名
+		quality='' if flag in ('CCTV','央视','中央台') else flag
+		try:
+			if id.find('http')==0:
+				# 视频页地址：先取页面里的真实 pid
 				html=self.webReadFile(urlStr=id,header=self.header)
-				guid=self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"(.+?)";',Index=1)
-				url=self.get_m3u8(urlTxt=guid)
-			except :
-				url=id
-				parse=1
+				pid=self.get_RegexGetText(Text=html,RegexText=r'var\sguid\s*=\s*"([^"]+)"',Index=1)
+			else:
+				pid=id
+			if pid:
+				url=self.get_m3u8(urlTxt=pid,quality=quality)
+		except :
+			url=''
 		if url.find('https:')<0:
 			url=id
 			parse=1
@@ -291,15 +314,18 @@ class Spider(Spider):  # 元类 默认的元类 type
 	def webReadFile(self,urlStr,header):
 		html=''
 		req=urllib.request.Request(url=urlStr)#,headers=header
-		with  urllib.request.urlopen(req)  as response:
+		with  urllib.request.urlopen(req,timeout=20)  as response:
 			html = response.read().decode('utf-8')
 		return html
-	#判断网络地址是否存在
+	#判断网络地址是否存在（异常返回 0，避免单个档位探测失败打断整条兜底链）
 	def TestWebPage(self,urlStr,header):
-		html=''
-		req=urllib.request.Request(url=urlStr,method='HEAD')#,headers=header
-		with  urllib.request.urlopen(req)  as response:
-			html = response.getcode () 
+		html=0
+		try:
+			req=urllib.request.Request(url=urlStr,method='HEAD')#,headers=header
+			with  urllib.request.urlopen(req,timeout=10)  as response:
+				html = response.getcode ()
+		except Exception as e:
+			html = 0
 		return html
 	#正则取文本
 	def get_RegexGetText(self,Text,RegexText,Index):
@@ -355,63 +381,69 @@ class Spider(Spider):  # 元类 默认的元类 type
 		soup = re.compile(r'<[^>]+>',re.S)
 		txt =soup.sub('', txt)
 		return txt.replace("&nbsp;"," ")
-	#取m3u8
-	#取最高清晰度 m3u8（解析官网网页播放器的多档 master，直接返回最高档位的子列表，
-	#播放器不会 ABR 降级，必然播最高清；manifest 各 key 依次兜底）
-	def get_m3u8(self,urlTxt):
+	#取播放地址模板：返回 [高清模板(h5e/enc，真高清), 普通模板(只用于兜底低档)]
+	def getPlayTemplate(self,urlTxt):
 		url = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={0}".format(urlTxt)
 		html=self.webReadFile(urlStr=url,header=self.header)
 		jo =json.loads(html)
+		if jo.get('ack') != 'yes':
+			return ['','']
 		man = jo.get('manifest') or {}
-		#实测结论：
-		#hls_url=明文CDN，无UDRM，不花屏，但通常只有 480x270 单档
-		#enc/h5e/enc2=UDRM加密（视频轨加密、音频轨不加密），有 270P~720P 四档；
-		#TVBox(Android)无UDRM解密模块，直接播加密流=画面花屏（音频正常），
-		#故只作 hls_url 缺失时的最后兜底（宁可花屏不黑屏）
-		#hls_audio_url不用：纯音频流，误返回会只有声音无画面
-		candidates=[]
-		link = (jo.get('hls_url') or '').strip()
-		if link:
-			candidates.append(link)
-		for key in ('hls_enc_url','hls_h5e_url','hls_enc2_url'):
-			m = (man.get(key) or '').strip()
-			if m and m not in candidates:
-				candidates.append(m)
-		for master in candidates:
-			if not master:
-				continue
+		plain = (jo.get('hls_url') or '').strip()
+		hd = ''
+		for key in ('hls_h5e_url','hls_enc_url'):
+			if man.get(key):
+				hd = man[key].strip()
+				break
+		if len(hd) == 0:
+			hd = plain
+		return [hd,plain]
+	#把模板里的档位占位(main)换成目标档位
+	def buildQualityUrl(self,templateUrl,quality):
+		if len(templateUrl) == 0:
+			return ''
+		parts = templateUrl.split('?')[0].split('/')
+		for i in range(len(parts)):
+			if parts[i] == 'main':
+				parts[i] = quality
+		parts[-1] = quality + '.m3u8'
+		return '/'.join(parts)
+	#目标档位优先，其余按 高清->低清 依次兜底
+	def getQualityOrder(self,quality):
+		codes = [code for code, name in QUALITY_LEVELS]
+		want = ''
+		for code, name in QUALITY_LEVELS:
+			if name == quality:
+				want = code
+		if len(want) > 0:
+			codes.remove(want)
+			codes.insert(0, want)
+		return codes
+	#取指定清晰度的 m3u8 地址
+	def get_m3u8(self,urlTxt,quality=''):
+		hdTpl, plainTpl = self.getPlayTemplate(urlTxt)
+		if len(hdTpl) == 0 and len(plainTpl) == 0:
+			return ''
+		order = self.getQualityOrder(quality)
+		trys = []
+		if len(hdTpl) > 0:
+			for code in order:
+				trys.append((hdTpl, code))
+		if len(plainTpl) > 0:
+			for code in order:
+				if code in PLAIN_SAFE_QUALITY:
+					trys.append((plainTpl, code))
+		url=''
+		for tpl, code in trys:
+			probe = self.buildQualityUrl(tpl, code)
 			try:
-				txt=self.webReadFile(urlStr=master,header=self.header)
-				lines=txt.split('\n')
-				#多档 master：选 BANDWIDTH 最大的档位
-				best_band=0
-				best_uri=''
-				for i in range(len(lines)-1):
-					if lines[i].startswith('#EXT-X-STREAM-INF'):
-						mb=re.search(r'BANDWIDTH=(\d+)',lines[i])
-						band=int(mb.group(1)) if mb else 0
-						if band>=best_band:
-							best_band=band
-							best_uri=lines[i+1].strip()
-				if best_uri:
-					if best_uri.startswith('http'):
-						target=best_uri
-					else:
-						mu=re.match(r'(https?://[^/]+)',master)
-						target=mu.group(1)+best_uri if mu else ''
-					if target:
-						try:
-							t=self.webReadFile(urlStr=target,header=self.header)
-							if '#EXTINF' in t:
-								return target
-						except:
-							pass
-				#单档 media：master 本身就是最高清
-				if '#EXTINF' in txt:
-					return master
-			except:
-				pass
-		return ''
+				rsp = self.TestWebPage(urlStr=probe,header=self.header)
+			except :
+				rsp = 0
+			if rsp == 200:
+				url = probe
+				break
+		return url
 	#搜索
 	def get_list_search(self,html,tid):
 		jRoot = json.loads(html)
