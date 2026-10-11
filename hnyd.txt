@@ -106,7 +106,7 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u
 山东卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227008/1.m3u8?fmt=ts2hls
 
 
-河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227198/index.m3u8
+
 东方卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226450/index.m3u8
 东方卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226681/index.m3u8
 江苏卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226722/index.m3u8
@@ -178,14 +178,14 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u
 广东卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227415/index.m3u8
 深圳卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227428/index.m3u8
 江苏卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227436/index.m3u8
-山东卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227444/index.m3u8
+四川卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227444/index.m3u8
 浙江卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227438/index.m3u8
 湖南卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227425/index.m3u8
-四川卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227442/index.m3u8
+山东卫视4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227442/index.m3u8
 多彩文体4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226882/1.m3u8?fmt=ts2hls
 
 河南频道,#genre#
-河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227431/index.m3u8
+河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226526/index.m3u8
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226463/index.m3u8
 河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226938/1.m3u8?fmt=ts2hls
 河南都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226911/1.m3u8?fmt=ts2hls
@@ -207,8 +207,6 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u
 国学频道,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227154/1.m3u8?fmt=ts2hls
 健康河南,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227091/1.m3u8?fmt=ts2hls
 
-河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226526/index.m3u8
-河南卫视,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227198/index.m3u8
 河南都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227241/index.m3u8
 河南新闻,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226544/index.m3u8
 河南民生,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227268/index.m3u8
@@ -233,9 +231,10 @@ CCTV4K,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227382/index.m3u
 郑州都市,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226708/index.m3u8
 郑州教育,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227383/index.m3u8
 
-南阳综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226671/index.m3u8
+南阳新闻综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226362/index.m3u8
+南阳新闻综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226671/index.m3u8
+南阳科教,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226371/index.m3u8
 南阳科教,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226620/index.m3u8
-南阳公共,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226575/index.m3u8
 方城电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221227254/index.m3u8
 镇平电视台,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226534/index.m3u8
 邓州综合,http://iptv.cdn.ha.chinamobile.com/PLTV/88888888/224/3221226348/index.m3u8
