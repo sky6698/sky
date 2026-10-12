@@ -17,6 +17,18 @@ from base.spider import Spider
 
 sys.path.append('..')
 
+# 取流请求头：瓜子 CDN 按 User-Agent 判片——浏览器 UA 或空 UA 一律被 302 到一段
+# 19 秒推广片头（app.wanglaoshi），连分片也是；播放器自身的 UA 不受我们控制，
+# 所以统一改由本机代理带播放器 UA 取流，彻底规避。
+PLAY_HEADERS = {'User-Agent': 'Lavf/57.83.100', 'Referer': 'http://WJiZxLXA2.com/'}
+
+# True：播放地址经本机代理（推荐）。若你的播放器不支持 do=py 本机代理导致
+# 无法播放，改成 False 可退回直链。
+USE_LOCAL_PROXY = True
+
+PROXY_BASE = 'http://127.0.0.1:9978/proxy?do=py'
+
+
 class Spider(Spider):
     def __init__(self):
         self.name = "瓜子"
@@ -464,8 +476,8 @@ t5lYKfpe8k83ZA==
                 params['resolution'] = resolutions[0]
                 data = self.get_data(params, '/App/Resource/VurlDetail/showOne', use_cache=False)
                 if data and 'url' in data:
-                    return {"parse": 0, "playUrl": "", "url": data['url'],
-                            "header": json.dumps({"User-Agent": "Lavf/57.83.100", "Referer": "http://WJiZxLXA2.com/"}), 'danmaku': 'http://127.0.0.1:9978/proxy?do=diydanmu'}
+                    return {"parse": 0, "playUrl": "", "url": self.play_address(data['url']),
+                            "header": json.dumps(PLAY_HEADERS), 'danmaku': 'http://127.0.0.1:9978/proxy?do=diydanmu'}
             return {"parse": 0, "playUrl": "", "url": ""}
         except Exception as e:
             print(f"播放解析失败: {e}")
@@ -478,8 +490,74 @@ t5lYKfpe8k83ZA==
     def manualVideoCheck(self):
         pass
 
-    def localProxy(self, params):
-        return None
+    # ---------- 播放取流：本机代理 ----------
+    def play_address(self, address):
+        """把正片地址换成经本机代理取流的地址。
+
+        瓜子 CDN 按 User-Agent 判别是否放行正片：浏览器 UA 或空 UA 会被 302 到
+        一段 19 秒的推广片头。播放器的 UA 我们改不了，但可以让所有取流都先经过
+        本机代理，由这里统一带上播放器 UA，播放器用什么 UA 就都无所谓了。
+        """
+        if not USE_LOCAL_PROXY or not address:
+            return address
+        return '%s&type=m3u8&url=%s' % (PROXY_BASE, urllib.parse.quote(address, safe=''))
+
+    def rewrite_key_uri(self, line, base_address):
+        """重写 #EXT-X-KEY 等标签里的 URI，保证密钥也走代理。"""
+        def swap(match):
+            target = match.group(1)
+            full = target if target.startswith('http') else urllib.parse.urljoin(base_address, target)
+            return 'URI="%s"' % self.play_address(full)
+        return re.sub(r'URI="([^"]+)"', swap, line)
+
+    def rewrite_playlist(self, text, base_address):
+        """把播放列表里的分片地址全部改成本机代理地址。
+
+        分片同样受 UA 限制，只代理列表不代理分片的话照样会播到广告。
+        """
+        lines = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                lines.append(line)
+            elif stripped.startswith('#'):
+                lines.append(self.rewrite_key_uri(line, base_address))
+            else:
+                full = stripped if stripped.startswith('http') else urllib.parse.urljoin(base_address, stripped)
+                lines.append(self.play_address(full))
+        return '\n'.join(lines)
+
+    def fetch_for_proxy(self, address):
+        """带播放器 UA 取流，返回 response。"""
+        return self.get(address, headers=PLAY_HEADERS, timeout=20)
+
+    def localProxy(self, param):
+        param = param or {}
+        address = urllib.parse.unquote(param.get('url') or '')
+        if not address:
+            return [404, 'text/plain', {}, '']
+        try:
+            response = self.fetch_for_proxy(address)
+            if response.status_code != 200:
+                # 取流异常时退回直链，至少还能播
+                return [302, 'text/plain', '', {'Location': address}]
+            body = response.content or b''
+            is_playlist = body[:7] == b'#EXTM3U' or address.lower().split('?')[0].endswith('.m3u8')
+            if is_playlist:
+                text = body.decode('utf-8', 'ignore')
+                return [200, 'application/vnd.apple.mpegurl',
+                        self.rewrite_playlist(text, address),
+                        {'Content-Type': 'application/vnd.apple.mpegurl'}]
+            try:
+                content_type = response.headers.get('Content-Type') or ''
+            except Exception:
+                content_type = ''
+            if (not content_type) or ('octet-stream' in content_type.lower()):
+                content_type = 'video/mp2t'
+            return [200, content_type, body, {'Content-Type': content_type}]
+        except Exception as e:
+            print(f"本机代理取流失败: {e}")
+            return [302, 'text/plain', '', {'Location': address}]
 
     def get_cached_data(self, cache_key, data, path):
         current_time = time.time()
