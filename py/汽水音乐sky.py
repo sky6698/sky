@@ -148,6 +148,61 @@
 #         4) `playerContent` 里 `quality == "mp3"` 分支保留, 仅用于兼容**历史缓存列表**
 #            中的旧 id(新列表不再产生这种 id), 命中后回落官方最高档。
 #
+# ★★★ 第十一轮(2026-10-13): **听歌模式改用官方数据源 + 曲目量补足到 50**
+#   用户反馈: 「听歌模式里获取的列表和汽水音乐里对应模式获取的列表不一样, 有些模式下是
+#             按模式名字搜索的列表; 获取的播放列表数据太少, 让获取不少于 50; 官方可以点
+#             查看更多继续加载」。
+#   旧实现的问题(三处, 全都在 `_collection_detail`):
+#     ① `kind="preference"`(默认/熟悉/新鲜) 用 **热歌榜 / 怀旧电台 / 新歌榜** 顶替 ——
+#        纯属猜测, 和官方「推荐/熟悉/新鲜」是三套不同的东西;
+#     ② `kind="scene"`(45 个场景模式) 落进 else 分支 → **按模式名去搜索** —— 就是用户
+#        看到的「按模式名字搜索的列表」;
+#     ③ 电台一次只拿 6 首; 榜单/歌单也没保证 ≥50。
+#   ★官方真实数据源(全部实测确认, 权威实现见 github Laine127/libresoda `soda/feed.rs`,
+#     上游 guohuiyuan/music-lib; 端点与参数已逐条复核):
+#     - 听歌模式列表   `POST /luna/pc/feed/mode`   (源里用 /luna/feed/mode, 等价)
+#     - **模式内容流** `POST /luna/pc/discover/mix`
+#         body = {block_type:"discovery_playlist", sub_channel_id:0,
+#                 exposure_radio_list:[], cursor:"", count:20,
+#                 scene_mode_id:<场景号>}          ← 场景模式
+#                / {..., mode:"default|familiar|fresh"}  ← 偏好模式
+#         返回 `inner_block[].resources[].entity.playlist` = 该模式下的**歌单**。
+#     - 主数据源: **`POST /luna/pc/discover/mix`** 的官方推荐歌单池(保持服务端顺序), 用
+#       `POST /luna/playlist/detail`(count=300) 展开成曲目。实测一个歌单动辄 100+ 首
+#       (「经典摇滚入坑指南」121 首), 所以 **1~2 次请求即可凑够 50 首**(约 1~1.5s)。
+#     - `POST /luna/pc/feed/song-tab`(官方推荐队列, `items[].entity.track_wrapper.track`)
+#       虽是"进模式后真正播放的流", 但实测每次固定 6 首、忽略 count, **且对所有
+#       `scene_mode_id` / `mode` 返回的是同一条随机流**(7 个模式的前 3 首几乎完全一样)
+#       → 用它会让所有模式长得一模一样, 还慢 3 倍。故**不采用**(留档备查)。
+#     ⚠️ **未登录拿不到「场景专属流」**(重要实测, 别再重复踩):
+#       - `scene_mode_id` 对 discover/mix **基本不过滤** —— 同一场景连采样 4 次, 歌单集合
+#         **零交集**; 跨场景交集率(5~9 / 33)与「完全不带场景」的基线相同。早先单次采样
+#         看到的「动感健身→刷脂电音」只是巧合。
+#       - `song-tab` 的 `scene_mode_id` / `queue_type` / `sub_queue_type` / `feed_scene_mode`
+#         也全部无效(9 种参数变体结果无差异)。
+#       - `/luna/pc/feed/mode/{cutover,switch,start,select,set}` 全部 **404**
+#         —— 不存在"切换/开启模式"的接口。
+#       → 汽水的「听歌模式」对未登录请求更像 **UI + 推荐权重的提示**(feed_mode 条目里带的
+#         是 `cutover_toast`/`game_play_info` 这类 UI 字段), 服务端仍返回同一个随机推荐池。
+#         参数已全部透传, 登录态下服务端若认就会自动生效; 源侧不依赖它做过滤。
+#   ⚠️ 电台(`/luna/feed/radio/tracks`)是**真拿不到 50**: 每次固定 6 首, `count`/`limit`/
+#      `cursor`/`offset` 全部无效; 电台 id 也不是 playlist id(`playlist/detail` 回
+#      `1000005`), 且无 `/luna/radio/detail` 一类端点(404)。故电台改为多轮累积去重
+#      (上限 6 轮 ≈ 3.5s, 通常 20 首左右), 这是服务端限制, 非源侧可解。
+#   ⚠️ TVBox 的**详情页没有分页**(一次返回全部集数), 做不到官方那种「查看更多继续加载」,
+#      所以这里一次给足: extend 的 `mode_count`(默认 50, 上限 200) 控制条数。
+#   ⚠️ 偏好模式的 `mode`(default/familiar/fresh) 参数**对未登录请求不生效**(同参数连调
+#      3 次结果全不同, 三个 mode 间也无稳定差异 —— 服务端个性化需要登录态)。故「默认/
+#      熟悉/新鲜」三个模式拿到的是同一个官方随机推荐池; 参数照传, 源侧无法进一步区分。
+#   改动: 1) 新增 `_mode_playlists()` / `_feed_mode_tracks()`(走官方 discover/mix 的
+#            推荐歌单池 → playlist/detail 展开);
+#         2) `kind="preference"` / `"scene"` 改走 `_feed_mode_tracks()`, **删掉**「热歌榜/
+#            新歌榜/怀旧电台顶替」与「按模式名搜索」两条兜底(怀旧电台仅留作 familiar 的
+#            最终兜底);
+#         3) `_radio_tracks(radio_id, want)` 增加多轮累积去重;
+#         4) 新增 `mode_count` 开关与 `_mode_want()`; 新增 `_MODE_TRACK_CACHE`(600s 缓存,
+#            推荐池是随机采样, 不缓存会让详情页每次结果都变)。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
@@ -159,6 +214,8 @@
 #   "audio_format":1  回填 format=音频 MIME(★默认 0=不回填)。它在**非沉浸式**下会命中
 #                     `AudioUtil.isAudio()` 判据①把官方档位分流到 AudioActivity; 沉浸式
 #                     (默认)下不生效。保留仅为对照排查。
+#   "mode_count":100  听歌模式/电台一次返回的曲目条数(★默认 50, 范围 20~200)。
+#                     TVBox 详情页不能翻页, 只能靠调大这个值来「加载更多」。
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -196,6 +253,10 @@ CHARTS = [("热歌榜", "7036274230471712007"), ("新歌榜", "70608125978848699
 # 官方档位 → audio/mp4 候选地址的探测结果缓存 {(track_id, quality): (url, ts)}
 # URL 有效期约 1 天, 缓存只保 300s, 避免过期地址被复用。
 _APP_PROBE_CACHE = {}
+# 听歌模式曲目缓存 {"s:<scene_id>|m:<mode>|<want>": (tracks, ts)}。
+# 模式流是服务端**随机推荐**, 同一模式连续请求结果不同; 缓存 600s 免得详情页反复拉取。
+_MODE_TRACK_CACHE = {}
+_MODE_TRACK_TTL = 600
 
 # ---------------------------------------------------------------- 完整音源(酷我直连)
 # 「VIP替代」线原本走第三方聚合站(yx520), 单次冷启 2.4s / 热 1s → 起播慢。
@@ -225,7 +286,8 @@ _ALT_NOISE_CJK = ("伴奏", "纯音乐", "铃声", "翻唱", "改编", "串烧",
                   "钢琴", "吉他", "唢呐", "二胡", "环绕", "现场", "摇滚", "慢摇", "片段",
                   "试听", "演唱会", "巡演", "音乐节", "原曲", "旧版")
 _ALT_NOISE_EN = ("dj", "remix", "live", "cover", "inst", "epic", "demo", "remaster", "ktv", "3d")
-# 怀旧电台(「熟悉模式」用)
+# 怀旧电台: 仅作「熟悉模式」的**最终兜底** —— 主路径已改用官方 discover/mix
+# (见文件头「第十一轮」); 电台接口每次只回 6 首且无分页参数, 不适合当主数据源。
 NOSTALGIA_RADIO = "7408841207276748809"
 # 听抖音分类: (显示名, 搜索关键词)。★关键词用分类名本身; 不要用「热门视频」。
 VIDEO_CATS = [
@@ -1230,23 +1292,46 @@ class Spider(BaseSpider):
         return vod
 
     def _collection_detail(self, info):
-        """合集(歌单/电台/榜单/听歌模式) → 曲目列表"""
+        """合集(歌单/电台/榜单/听歌模式) → 曲目列表。
+
+        ★听歌模式(preference / scene)不再用「热歌榜/新歌榜/怀旧电台」或「按模式名搜索」
+          兜底 —— 那些拿到的列表和官方**根本不是一回事**(见文件头「第十一轮」)。
+          现直接走官方同款接口:
+            偏好模式 → POST /luna/pc/discover/mix  {mode: default|familiar|fresh}
+            场景模式 → POST /luna/pc/discover/mix  {scene_mode_id: N}
+          再把该模式下的歌单展开成曲目, 默认凑够 `mode_count`(50) 首。
+        """
         kind, rid = str(info.get("kind") or ""), str(info.get("id") or "")
+        want = self._mode_want()
         if kind == "chart":
             tracks = self._chart_tracks(rid)
         elif kind == "playlist":
             tracks = self._playlist_tracks(rid)
         elif kind == "radio":
-            tracks = self._radio_tracks(rid)
+            tracks = self._radio_tracks(rid, want)
         elif kind == "preference":
-            tracks = (self._chart_tracks(CHARTS[0][1]) if rid == "default" else
-                      self._radio_tracks(NOSTALGIA_RADIO) if rid == "familiar" else
-                      self._chart_tracks(CHARTS[1][1]))
+            tracks = self._feed_mode_tracks(mode=rid or "default", want=want)
+            if not tracks and rid == "familiar":        # 最后兜底: 怀旧电台
+                tracks = self._radio_tracks(NOSTALGIA_RADIO, want)
+        elif kind == "scene":
+            tracks = self._feed_mode_tracks(scene_id=rid, want=want)
         else:
-            tracks = []  # 场景模式: 用模式名搜索兜底
+            tracks = []                                 # 未知 kind(防御): 下面按名字搜索
         if not tracks:
             tracks = self._search_tracks(info.get("name") or "热门歌曲")
         return self._playlist_card(info, tracks)
+
+    def _mode_want(self):
+        """听歌模式/电台一次要拿多少首(extend 的 mode_count, 默认 50, 上限 200)。
+
+        TVBox 的详情页**没有分页**(一次返回全部集数), 做不到官方那种「查看更多继续
+        加载」, 所以这里直接一次给足; 想更多就把 mode_count 调大。
+        """
+        try:
+            n = int(str((self._cfg or {}).get("mode_count") or 50).strip() or 50)
+        except Exception:
+            n = 50
+        return max(20, min(200, n))
 
     def _search_tracks(self, keyword, page=1):
         payload = {"search_type": "track", "q": str(keyword),
@@ -1263,11 +1348,112 @@ class Spider(BaseSpider):
                  data.get("tracks") or data.get("items") or [])
         return [t for t in (self._track(x) for x in items) if t]
 
-    def _radio_tracks(self, radio_id):
-        data = self._req("/luna/feed/radio/tracks", {
-            "radio_id": str(radio_id), "played_media": [],
-            "feed_radio_media_extra": {"real_groups": []}, "flow_type": 2, "full_media": True})
-        return [t for t in (self._track(x) for x in (data.get("items") or [])) if t]
+    def _mode_playlists(self, scene_id="", mode=""):
+        """官方 `/luna/pc/discover/mix`: 取官方推荐歌单池(用于补足曲目)。
+
+        返回 `[(playlist_id, count_tracks), ...]`, **保持服务端原始顺序**; 拿不到返回 []。
+
+        ★不要按曲数排序! 服务端是按相关性排的, 按曲数降序会把「经典摇滚入坑指南」这类
+          **大而泛**的歌单顶到第一位(实测踩过这个坑)。
+
+        ⚠️ 实测 `scene_mode_id` / `mode` 对未登录请求**基本不过滤**: 同一 scene 连采样
+          4 次歌单集合**零交集**, 跨场景交集率(~5~9/33)与「完全不带场景」的基线相同。
+          即这个接口返回的是一**个巨大的随机推荐池**; 早先单次采样看到的「动感健身→
+          刷脂电音」只是巧合。参数仍照传(服务端认了就自动生效), 但源侧不依赖它做过滤。
+        """
+        body = {"block_type": "discovery_playlist", "sub_channel_id": 0,
+                "exposure_radio_list": [], "cursor": "", "count": 20}
+        if scene_id not in (None, ""):
+            try:
+                body["scene_mode_id"] = int(str(scene_id))
+            except Exception:
+                body["scene_mode_id"] = str(scene_id)
+        if mode:
+            body["mode"] = str(mode)
+        data = self._req("/luna/pc/discover/mix", body)
+        out = []
+        for block in (data.get("inner_block") or []):
+            for res in (block.get("resources") or []):
+                pl = ((res.get("entity") or {}).get("playlist") or {})
+                pid = str(pl.get("id") or "")
+                if pid:
+                    out.append((pid, int(pl.get("count_tracks") or 0)))
+        return out                                   # 保持服务端顺序(相关性优先)
+
+    def _feed_mode_tracks(self, scene_id="", mode="", want=50):
+        """听歌模式曲目: 用官方推荐歌单(`discover/mix`)展开, 凑够 want 首。
+
+        为什么这么取(全部实测):
+          ① `POST /luna/pc/discover/mix` 是官方推荐内容池, 返回 `inner_block[].resources[]`
+             `.entity.playlist`; 用 `POST /luna/playlist/detail`(count=300) 展开即曲目。
+             实测一个歌单动辄 100+ 首(「经典摇滚入坑指南」121 首) → 通常 1~2 次请求够 50。
+          ② **不用** `POST /luna/pc/feed/song-tab`(官方推荐队列)当主路径, 尽管它才是"进模式
+             后真正播放的流": 它每次固定 6 首、忽略 count、**且对所有 scene/mode 参数返回的
+             都是同一条随机流**(实测 7 个模式的前 3 首几乎完全一样) → 用它会让所有模式
+             长得一模一样, 还慢 3 倍(3s vs 1s)。故不采用。
+        合计约 1~1.5s, 且有 600s 缓存(推荐池是随机采样, 不缓存会让详情页每次结果都变)。
+
+        ⚠️ 未登录拿不到「场景专属流」(见 `_mode_playlists` 的说明): 同一场景连采样 4 次
+          歌单集合零交集, 跨场景交集率与「不带场景」的基线相同。所以各模式拿到的是
+          **官方推荐池的不同随机采样** —— 模式之间内容不同(观感上"每个模式一个样"),
+          但不是服务端按场景精确过滤的结果。这仍远好于旧实现(旧的是「默认→热歌榜,
+          熟悉→怀旧电台, 新鲜→新歌榜」和「场景→按模式名搜索」, 与官方无关)。
+          `scene_mode_id` / `mode` 照传, 服务端认了就自动生效。
+        """
+        key = "s:%s|m:%s|%d" % (scene_id, mode, want)
+        now = time.time()
+        hit = _MODE_TRACK_CACHE.get(key)
+        if hit and now - hit[1] < _MODE_TRACK_TTL:
+            return hit[0]
+        tracks, seen = [], set()
+        for pid, _count in self._mode_playlists(scene_id, mode):
+            if len(tracks) >= want:
+                break
+            try:
+                part = self._playlist_tracks(pid)
+            except Exception:
+                part = []
+            for t in part:
+                tid = str((t or {}).get("id") or "")
+                if tid and tid not in seen:
+                    seen.add(tid)
+                    tracks.append(t)
+        tracks = tracks[:want]
+        if tracks:
+            _MODE_TRACK_CACHE[key] = (tracks, now)
+            if len(_MODE_TRACK_CACHE) > 60:            # 简单清理, 防无界增长
+                for k in list(_MODE_TRACK_CACHE)[:20]:
+                    _MODE_TRACK_CACHE.pop(k, None)
+        return tracks
+
+    def _radio_tracks(self, radio_id, want=50):
+        """电台曲目: 官方每次只回 **6 首**, 且 `count` / `limit` / `cursor` / `offset`
+        参数**全都不生效**(实测 9 种变体都固定 6 条), 结果还是随机流 → 只能多轮累积去重。
+        电台 id **不是 playlist id**(`playlist/detail` 回 `status_code=1000005`),
+        也没有别的电台详情端点(试过 `/luna/radio/detail`、`/luna/pc/radios/{id}` 全 404)。
+
+        ★这是「获取的播放列表数据太少」的第二个来源(第一个是听歌模式走错了数据源)。
+          轮数硬上限 6 轮(每轮 ~0.6s, 合计 ~3.5s): 随机流再多拉收益递减(实测 12 轮
+          → 去重 24 首), 所以不追求凑满 want, 够不到就返回现有的。
+        """
+        tracks, seen = [], set()
+        rounds = max(3, min(6, (max(1, want) // 12) + 3))
+        for _ in range(rounds):
+            data = self._req("/luna/feed/radio/tracks", {
+                "radio_id": str(radio_id), "played_media": [],
+                "feed_radio_media_extra": {"real_groups": []}, "flow_type": 2, "full_media": True})
+            items = data.get("items") or []
+            if not items:
+                break
+            for x in items:
+                t = self._track(x)
+                tid = str((t or {}).get("id") or "")
+                if t and tid and tid not in seen:
+                    seen.add(tid)
+                    tracks.append(t)
+            if len(tracks) >= want:
+                break
+        return tracks[:want]
 
     def _playlist_tracks(self, playlist_id):
         data = self._req("/luna/playlist/detail", {
@@ -1280,13 +1466,18 @@ class Spider(BaseSpider):
     def _playlist_card(self, info, tracks):
         """合集 → 一条多线路 vod(每档音质一条线路, 每首一个分集)"""
         valid = [t for t in tracks if t and t.get("id")]
-        streams = []
+        # ★取「档位最全」的那首来定线路(而非第一个有结果的): 实测某些曲目只放 1 档,
+        #   若碰上它, 整张合集就只剩 1 条线路(用户会觉得"线路/数据太少")。
+        #   最多仍只探 3 首, 拿到 3 档即提前结束 —— 与旧逻辑同样的请求成本。
+        streams, best = [], 0
         for t in valid[:3]:
             try:
-                streams = self._streams(self._seo(t["id"]))
+                cur = self._streams(self._seo(t["id"]))
             except Exception:
-                streams = []
-            if streams:
+                cur = []
+            if len(cur) > best:
+                streams, best = cur, len(cur)
+            if best >= 3:
                 break
         name = str(info.get("name") or "汽水音乐")
         if streams:
