@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-# 糖豆┃广舞  TVBox / sky py 源
+# 糖豆┃广舞  TVBox / 影视仓 py 源
 # 接口(2026-10 实测可用):
-#   首页/分类  https://api-h5.tangdou.com/mtangdou/home/feed?page=&num=30&uuid=[&type=][&sort=]
-#   详情       https://api-h5.tangdou.com/mtangdou/video/play?vid=&uuid=
-#   线路       https://api-h5.tangdou.com/tv_api.php?mod=tv&ac=mp4&uuid=&...&vid=
-#   播放直链   详情/线路返回的 play_url / url (mp4, 需带 Referer: https://www.tangdou.com/)
-# 注意: 糖豆官方搜索接口 mtangdou/search 已下线(服务端 500)，此处做了本地聚合降级
+#   首页/分类  https://api-h5.tangdou.com/mtangdou/home/feed?page=&num=30&uuid=[&type=][&sort=][&year=]
+#   详情       https://api-h5.tangdou.com/mtangdou/video/play?vid=&uuid=      -> 720P 官方线路
+#   分享详情   https://api-h5.tangdou.com/sample/share/main?vid=               -> 540P 分享线路 + head_t(片头秒数)
+#   线路/清晰度 https://api-h5.tangdou.com/tv_api.php?mod=tv&ac=mp4&uuid=&...&vid=  -> hd(1080P)/sd(720P) 多CDN
+#   相关推荐   https://api-h5.tangdou.com/sample/share/recommend?page_num=&vid=
+# 注意:
+#   1) 糖豆官方搜索接口 mtangdou/search 已下线(服务端 500)，此处做了本地聚合降级
+#   2) tv_api 有按 IP 的调用配额, 超限返回 {"code":"1","msg":"试看结束,请购买会员"},
+#      此时自动降级为 video/play + share/main 两条常驻线路, 不影响观看
+#   3) 视频前 6 秒为糖豆平台自带片头(head_t=6, 老片为 0), 需在播放器设置里"跳过片头"
 import json
 import time
 import urllib.parse
@@ -54,6 +59,10 @@ class Spider(BaseSpider):
                 self.session.headers.update(self.headers)
             except Exception:
                 pass
+        # 详情 -> 播放 之间的小缓存, 避免重复请求
+        self._cache = {}
+        # tv_api 配额失败后的冷却截止时间戳
+        self._tv_down_until = 0.0
 
     # ------------------------------------------------------------------ 生命周期
     def init(self, extend=""):
@@ -64,6 +73,8 @@ class Spider(BaseSpider):
         if isinstance(cfg, dict) and cfg.get("host"):
             self.host = str(cfg["host"]).rstrip("/")
         self.uuid = self._gen_uuid()
+        self._cache = {}
+        self._tv_down_until = 0.0
 
     def getName(self):
         return self.name
@@ -99,10 +110,25 @@ class Spider(BaseSpider):
     # ------------------------------------------------------------------ 详情
     def detailContent(self, ids):
         vid = str(ids[0])
-        vod = self._video(vid)
-        if not vod:
+        vp = self._video_play(vid)
+        if not vp:
             return {"list": []}
-        self._fill_play(vod, vid)
+        sh = self._share_main(vid)
+        vod = self._video(vid, vp, sh)
+        lines = self._lines(vid, vp, sh)
+        items = self._playlist(vid, vod.get("vod_name") or vid)
+        froms, urls = [], []
+        for ln in lines:
+            eps = []
+            for i, it in enumerate(items, 1):
+                nm = self._clean(it.get("vod_name") or it.get("vod_id"))
+                if len(nm) > 40:
+                    nm = nm[:40]
+                eps.append("%d.%s$%s@%s" % (i, nm, ln["key"], it.get("vod_id")))
+            froms.append(ln["label"])
+            urls.append("#".join(eps))
+        vod["vod_play_from"] = "$$$".join(froms) if froms else self.name
+        vod["vod_play_url"] = "$$$".join(urls) if urls else ""
         return {"list": [vod]}
 
     # ------------------------------------------------------------------ 搜索
@@ -118,16 +144,144 @@ class Spider(BaseSpider):
 
     # ------------------------------------------------------------------ 播放
     def playerContent(self, flag, id, vipFlags):
-        # id 可能是: 纯 vid(来自选集列表) / 完整 http 直链
-        url = str(id or "")
-        if not url.startswith("http"):
-            url = self._resolve(url)
-        return {
-            "parse": 0,
-            "playUrl": "",
-            "url": url,
-            "header": dict(self.headers),
-        }
+        # id 三种形态: 完整 http 直链 / "线路key@vid" / 纯 vid
+        s = str(id or "")
+        if s.startswith("http"):
+            return self._ok(s)
+        key, vid = "", s
+        if "@" in s:
+            key, vid = s.rsplit("@", 1)
+        url = self._resolve(vid, key)
+        return self._ok(url)
+
+    @staticmethod
+    def _ok(url):
+        return {"parse": 0, "playUrl": "", "url": url,
+                "header": {"User-Agent": Spider._UA, "Referer": "https://www.tangdou.com/"}}
+
+    _UA = ("Mozilla/5.0 (Linux; Android 7.1.2; ASUS_I003DD) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36")
+
+    # ================================================================== 线路 / 清晰度
+    def _lines(self, vid, vp, sh):
+        """返回可选线路列表 [{key,label,url}], 按清晰度从高到低"""
+        out, seen = [], set()
+
+        def add(key, label, url):
+            if url and key not in seen:
+                seen.add(key)
+                out.append({"key": key, "label": label, "url": url})
+
+        # 1) tv_api: hd(1080P) / sd(720P), 多 CDN (可能额度耗尽)
+        datas = self._tv_datas(vid)
+        for k in ("hd", "sd"):
+            for it in (datas.get(k) or []):
+                if not isinstance(it, dict):
+                    continue
+                u = it.get("url")
+                if not u:
+                    continue
+                cdn = str(it.get("cdn_source") or k)
+                tier = self._tier(it.get("define"), k)
+                add("%s_%s" % (tier, cdn),
+                    "%s·%s" % (self._tier_name(tier), self._cdn_name(cdn)), u)
+        # 2) 常驻: video/play 官方 720P
+        add("q720_official", "720P·官方", (vp or {}).get("play_url"))
+        # 3) 常驻: share/main 分享 540P
+        add("q540_share", "540P·分享", (sh or {}).get("video_url"))
+        return out
+
+    def _tv_datas(self, vid):
+        """tv_api 多线路数据; 额度耗尽或被限时返回 {} 并进入冷却"""
+        key = "tv:" + str(vid)
+        if key in self._cache:
+            return self._cache[key]
+        if time.time() < self._tv_down_until:
+            return {}
+        datas = {}
+        try:
+            url = ("%s/tv_api.php?mod=tv&ac=mp4&uuid=%s&version=7.1.2&client=3"
+                   "&channel_id=16&&time=%d&vid=%s"
+                   % (self.host, self.uuid, int(time.time() * 1000), vid))
+            data = self._get(url, {"Host": "aa.tangdou.com:12308"})
+            if isinstance(data, dict) and isinstance(data.get("datas"), dict):
+                datas = data["datas"]
+        except Exception:
+            datas = {}
+        if datas:
+            self._cache[key] = datas
+        else:
+            # 配额耗尽(code=1 试看结束) 或异常: 冷却 20 分钟再试
+            self._tv_down_until = time.time() + 1200
+        return datas
+
+    def _resolve(self, vid, key):
+        """vid + 线路key -> mp4 直链; 线路缺失时逐级降级"""
+        vid = str(vid or "").strip()
+        if not vid:
+            return ""
+        key = str(key or "")
+
+        def official():
+            return (self._video_play(vid) or {}).get("play_url") or ""
+
+        def share():
+            return (self._share_main(vid) or {}).get("video_url") or ""
+
+        def pick(box=None, cdn=None):
+            """1.指定档位+指定CDN  2.指定档位+任意CDN  3.任意档位"""
+            datas = self._tv_datas(vid)
+            order = ("hd", "sd") if box is None else (box,) + tuple(x for x in ("hd", "sd") if x != box)
+
+            def scan(only_box, only_cdn):
+                for k in ([only_box] if only_box else order):
+                    for it in (datas.get(k) or []):
+                        if not isinstance(it, dict) or not it.get("url"):
+                            continue
+                        if only_cdn and str(it.get("cdn_source")) != only_cdn:
+                            continue
+                        return it["url"]
+                return ""
+
+            if cdn and box:
+                u = scan(box, cdn) or scan(box, None)
+                if u:
+                    return u
+            return scan(None, None)
+
+        if key == "q540_share":
+            return share() or official() or pick()
+        if key == "q720_official":
+            return official() or share() or pick()
+        if key.startswith("q1080_") or key.startswith("q720_"):
+            tier, _, cdn = key.partition("_")
+            box = "hd" if tier == "q1080" else "sd"
+            return pick(box, cdn or None) or official() or share()
+        # 纯 vid / 未指定: 1080P -> 720P -> 官方 -> 分享
+        return pick() or official() or share()
+
+    def _tier(self, define, box):
+        """define: 3=1080P 2=720P 1=540P; 缺失时按 hd/sd 兜底"""
+        try:
+            d = int(define)
+        except Exception:
+            d = 0
+        if d >= 3:
+            return "q1080"
+        if d == 2:
+            return "q720"
+        if d == 1:
+            return "q540"
+        return "q1080" if box == "hd" else "q720"
+
+    @staticmethod
+    def _tier_name(tier):
+        return {"q1080": "1080P", "q720": "720P", "q540": "540P"}.get(tier, tier)
+
+    @staticmethod
+    def _cdn_name(cdn):
+        return {"ucloud": "UC", "qiniu": "七牛", "official": "官方",
+                "share": "分享"}.get(str(cdn), str(cdn))
 
     # ================================================================== 内部实现
     def _gen_uuid(self):
@@ -148,39 +302,49 @@ class Spider(BaseSpider):
         data = self._get(url)
         return self._vods(data.get("data") if isinstance(data, dict) else None)
 
-    def _video(self, vid):
+    def _video_play(self, vid):
+        key = "vp:" + str(vid)
+        if key in self._cache:
+            return self._cache[key]
         data = self._get("%s/mtangdou/video/play?vid=%s&uuid=%s" % (self.host, vid, self.uuid))
         d = data.get("data") if isinstance(data, dict) else None
-        if not isinstance(d, dict):
-            return {}
-        pic = self._pic(d)
-        name = d.get("name") or ""
+        d = d if isinstance(d, dict) else {}
+        self._cache[key] = d
+        return d
+
+    def _share_main(self, vid):
+        key = "sh:" + str(vid)
+        if key in self._cache:
+            return self._cache[key]
+        data = self._get("%s/sample/share/main?vid=%s" % (self.host, vid))
+        d = data.get("data") if isinstance(data, dict) else None
+        d = d if isinstance(d, dict) else {}
+        self._cache[key] = d
+        return d
+
+    def _video(self, vid, vp, sh):
+        pic = self._pic(vp)
+        if not pic and sh:
+            pic = sh.get("pic") or ""
+        name = vp.get("name") or sh.get("user_name") or ""
+        head = self._int(sh.get("head_t"))
+        content = self.desc
+        if head > 0:
+            content += "\n\n提示：本片前 %d 秒为糖豆平台自带片头，可在播放器「跳过片头」中设为 %d 秒跳过。" % (head, head)
         return {
             "vod_id": vid,
-            "vod_name": d.get("title") or vid,
+            "vod_name": vp.get("title") or sh.get("title") or vid,
             "vod_pic": pic,
             "vod_actor": name,
             "vod_director": name,
             "type_name": "广场舞",
             "vod_year": "",
             "vod_area": "中国",
-            "vod_remarks": self._dur(d.get("duration")),
-            "vod_content": self.desc,
+            "vod_remarks": self._dur(vp.get("duration") or sh.get("duration")),
+            "vod_content": content,
             "vod_play_from": self.name,
             "vod_play_url": "",
         }
-
-    def _fill_play(self, vod, vid):
-        """二级列表: 本视频 + 往下 49 个(相关推荐), 共 50 项"""
-        items = self._playlist(vid, vod.get("vod_name") or vid)
-        eps = []
-        for i, it in enumerate(items, 1):
-            name = self._clean(it.get("vod_name") or it.get("vod_id"))
-            if len(name) > 40:
-                name = name[:40]
-            eps.append("%d.%s$%s" % (i, name, it.get("vod_id")))
-        vod["vod_play_from"] = self.name
-        vod["vod_play_url"] = "#".join(eps)
 
     def _playlist(self, vid, cur_name):
         """本视频在最前, 后续取 share/recommend 相关视频补至 50 个"""
@@ -219,37 +383,8 @@ class Spider(BaseSpider):
                         break
         return out[:50]
 
-    def _resolve(self, vid):
-        """vid -> mp4 直链: 优先 tv_api 多线路(hd/sd), 回退 video/play"""
-        vid = str(vid or "").strip()
-        if not vid:
-            return ""
-        try:
-            url = ("%s/tv_api.php?mod=tv&ac=mp4&uuid=%s&version=7.1.2&client=3&channel_id=16&&time=%d&vid=%s"
-                   % (self.host, self.uuid, int(time.time() * 1000), vid))
-            data = self._get(url, {"Host": "aa.tangdou.com:12308"})
-            datas = data.get("datas") if isinstance(data, dict) else None
-            if isinstance(datas, dict):
-                for key in ("hd", "sd"):
-                    arr = datas.get(key)
-                    if isinstance(arr, list):
-                        for it in arr:
-                            u = it.get("url") if isinstance(it, dict) else None
-                            if u:
-                                return u
-        except Exception:
-            pass
-        try:
-            data = self._get("%s/mtangdou/video/play?vid=%s&uuid=%s" % (self.host, vid, self.uuid))
-            d = data.get("data") if isinstance(data, dict) else None
-            if isinstance(d, dict):
-                return d.get("play_url") or d.get("video_url") or ""
-        except Exception:
-            pass
-        return ""
-
     def _clean(self, s):
-        return str(s or "").replace("#", " ").replace("$", " ").replace("\r", " ").replace("\n", " ").strip()
+        return str(s or "").replace("#", " ").replace("$", " ").replace("@", " ").replace("\r", " ").replace("\n", " ").strip()
 
     def _search(self, key, pg):
         # 1) 官方搜索接口(糖豆已下线, 保留兼容: 一旦恢复自动生效)
@@ -324,6 +459,13 @@ class Spider(BaseSpider):
         except Exception:
             return ""
 
+    @staticmethod
+    def _int(x):
+        try:
+            return int(float(x))
+        except Exception:
+            return 0
+
     def _get(self, url, extra=None):
         headers = dict(self.headers)
         if extra:
@@ -357,16 +499,17 @@ if __name__ == "__main__":
     if cc["list"]:
         vid = cc["list"][0]["vod_id"]
         det = s.detailContent([vid])["list"][0]
-        eps = det["vod_play_url"].split("#")
-        print("detail:", det["vod_name"])
-        print("播放列表共 %d 项 (from=%s)" % (len(eps), det["vod_play_from"]))
-        for e in eps[:6]:
-            print("   ", e.split("$")[0][:36], "->", e.split("$")[-1])
-        print("   ...")
-        print("最后一项:", eps[-1].split("$")[0][:36], "->", eps[-1].split("$")[-1])
-        pc = s.playerContent("", eps[2].split("$")[-1], [])
-        print("player(第3项):", pc["url"][:110])
-        pc2 = s.playerContent("", eps[0].split("$")[-1], [])
-        print("player(第1项=本视频):", pc2["url"][:110])
+        froms = det["vod_play_from"].split("$$$")
+        groups = det["vod_play_url"].split("$$$")
+        print("detail:", det["vod_name"], "|", det["vod_remarks"])
+        print("线路 %d 条: %s" % (len(froms), froms))
+        for i, g in enumerate(groups):
+            eps = g.split("#")
+            print("   [%s] 集数=%d 首项=%s" % (froms[i] if i < len(froms) else "?", len(eps),
+                                             eps[0].split("$")[0][:24]))
+        for i, ln in enumerate(froms):
+            pid = groups[i].split("#")[2].split("$")[-1]
+            pc = s.playerContent(ln, pid, [])
+            print("   %-14s -> %s" % (ln, pc["url"][:100] if pc["url"].startswith("http") else "FAIL " + pc["url"][:40]))
     sr = s.searchContent("广场舞", False, "1")
     print("search:", len(sr["list"]))
