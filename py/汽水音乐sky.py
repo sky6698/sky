@@ -222,7 +222,56 @@
 #            推荐流」三级, 并接收模式名以便查关键词; `_mode_playlists()` **删除**(英文源头);
 #         3) `_collection_detail()` 把 `info["name"]` 透传给 `_feed_mode_tracks()`。
 #
+# ★★★ 第十三轮(2026-10-13): **加「登录」分类(扫码登录 / 手动拉起官方 App 授权)**
+#   用户需求: 「分类最后加登录, 分扫码登录 / 手动拉起官方 app 授权登录; 没登录按现在模式,
+#              登录后按官方 app 模式获取」。
+#   ★官方登录链路(纯 HTTP 实测可用, **不需要签名页 / Chromium**):
+#     - 创建二维码  GET  `https://api.qishui.com/passport/web/get_qrcode/?<公共参数>`
+#         · 公共参数**全部放 query**(不是 body); **aid=386088** 是关键
+#           (填 2329 / 6383 会回 `error_code=22 非法应用`)。
+#         · 必须带 `x-tt-passport-verify-portrait: <uuid>.login` 与
+#           `x-tt-passport-trace-id: <8位hex>`; UA 用汽水 PC 客户端
+#           (Electron/SodaMusic, 见 `QR_UA`)。
+#         · 回包 `data.qrcode` = `data:image/png;base64,...` —— **官方直接给渲染好的
+#           二维码图(约 18KB)**, 所以源里**不必内置二维码编码器**;
+#           `data.qrcode_index_url` = `https://bff-pc.qishui.com/ucenter_web/app/sdk-next?…&uc_sdk=scan-auth`
+#           = **二维码内容(官方原样)**; 另有 `data.token` / `data.expire_time`。
+#     - 轮询状态    POST `/passport/web/check_qrconnect/?<公共参数>`
+#         · body 用 form-urlencoded(token / need_logo / need_short_url / is_frontier /
+#           is_new_login / next), 并带 `x-ss-stub = MD5(body).upper()`。
+#         · `data.status`: `new` → `scanned` → `confirmed`; `error_code=7` 是**临时限流**
+#           (应继续轮询, 不能判失败); 只有 `error_code=2` / `status=expired` 才是过期。
+#     - 登录态: `confirmed` 时 Cookie 随 Set-Cookie 下发(会话里出现 `sessionid` /
+#       `sessionid_ss` / `sid_guard` / `sid_tt` 即成功)。拿到后**落盘持久化**,
+#       之后内容类请求都带上它 —— 服务端这时才认 `scene_mode_id` / `mode`
+#       (匿名请求对这两个参数**零过滤**, 见第十一/十二轮)。
+#   ⚠️ 二维码内容**必须用官方 `qrcode_index_url` 原样**: 上游另一份参考实现
+#      (Laine127/libresoda 的 tools/qishui-qr.py)把二维码改写成
+#      `bff-pc.qishui.com/light/invoke/scan_login?token=…`, 其 docs/QR-LOGIN.md 明确记录
+#      该形态「只上报 scanned, 确认后永远停在 scanned」→ **不能用**。
+#   ⚠️ 风险(如实记录): 官方对**裸 HTTP 请求**有风控, 可能一路回 `error_code=7 访问太频繁`
+#      → 扫码后拿不到 `confirmed`。此时用第三条通路兜底: 搜索框输入
+#      `#登录 <Cookie>` 手动粘贴(见下 "手动 Cookie 通道")。
+#   ★实现形态(TVBox 没有交互界面, 用「分类卡片 + 本地小服务」模拟):
+#     - 「登录」分类排在最末, 未登录时给两张卡:
+#         「扫码登录」   ← 卡片封面(vod_pic)就是**官方的二维码 PNG**(本机 /qr 转发)
+#         「App 授权登录」← 手机浏览器打开本机 `/login` 页(页内二维码 + 「打开汽水音乐
+#                          App 完成授权」按钮), 即「手动拉起官方 App 授权」
+#         点开任一张 → 详情页会**轮询一次**并把结果写进简介: 手机扫码确认后**再点一次**
+#         (或返回再进)即可看到「✅ 登录成功」→ 登录态落盘。
+#     - 已登录时给两张卡: 「已登录：<昵称>」(点开看账号) + 「退出登录」。
+#     - 登录服务监听 `0.0.0.0`(手机要能打开 `/login`), 端口 10020 起顺序探测;
+#       **音频代理仍只监听 127.0.0.1**(不外泄)。
+#   ★登录后取数变化: `_feed_mode_tracks()` 优先走 `_feed_official()` ——
+#     `POST /luna/pc/discover/mix`(带 scene_mode_id / mode) → 官方歌单 → `playlist/detail`
+#     展开, 不足再吃个性化 `song-tab` 推荐队列; 失败自动回落到匿名的「主题搜索 + 中文榜单」
+#     策略(所以**没登录 = 现在模式, 登录 = 官方 App 模式**, 正是用户要的语义)。
+#   ★开关: `"login":0` 关闭登录分类(整块隐藏, 回到纯匿名);
+#          `"login_server":0` 不起本地登录服务(此时卡片封面退化为默认图标)。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
+#   "login":0         隐藏「登录」分类(默认 1 = 显示)
+#   "login_server":0  不起本地二维码/登录页服务(默认 1)
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
@@ -241,7 +290,11 @@
 import base64
 import hashlib
 import json
+import os
+import random
 import re
+import socket
+import tempfile
 import threading
 import time
 import urllib.error
@@ -385,6 +438,379 @@ _CTYPE = {
     ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg",
     ".aac": "audio/aac", ".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
 }
+# ================================================================== 扫码登录(第十三轮)
+# 需求: 「分类最后加登录, 分扫码登录 / 手动拉起官方 App 授权登录; 没登录按现在模式,
+#        登录后按官方 App 模式获取」。完整链路与坑见文件头「第十三轮」。
+QR_AID = "386088"                       # ★汽水 PC 客户端的 passport aid(填错回「非法应用」)
+QR_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) SodaMusic/3.2.1 Chrome/136.0.7103.59 "
+         "Electron/36.4.0 Safari/537.36")
+QR_GET = "/passport/web/get_qrcode/"
+QR_CHECK = "/passport/web/check_qrconnect/"
+QR_ME = "/luna/me"                      # 登录态探测: 匿名/失效回 status_code=1000016
+QR_SESSION_KEYS = ("sessionid", "sessionid_ss", "sid_guard", "sid_tt")
+QR_PORT_RANGE = (10020, 10060)          # 登录服务端口(0.0.0.0, 给手机开 /login)
+QR_TTL = 170                            # 二维码兜底有效期(秒); 官方会给 expire_time
+_LOGIN_ENABLED = True                   # 由 `init()` 依 extend 的 "login"/"login_server" 改写
+_QR_LOCK = threading.RLock()
+_QR_STATE = {"session": None, "png": b"", "token": "", "expire": 0.0, "status": "",
+             "scan_url": "", "qrcode_url": "", "desc": "", "born": 0.0, "cookies": "",
+             "port": 0, "server": None}
+_LOGIN_LOCK = threading.RLock()
+_LOGIN_STATE = {"loaded": False, "cookie": "", "nick": "", "uid": "", "saved": 0.0}
+
+
+def _login_path():
+    """登录态落盘位置: 优先 py 源同目录, 不可写则退到临时目录。"""
+    cands = []
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here:
+            cands.append(os.path.join(here, "qishui_login.json"))
+    except Exception:
+        pass
+    try:
+        cands.append(os.path.join(tempfile.gettempdir(), "qishui_login.json"))
+    except Exception:
+        pass
+    for path in cands:
+        try:
+            folder = os.path.dirname(path)
+            if folder and os.path.isdir(folder) and os.access(folder, os.W_OK):
+                return path
+        except Exception:
+            continue
+    return cands[0] if cands else "qishui_login.json"
+
+
+def _login_load():
+    """懒加载登录态(源可能被反复实例化, 只有落盘才能跨会话保持)。"""
+    with _LOGIN_LOCK:
+        if _LOGIN_STATE["loaded"]:
+            return _LOGIN_STATE
+        _LOGIN_STATE["loaded"] = True
+        try:
+            with open(_login_path(), "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            if isinstance(data, dict):
+                _LOGIN_STATE["cookie"] = str(data.get("cookie") or "")
+                _LOGIN_STATE["nick"] = str(data.get("nick") or "")
+                _LOGIN_STATE["uid"] = str(data.get("uid") or "")
+                _LOGIN_STATE["saved"] = float(data.get("saved") or 0)
+        except Exception:
+            pass
+        return _LOGIN_STATE
+
+
+def _login_save(cookie="", nick="", uid=""):
+    with _LOGIN_LOCK:
+        _LOGIN_STATE["loaded"] = True
+        if cookie:
+            _LOGIN_STATE["cookie"] = str(cookie)
+        if nick:
+            _LOGIN_STATE["nick"] = str(nick)
+        if uid:
+            _LOGIN_STATE["uid"] = str(uid)
+        _LOGIN_STATE["saved"] = time.time()
+        try:
+            with open(_login_path(), "w", encoding="utf-8") as fp:
+                json.dump({"cookie": _LOGIN_STATE["cookie"], "nick": _LOGIN_STATE["nick"],
+                           "uid": _LOGIN_STATE["uid"], "saved": _LOGIN_STATE["saved"]},
+                          fp, ensure_ascii=False)
+        except Exception:
+            pass
+        return _LOGIN_STATE
+
+
+def _login_forget():
+    with _LOGIN_LOCK:
+        _LOGIN_STATE.update({"loaded": True, "cookie": "", "nick": "", "uid": "", "saved": 0.0})
+        try:
+            os.remove(_login_path())
+        except Exception:
+            pass
+        return _LOGIN_STATE
+
+
+def _login_cookie():
+    """当前登录 Cookie(空串 = 匿名 → 走「现在模式」)。"""
+    return str((_login_load() or {}).get("cookie") or "")
+
+
+def _qr_cookie_ok(cookie_text):
+    """Cookie 里出现会话字段才算登录成功(只认官方下发的那些 key)。"""
+    text = str(cookie_text or "")
+    return any(("%s=" % key) in text for key in QR_SESSION_KEYS)
+
+
+def _cookie_header(jar):
+    pairs, seen = [], set()
+    try:
+        items = list(jar)
+    except Exception:
+        items = []
+    for c in items:
+        name, value = getattr(c, "name", None), getattr(c, "value", None)
+        if name and value is not None and name not in seen:
+            seen.add(name)
+            pairs.append("%s=%s" % (name, value))
+    return "; ".join(pairs)
+
+
+def _pick_nick(data):
+    """从 /luna/me 的各种可能形态里抠昵称(字段名不稳定, 多路兜底)。"""
+    for path in (("user", "nickname"), ("user", "nick_name"), ("user", "name"),
+                 ("nickname",), ("account", "nickname"), ("data", "user", "nickname"),
+                 ("data", "nickname")):
+        cur = data
+        for key in path:
+            cur = cur.get(key) if isinstance(cur, dict) else None
+        if isinstance(cur, str) and cur.strip():
+            return cur.strip()[:24]
+    return ""
+
+
+def _me_info(cookie):
+    """登录态探测 + 取昵称。匿名/失效回 `status_code=1000016`(返回 {} 表示网络失败)。"""
+    if requests is None or not cookie:
+        return {}
+    try:
+        resp = requests.post(
+            API + QR_ME, params={"device_platform": "web"},
+            data=json.dumps({}).encode("utf-8"),
+            headers={"User-Agent": QR_UA, "Referer": API + "/", "Cookie": str(cookie),
+                     "Content-Type": "application/json; charset=utf-8"}, timeout=15)
+        data = resp.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _qr_digits(n):
+    out = str(random.randint(1, 8))
+    while len(out) < n:
+        out += str(random.randint(0, 9))
+    return out
+
+
+def _qr_session():
+    """扫码会话: device_id / install_id / msToken / verify_portrait 全程一致(官方按设备身份限流)。"""
+    with _QR_LOCK:
+        sess = _QR_STATE.get("session")
+        if isinstance(sess, dict):
+            return sess
+        sess = {
+            "device_id": _qr_digits(16), "install_id": _qr_digits(15),
+            "ms_token": os.urandom(66).hex()[:88] + "==",
+            "verify_portrait_id": "%s-%s-%s-%s-%s.login" % (
+                _qr_digits(8), _qr_digits(4), _qr_digits(4), _qr_digits(4), _qr_digits(11)),
+            "http": requests.Session() if requests is not None else None,
+        }
+        if sess["http"] is not None:
+            sess["http"].headers.update({"User-Agent": QR_UA, "Referer": API + "/"})
+        _QR_STATE["session"] = sess
+        return sess
+
+
+def _qr_params(sess, biz):
+    """passport 公共参数(★全部走 query; aid=386088 是身份标识)。"""
+    return {
+        "passport_jssdk_version": "2.4.13", "passport_jssdk_type": "normal",
+        "is_from_ttaccountsdk": "1", "aid": QR_AID, "language": "zh",
+        "account_sdk_source": "web", "p_js_v": "2.4.13", "p_js_t": "pro",
+        "p_zt": "3.3.5", "p_ver": "1.0.29", "request_host": "app%3A%2F%2Fresources",
+        "p_bd": "1.0.0.41", "biz_trace_id": biz, "is_new_login": "1",
+        "is_from_iesaccountsaas": "1", "device_id": sess["device_id"],
+        "install_id": sess["install_id"], "did": sess["device_id"],
+        "iid": sess["install_id"], "device_platform": "PC", "version_code": "3.5.2",
+        "account_sdk_source_info": "00", "msToken": sess["ms_token"],
+    }
+
+
+def _qr_call(sess, method, path, extra=None, body=None):
+    """发一次 passport 请求 → (json, cookie 字符串)。"""
+    http = sess.get("http") if isinstance(sess, dict) else None
+    if http is None or requests is None:
+        return {}, ""
+    biz = "%08x" % random.getrandbits(32)
+    params = _qr_params(sess, biz)
+    params.update(extra or {})
+    headers = {"Accept": "application/json, text/javascript", "User-Agent": QR_UA,
+               "Referer": API + "/",
+               "x-tt-passport-verify-portrait": sess["verify_portrait_id"],
+               "x-tt-passport-trace-id": biz}
+    data = None
+    if body:
+        data = urllib.parse.urlencode(body)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        headers["x-ss-stub"] = hashlib.md5(data.encode("utf-8")).hexdigest().upper()
+    try:
+        if str(method).upper() == "GET":
+            resp = http.get(API + path, params=params, headers=headers, timeout=20)
+        else:
+            resp = http.post(API + path, params=params, data=data, headers=headers, timeout=20)
+        payload = resp.json()
+    except Exception:
+        return {}, _cookie_header(sess.get("http").cookies) if sess.get("http") is not None else ""
+    return (payload if isinstance(payload, dict) else {}), _cookie_header(http.cookies)
+
+
+def _qr_scan_url(token):
+    """「拉起官方 App」入口: 手机浏览器/相机打开会唤起汽水·抖音 App 完成授权。"""
+    return "https://bff-pc.qishui.com/light/invoke/scan_login?" + urllib.parse.urlencode(
+        {"token": str(token or ""), "os": "Android", "computer_name": "TVBox"})
+
+
+def _qr_ensure(force=False):
+    """确保有一个未过期的二维码 → (状态, 会话)。已创建且未过期就直接复用。"""
+    with _QR_LOCK:
+        token = str(_QR_STATE.get("token") or "")
+        expire = float(_QR_STATE.get("expire") or 0)
+        if token and not force and time.time() < expire - 5:
+            return str(_QR_STATE.get("status") or "new"), _QR_STATE.get("session")
+        sess = _qr_session()
+        sess["token"] = ""
+        payload, cookies = _qr_call(sess, "GET", QR_GET,
+                                    {"next": API, "need_logo": "false",
+                                     "need_short_url": "false", "is_new_login": "1"})
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        tok = str(data.get("token") or "").strip()
+        if not tok:
+            _QR_STATE.update({"token": "", "status": "error", "png": b"", "expire": 0.0,
+                              "desc": str(data.get("description") or payload.get("message")
+                                          or "创建二维码失败")})
+            return "error", sess
+        png = b""
+        raw = str(data.get("qrcode") or "")
+        if raw.startswith("data:") and "," in raw:
+            try:
+                png = base64.b64decode(raw.split(",", 1)[1])
+            except Exception:
+                png = b""
+        _QR_STATE.update({
+            "session": sess, "token": tok, "png": png,
+            "expire": float(data.get("expire_time") or (time.time() + QR_TTL)),
+            "qrcode_url": str(data.get("qrcode_index_url") or ""),
+            "scan_url": _qr_scan_url(tok), "status": "new", "born": time.time(),
+            "desc": str(data.get("web_name") or ""), "cookies": cookies,
+        })
+        return "new", sess
+
+
+def _qr_check():
+    """轮询一次扫码状态; 命中会话 Cookie 就落盘。返回 {status, error_code, ok, desc}。"""
+    with _QR_LOCK:
+        token = str(_QR_STATE.get("token") or "")
+        sess = _QR_STATE.get("session")
+        if not token or not isinstance(sess, dict):
+            return {"status": "", "error_code": 0, "ok": False, "desc": "尚未生成二维码"}
+        body = {"need_logo": "false", "need_short_url": "false", "is_frontier": "true",
+                "token": token, "is_new_login": "1", "next": API}
+        payload, cookies = _qr_call(sess, "POST", QR_CHECK, {}, body)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        status = str(data.get("status") or "").strip()
+        code = int(data.get("error_code") or 0)
+        desc = str(data.get("description") or "")
+        if cookies:
+            _QR_STATE["cookies"] = cookies
+        if status:
+            _QR_STATE["status"] = status
+        if desc:
+            _QR_STATE["desc"] = desc
+        ok = _qr_cookie_ok(_QR_STATE.get("cookies"))
+        if ok:
+            _QR_STATE["status"] = "confirmed"
+            _login_save(_QR_STATE.get("cookies") or cookies)
+        return {"status": status or str(_QR_STATE.get("status") or ""), "error_code": code,
+                "ok": ok, "desc": desc, "cookie": cookies}
+
+
+def _lan_ip():
+    """本机局域网 IP(给手机打开 /login 用)。"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("223.5.5.5", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except Exception:
+        return ""
+
+
+def _start_login_server():
+    """登录服务: **监听 0.0.0.0**(手机要能开 /login); 复用音频服务那个 handler 类。"""
+    with _QR_LOCK:
+        if _QR_STATE.get("port"):
+            return int(_QR_STATE["port"])
+    for port in range(QR_PORT_RANGE[0], QR_PORT_RANGE[1]):
+        try:
+            server = ThreadingHTTPServer(("0.0.0.0", port), _AudioHandler)
+        except Exception:
+            continue
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        with _QR_LOCK:
+            _QR_STATE["port"] = port
+            _QR_STATE["server"] = server
+        return port
+    return 0
+
+
+def _login_origin():
+    """→ (本机地址, 局域网地址)。分别给 TVBox 客户端与手机用。"""
+    if not _LOGIN_ENABLED:
+        return "", ""
+    port = _start_login_server()
+    if not port:
+        return "", ""
+    local = "http://127.0.0.1:%d" % port
+    ip = _lan_ip()
+    lan = ("http://%s:%d" % (ip, port)) if ip and ip != "127.0.0.1" else ""
+    return local, lan
+
+
+def _login_html(state=""):
+    """`/login` 页面: 二维码 + 「手动拉起官方 App 授权」按钮 + 自动刷新状态。"""
+    token = str(_QR_STATE.get("token") or "")
+    scan = str(_QR_STATE.get("scan_url") or "")
+    state_map = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上确认",
+                 "confirmed": "✅ 登录成功, 回到 TVBox 重新进入「登录」分类",
+                 "expired": "二维码已过期, 刷新本页重试", "error": "二维码创建失败, 刷新本页重试"}
+    tip = state_map.get(str(state or ""), "等待扫码…")
+    nick = str((_login_load() or {}).get("nick") or "")
+    logged = bool(_login_cookie())
+    if logged:
+        tip = "✅ 已登录" + ("：" + nick if nick else "") + "（回 TVBox 重新进入「登录」分类）"
+    qr_url = "/qr?t=%d" % int(time.time())
+    scan_attr = str(scan or "#").replace("&", "&amp;").replace('"', "&quot;")
+    return """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>汽水音乐 · 登录</title>
+<style>
+ body{margin:0;padding:24px 16px;background:#111;color:#eee;
+      font:16px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+      text-align:center}
+ h1{font-size:19px;margin:0 0 4px}
+ .tip{color:#8fd694;font-size:14px;min-height:22px;margin:10px 0 14px}
+ .box{background:#fff;border-radius:12px;padding:12px;display:inline-block}
+ .box img{display:block;width:min(76vw,260px);height:auto}
+ a.btn{display:block;max-width:320px;margin:18px auto 0;padding:13px 16px;border-radius:10px;
+       background:#1e88ff;color:#fff;text-decoration:none;font-weight:600}
+ a.alt{background:#2a2a2a;color:#ddd;font-weight:400;font-size:14px}
+ p.note{color:#888;font-size:13px;max-width:360px;margin:16px auto 0;text-align:left}
+ code{color:#bbb;word-break:break-all;font-size:12px}
+</style></head><body>
+<h1>汽水音乐 · 登录</h1>
+<div class="tip">__TIP__</div>
+<div class="box"><img src="__QR__" alt="二维码"></div>
+<a class="btn" href="__SCAN__">① 打开汽水音乐 App 完成授权</a>
+<a class="btn alt" href="javascript:location.reload()">② 刷新状态</a>
+<p class="note">扫码登录：用手机「抖音 App → 扫一扫」直接扫上面这张码，确认后点「刷新状态」。<br>
+App 授权登录：点第一个按钮，会自动拉起汽水音乐/抖音 App，在 App 内确认授权即可。</p>
+<script>setTimeout(function(){location.reload()},5000)</script>
+</body></html>""".replace("__TIP__", tip).replace("__QR__", qr_url).replace("__SCAN__", scan_attr)
+
+
 _URL_EXTS = (".m4a", ".mp3", ".flac", ".aac", ".wav", ".ogg", ".mp4")
 
 
@@ -481,8 +907,50 @@ class _AudioHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    def _serve_qr(self):
+        """把官方下发的二维码 PNG(data:image/png;base64)原样吐给客户端/浏览器。"""
+        png = _QR_STATE.get("png") or b""
+        if not png:
+            self._fail(404, b"no qrcode")
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(png)
+        except OSError:
+            self.close_connection = True
+
+    def _serve_login(self):
+        """手机端登录引导页(二维码 + 拉起官方 App 授权按钮)。"""
+        try:
+            _qr_ensure()
+            html = _login_html(str(_QR_STATE.get("status") or "")).encode("utf-8")
+        except Exception:
+            html = "<h1>登录服务异常</h1>".encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(html)
+        except OSError:
+            self.close_connection = True
+
     def _serve(self, body):
-        name = urllib.parse.urlparse(self.path).path.rsplit("/", 1)[-1]
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/qr"):              # 登录二维码(官方 PNG)
+            return self._serve_qr()
+        if path == "/login" or path.startswith("/login"):   # 手机端登录引导页
+            return self._serve_login()
+        name = path.rsplit("/", 1)[-1]
         token, _, ext = name.partition(".")
         url = _STREAM_STATE["urls"].get(token) if token else None
         if not url:
@@ -552,42 +1020,68 @@ class _AudioHandler(BaseHTTPRequestHandler):
 class Spider(BaseSpider):
     def __init__(self):
         self._sess = None
+        self._anon = None
         self._kuwo_sess = None
         self._cfg = {}
 
     def init(self, extend=""):
+        global _LOGIN_ENABLED
         try:
             self._cfg = json.loads(extend) if (isinstance(extend, str) and extend.strip()) else extend
         except Exception:
             self._cfg = {}
         if not isinstance(self._cfg, dict):
             self._cfg = {}
+        # 登录服务(0.0.0.0 上的二维码/引导页)是否启用; 关掉不影响「手动 Cookie 通道」
+        _LOGIN_ENABLED = self._flag("login", True) and self._flag("login_server", True)
 
     def getName(self):
         return "汽水音乐"
 
     # ------------------------------------------------------------------ HTTP
-    def _session(self):
+    @staticmethod
+    def _new_session():
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": UA,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://music.douyin.com/",
+        })
+        return s
+
+    def _session(self, auth=True):
+        """HTTP 会话。
+
+        auth=True → 带登录 Cookie: 登录态下服务端才认 `scene_mode_id` / `mode`
+        (匿名请求对这两个参数**零过滤**, 见文件头第十一/十二轮)。
+        auth=False → 匿名会话: **取流(`seo_track`)固定走它** —— 保持与「没登录时的现在
+        模式」逐字节一致, 免得登录后官方改发加密/VIP 流反而播不了。
+        """
+        if not auth:
+            if self._anon is None:
+                self._anon = self._new_session()
+            return self._anon
         if self._sess is None:
-            s = requests.Session()
-            s.headers.update({
-                "User-Agent": UA,
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://music.douyin.com/",
-            })
-            self._sess = s
+            self._sess = self._new_session()
+        cookie = _login_cookie()
+        if cookie:
+            if self._sess.headers.get("Cookie") != cookie:
+                self._sess.headers["Cookie"] = cookie
+        elif "Cookie" in self._sess.headers:
+            self._sess.headers.pop("Cookie", None)
         return self._sess
 
-    def _req(self, path, body=None, query=None):
+    def _req(self, path, body=None, query=None, auth=True):
         """统一请求: GET(query) / POST(body) 都返回 dict, 失败返回 {}"""
         if requests is None:
             return {}
         url = API + path
         try:
+            sess = self._session(auth)
             if body is None:
-                r = self._session().get(url, params=query or None, timeout=18)
+                r = sess.get(url, params=query or None, timeout=18)
             else:
-                r = self._session().post(
+                r = sess.post(
                     url, params=query or None,
                     data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
                     headers={"Content-Type": "application/json; charset=utf-8"}, timeout=18)
@@ -696,6 +1190,8 @@ class Spider(BaseSpider):
             {"type_id": "chart", "type_name": "榜单"},
             {"type_id": "listen_video", "type_name": "听抖音"},
         ]
+        if self._flag("login", True):
+            classes.append({"type_id": "login", "type_name": "登录"})   # ★排在最末
         filters = {
             "listen_video": [{"key": "cate", "name": "分类",
                               "value": [{"n": n, "v": v} for n, v in VIDEO_CATS]}],
@@ -717,9 +1213,203 @@ class Spider(BaseSpider):
                 return self._discover(page)
             if str(tid) == "chart":
                 return self._charts(page)
+            if str(tid) == "login":
+                return self._login_cards(page)
             return self._listen(self._extend(extend, "cate", "推荐"), page)
         except Exception:
             return self._result([], page)
+
+    # ------------------------------------------------------------------ 登录
+    # ★需求原文: 「分类最后加登录, 分扫码登录 / 手动拉起官方 app 授权登录;
+    #             没登录按现在模式, 登录后按官方 app 模式获取」。
+    #   实现要点: TVBox 没有交互界面 → 把「扫码」做成**卡片封面**(vod_pic 指向本机
+    #   /qr, 那里转发官方下发的二维码 PNG); 点开卡片进详情页时**轮询一次**并把结果
+    #   写进 vod_content —— 手机确认后再点一次即可看到「✅ 登录成功」。
+    def _login_cards(self, page):
+        """「登录」分类: 未登录 → 「扫码登录」+「App 授权登录」; 已登录 → 状态 + 退出。"""
+        if _login_cookie():
+            self._login_verify()                    # 顺手校验(明确失效才清, 网络抖动不动它)
+        if _login_cookie():
+            state = _login_load()
+            nick = str(state.get("nick") or "").strip() or "汽水用户"
+            cards = [
+                {"vod_id": self._pack("l", {"kind": "info"}), "vod_name": "已登录：" + nick,
+                 "vod_pic": ICON, "vod_remarks": "点开查看账号 / 退出登录"},
+                {"vod_id": self._pack("l", {"kind": "logout"}), "vod_name": "退出登录",
+                 "vod_pic": ICON, "vod_remarks": "清除本机登录态, 回到匿名模式"},
+            ]
+            return self._result(cards, page, False, len(cards))
+        status, local, lan = "error", "", ""
+        try:
+            status, _sess = _qr_ensure()
+            local, lan = _login_origin()
+        except Exception:
+            pass
+        pic = (local + "/qr?t=%d" % int(time.time())) if local else ICON
+        remark = "抖音App扫一扫" if status != "error" else "二维码创建失败, 返回重进"
+        cards = [
+            {"vod_id": self._pack("l", {"kind": "qr"}), "vod_name": "扫码登录",
+             "vod_pic": pic, "vod_remarks": remark},
+            {"vod_id": self._pack("l", {"kind": "app"}), "vod_name": "App 授权登录",
+             "vod_pic": pic,
+             "vod_remarks": ("手机开 " + lan + "/login") if lan else "手机扫码后确认"},
+        ]
+        return self._result(cards, page, False, len(cards))
+
+    @classmethod
+    def _login_vod(cls, name, content):
+        """登录相关卡片的详情页: 只给简介(不需要播放地址), 用户按提示返回刷新即可。"""
+        return {"vod_id": cls._pack("l", {"kind": "info"}), "vod_name": str(name),
+                "vod_pic": ICON, "vod_content": str(content),
+                "vod_play_from": "汽水音乐", "vod_play_url": ""}
+
+    def _login_verify(self):
+        """用 `/luna/me` 校验登录态。
+
+        ★只有在服务端**明确回 `status_code=1000016`(登录态已失效)**时才清除本地登录态;
+        网络失败(返回 {})一律不动 —— 否则一次断网就会把用户的登录态误删。
+        """
+        cookie = _login_cookie()
+        if not cookie:
+            return False
+        data = _me_info(cookie)
+        if not data:
+            return False
+        if int(data.get("status_code") or 0) == 1000016:
+            _login_forget()
+            return False
+        _login_save(cookie, nick=_pick_nick(data))
+        return True
+
+    def _login_detail(self, info):
+        kind = str((info or {}).get("kind") or "info")
+        if kind == "logout":
+            _login_forget()
+            return self._login_vod("已退出登录",
+                                   "登录态已清除, 现在回到**匿名(现在模式)**取数。\n"
+                                   "要重新登录: 返回「登录」分类。")
+        if kind in ("qr", "app"):
+            state = "error"
+            try:
+                state, _sess = _qr_ensure()
+            except Exception:
+                pass
+            result = {}
+            try:
+                result = _qr_check()
+            except Exception:
+                result = {}
+            if result.get("ok") or _login_cookie():
+                self._login_verify()
+                nick = str(_login_load().get("nick") or "").strip() or "汽水用户"
+                return self._login_vod(
+                    "✅ 登录成功：" + nick,
+                    "登录态已保存到本机：%s\n\n"
+                    "**返回上一页, 再进「登录」分类**即可看到「已登录」状态卡片。\n"
+                    "此后听歌模式会优先按**官方 App 模式流**取数(见文件头第十三轮)。"
+                    % _login_path())
+            status = str(result.get("status") or state or "")
+            code = int(result.get("error_code") or 0)
+            refreshed = False
+            if code == 2 or status in ("expired", "expire", "timeout"):
+                # 二维码过期(官方给的 expire_time 只有 ~90s): 立刻重建一张,
+                # 用户**返回列表**就能看到新的码(封面每次都会重新拉 /qr)。
+                try:
+                    _qr_ensure(force=True)
+                    refreshed = True
+                except Exception:
+                    refreshed = False
+            tip = {"new": "尚未扫码", "scanned": "已扫码, 请在手机上点「确认」",
+                   "confirmed": "已确认(正在同步登录态)", "expired": "二维码已过期",
+                   "error": "二维码创建失败"}.get(status, "等待中")
+            if refreshed:
+                tip = "二维码已过期, 已自动刷新 → 请返回列表重新扫码"
+            extra = ""
+            if code == 7:
+                extra = "\n⚠️ 官方临时限流(error_code=7), 歇几秒再点本卡片重试即可。"
+            elif code and not refreshed:
+                extra += "\n(error_code=%s)" % code
+            guide = ("　　2. 手机扫上面的二维码后会打开官方授权页, 在 App 内点「确认授权」。"
+                     if kind == "app" else
+                     "　　2. 用手机「抖音 App → 扫一扫」扫屏幕上的二维码, 然后在手机上点「确认」。")
+            lan = _login_origin()[1]
+            body = ("当前状态：**%s**%s\n\n"
+                    "① %s\n"
+                    "　1. 手机打开: %s\n"
+                    "%s\n"
+                    "② 确认后**返回本页, 再点一次这张卡片**（或返回再进「登录」分类）→ 显示「✅ 登录成功」。\n\n"
+                    "③ 扫码若始终不成功(官方有风控), 用手动通道:\n"
+                    "　在 TVBox 搜索框输入 `#登录 <Cookie>`（只要含 sessionid / sid_tt 即可）。"
+                    % (tip, extra, "App 授权登录（手动拉起官方 App）" if kind == "app" else "扫码登录",
+                       lan or "（本机登录页不可用, 请用下方手动通道）", guide))
+            return self._login_vod(("App 授权登录" if kind == "app" else "扫码登录") + " · " + tip, body)
+        state = _login_load()
+        if state.get("cookie"):
+            nick = str(state.get("nick") or "").strip() or "汽水用户"
+            return self._login_vod("已登录：" + nick,
+                                   "已登录，当前按**官方 App 模式**取数(听歌模式优先走官方个性化模式流)。\n\n"
+                                   "登录态文件：%s\n\n要退出请返回上一页点「退出登录」。" % _login_path())
+        return self._login_vod("未登录",
+                               "当前按**匿名(现在模式)**取数。\n返回上一页, 选「扫码登录」或「App 授权登录」。")
+
+    def _login_command(self, text):
+        """搜索框当输入通道: `#登录 <cookie>` / `#登录` / `#退出`（TVBox 唯一能打字的地方）。
+
+        用途: 官方对**裸 HTTP 轮询**有风控(可能一路 error_code=7), 扫码拿不到 Cookie 时,
+        用户可自己在浏览器里拿到 Cookie 粘贴进来 —— 这是最可靠的一条落地通路。
+        """
+        raw = str(text or "").strip()
+        low = raw.lower()
+        head, _, arg = raw.partition(" ")
+        head_low = head.lower()
+        if head_low not in ("#登录", "#login", "#退出", "#logout", "#登录状态", "#状态"):
+            return None
+        if head_low in ("#退出", "#logout"):
+            _login_forget()
+            return self._login_msg("已退出登录", "已清除本机登录态, 回到匿名模式")
+        if head_low in ("#登录状态", "#状态"):
+            state = _login_load()
+            if state.get("cookie"):
+                self._login_verify()
+                state = _login_load()
+            if state.get("cookie"):
+                return self._login_msg("已登录：" + (str(state.get("nick") or "").strip() or "汽水用户"),
+                                       "输入 `#退出` 可清除登录态")
+            return self._login_msg("未登录", "在「登录」分类扫码, 或输入 `#登录 <Cookie>`")
+        arg = str(arg or "").strip()
+        if not arg:
+            state = _login_load()
+            if state.get("cookie"):
+                return self._login_msg("已登录：" + (str(state.get("nick") or "").strip() or "汽水用户"),
+                                       "输入 `#退出` 可清除登录态")
+            return self._login_msg("未登录", "用法: 搜索 `#登录 <Cookie>`；扫码请看「登录」分类")
+        cookie = self._norm_cookie(arg)
+        if not _qr_cookie_ok(cookie):
+            return self._login_msg("⚠️ Cookie 不完整",
+                                   "里面没有 sessionid / sessionid_ss / sid_tt 之一, 请重新复制")
+        _login_save(cookie)
+        ok = self._login_verify()
+        state = _login_load()
+        if state.get("cookie"):
+            nick = str(state.get("nick") or "").strip()
+            head2 = "✅ 登录成功" + (("：" + nick) if (ok and nick) else "")
+            note = "返回「登录」分类即可看到已登录状态" if ok else "已保存, 但未通过在线校验(可能已过期)"
+            return self._login_msg(head2, note)
+        return self._login_msg("⚠️ 登录态已失效", "官方回「登录状态已失效」, 请重新获取 Cookie")
+
+    @staticmethod
+    def _norm_cookie(text):
+        """清洗粘贴的 Cookie: 去掉 `cookie:` 前缀 / 换行 / 首尾空白。"""
+        raw = str(text or "").strip()
+        raw = re.sub(r"^\s*cookie\s*:\s*", "", raw, flags=re.I)
+        raw = raw.replace("\r", "").replace("\n", " ")
+        return re.sub(r"\s+", " ", raw).strip().strip(";").strip()
+
+    def _login_msg(self, name, note):
+        """搜索通道的操作结果(以一条搜索结果的形式回显, 用户一眼能看到)。"""
+        return self._result([{
+            "vod_id": self._pack("l", {"kind": "info"}), "vod_name": str(name),
+            "vod_pic": ICON, "vod_remarks": str(note)[:60]}], 1, False, 1)
 
     def _modes(self, page):
         """听歌模式墙(3 个基础偏好 + 接口返回的场景模式)"""
@@ -825,6 +1515,9 @@ class Spider(BaseSpider):
         keyword = str(key or "").strip()
         if not keyword:
             return self._result([], 1)
+        handled = self._login_command(keyword)      # `#登录 <Cookie>` / `#退出` / `#登录状态`
+        if handled is not None:
+            return handled
         payload = {
             "search_type": "track", "q": keyword,
             "cursor": None if page == 1 else str((page - 1) * 20),
@@ -851,6 +1544,9 @@ class Spider(BaseSpider):
             mode = self._unpack(value, "m")
             if mode:
                 return {"list": [self._collection_detail(mode)], "parse": 0, "jx": 0}
+            login = self._unpack(value, "l")
+            if login:
+                return {"list": [self._login_detail(login)], "parse": 0, "jx": 0}
             track = self._unpack(value, "t")
             return {"list": [self._track_detail(track or value)], "parse": 0, "jx": 0}
         except Exception:
@@ -858,14 +1554,15 @@ class Spider(BaseSpider):
                               "vod_play_url": "播放$a:" + value + ":auto"}], "parse": 0, "jx": 0}
 
     def _seo(self, track_id):
+        # ★固定匿名(与「没登录」时的取流行为逐字节一致); 登录只影响内容类请求。
         return self._req("/luna/h5/seo_track", None,
-                         {"track_id": str(track_id), "device_platform": "web"})
+                         {"track_id": str(track_id), "device_platform": "web"}, auth=False)
 
     def _req_url(self, url):
         if requests is None:
             return {}
         try:
-            return self._session().get(url, timeout=18).json()
+            return self._session(False).get(url, timeout=18).json()
         except Exception:
             return {}
 
@@ -1440,6 +2137,14 @@ class Spider(BaseSpider):
         if hit and now - hit[1] < _MODE_TRACK_TTL:
             return hit[0]
 
+        # ★登录后 → 优先走**官方 App 模式流**(`scene_mode_id` / `mode` 这时服务端才认);
+        #   拿不到内容则原样回落到下面的匿名策略 —— 所以「没登录=现在模式」不受影响。
+        if _login_cookie():
+            official = self._feed_official(scene_id, mode, want)
+            if official:
+                _MODE_TRACK_CACHE[key] = (official, now)
+                return official
+
         mkey = _mode_key(name) or _mode_key(mode)
         kw = MODE_KEYWORDS.get(mkey, "")
         foreign = mkey in MODE_FOREIGN_KEYS
@@ -1512,6 +2217,91 @@ class Spider(BaseSpider):
                 for k in list(_MODE_TRACK_CACHE)[:20]:
                     _MODE_TRACK_CACHE.pop(k, None)
         return tracks
+
+    def _feed_official(self, scene_id="", mode="", want=50):
+        """★登录后: 走**官方 App 的模式流**(第13轮)。拿不到就返回 [] → 调用方回落匿名策略。
+
+        为什么要分登录/匿名两条路: `scene_mode_id` / `mode` 这两个参数对**匿名请求零过滤**
+        (实测同一场景连采样 4 次歌单集合零交集, 跨场景交集率与不带场景的基线相同 —— 见文件头
+        第十一/十二轮), 服务端只对登录态下发真正的「场景/偏好」个性化流。
+
+        取数顺序:
+          ① `POST /luna/pc/discover/mix`(block_type=discovery_playlist, 带 `scene_mode_id`
+             或 `mode`) → `inner_block[].resources[].entity.playlist` = 该模式的官方歌单
+             → `playlist/detail` 展开曲目(实测单歌单可达 121 首);
+          ② 仍不足 `want` → 官方个性化推荐队列 `POST /luna/pc/feed/song-tab`(登录态下它是
+             按**本账号听歌偏好**生成的)补足。
+        失败(空/异常)一律返回 [], 由 `_feed_mode_tracks` 回落到「主题搜索 + 中文榜单」。
+        """
+        tracks, seen = [], set()
+        body = {"block_type": "discovery_playlist", "sub_channel_id": 0,
+                "exposure_radio_list": [], "cursor": "", "count": 20}
+        sid = str(scene_id or "").strip()
+        if sid:
+            try:
+                body["scene_mode_id"] = int(sid)
+            except Exception:
+                body["scene_mode_id"] = sid
+        elif mode:
+            body["mode"] = str(mode or "default")
+
+        def add(objs):
+            for item in (self._track(x) for x in (objs or [])):
+                if not item or not item.get("id"):
+                    continue
+                tid = str(item["id"])
+                if tid not in seen:
+                    seen.add(tid)
+                    tracks.append(item)
+
+        for _round in range(3):
+            if len(tracks) >= want:
+                break
+            try:
+                data = self._req("/luna/pc/discover/mix", body)
+            except Exception:
+                data = {}
+            blocks = data.get("inner_block") or []
+            if not blocks:
+                break
+            ids = []
+            for block in blocks:
+                for res in (block.get("resources") or []):
+                    entity = res.get("entity") if isinstance(res.get("entity"), dict) else {}
+                    playlist = entity.get("playlist") if isinstance(entity.get("playlist"), dict) else {}
+                    pid = str(playlist.get("id") or res.get("resource_id") or "")
+                    if pid and pid not in ids:
+                        ids.append(pid)
+            for pid in ids[:4]:                         # 每轮最多展开 4 个歌单, 控时延
+                if len(tracks) >= want:
+                    break
+                try:
+                    add(self._playlist_tracks(pid))
+                except Exception:
+                    pass
+            if len(tracks) >= want:
+                break
+            cursor = str(data.get("cursor") or data.get("next_cursor") or "")
+            if not cursor or cursor == str(body.get("cursor") or ""):
+                break
+            body["cursor"] = cursor
+
+        rounds = 0
+        while len(tracks) < want and rounds < 4:
+            rounds += 1
+            try:
+                data = self._req("/luna/pc/feed/song-tab", {
+                    "played_media": [], "is_first_request": rounds == 1,
+                    "is_did_first_request": rounds > 1,
+                    "feed_counts": {"mix_session_count": rounds - 1}})
+            except Exception:
+                data = {}
+            items = data.get("items") or []
+            if not items:
+                break
+            add(items)
+
+        return tracks[:want]
 
     def _radio_tracks(self, radio_id, want=50):
         """电台曲目: 官方每次只回 **6 首**, 且 `count` / `limit` / `cursor` / `offset`
