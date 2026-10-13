@@ -283,10 +283,58 @@
 #   宿主不可用时(非 webhtv / 服务未起)**逐字回落到原来的详情页文案链路**。
 # 详见常量区 `APP_PORT_RANGE` 上方的事实清单(含 App 源码行号)。
 #
+# ================================================================== 登录状态同步(第十六轮)
+# 需求原文: 「手机确认登录后 这边状态不会更新; 如果登陆成功 这边更新状态;
+#            可以去 E:\DCBrowserDownloads\webhtv-5.6.0-202609192305 看看是怎么确认状态、
+#            存储登录信息」。
+#
+# ①「状态不会更新」的真实原因(**不是 UI bug, 是这条路本来就拿不到登录态**):
+#   上游 libresoda `docs/QR-LOGIN.md` 的真机实测(2026-09-15)逐条对上:
+#     · 状态机 = `new → scanned → confirmed`; `error_code=7` 是**临时限流**, 冷却必须 5s
+#       (「写成 60 秒会把整个扫码→确认窗口跳过去, 表现为卡在 scanned」);
+#     · **纯 HTTP 直连(不带 a_bogus 签名)扫码后会一路 error_code=7, 连 scanned 都读不到**;
+#     · **确认后的登录态不在响应体里**(`session_cookie=false`、无 Set-Cookie),
+#       「只在签名页浏览器会话里」。
+#   本机复现到的响应形态与之吻合: `{"data":{"status":"new","error_code":0,...}}` ——
+#   `status` 是**单词**不是数字, 且这一跳只下发 `passport_csrf_token`, 没有 sessionid。
+#   ⇒ 所以「手机确认了、这边永远不动」在旧实现下是**必然**的:
+#     三个缺陷叠在一起 —— (a) 状态词表不全, 不认识的状态静默回落成「等待扫码」;
+#     (b) `error_code=7` 被当成「等待中」, 用户扫码后看不到任何变化;
+#     (c) 轮询只挂在登录页的 AJAX 上, **页面一关就断**; 非弹窗链路还会被宿主缓存
+#         (`SiteApi.cacheDetail` 缓存详情 5 分钟, 只有「本次 detail 期间开过网页」
+#          才跳过缓存, 见 `CatWebEvent.requestedAfter`)。
+#
+# ②「登录成功后这边更新状态」怎么落地 —— **去宿主的 WebView 里取, 这是唯一有官方浏览器
+#   会话的地方**(App 源码事实):
+#     · 这个 fork 用 **Chaquopy** 把 Python 3.10 跑在 App 进程内(`chaquo/build.gradle`),
+#       源与宿主**同进程同 uid** ⇒ 源能直接读宿主 WebView 的 Cookie;
+#     · 读法① 首选 `android.webkit.CookieManager.getInstance().getCookie(url)`
+#       (App 自己就这么干: `web/CookieBridge.java:13`, 且被 `WebHomeRawAdapter` /
+#        `WebHomeInlineVodStore` 在**后台线程**调用 → 后台线程读是安全的);
+#     · 读法② 退路: 直读 `app_webview/**/Cookies` 这个 SQLite
+#       (`LoginStateSync.java:802-807` 把它标成 HIGH 置信的登录态载体);
+#     · 官方会话从哪来: 用户在**宿主弹出的窗口里**走官方页面(官方 JS, 无直连风控)完成
+#       登录/授权 → 会话 Cookie 落在 WebView 的共享 Cookie 库里。
+#   ⇒ 实现: 新增**后台守护线程**持续「轮询状态 + 收割宿主 Cookie」, 一旦收割到会话字段就
+#     用 `/luna/me` 校验 → 落盘 → 登录分类立刻变「已登录」。状态**不再依赖页面是否开着**。
+#
+# ③ 顺带修掉的坑(都有出处):
+#     · 直连 `redirect_url` 时**手工解析原始 Set-Cookie**: requests 的 cookiejar 会按域名
+#       策略**拒收** `Domain=.qishui.com` 这类跨域 Set-Cookie —— 那正是「拿到了 confirmed
+#       却永远收不到 sessionid」的另一半原因;
+#     · 官方二维码只有 ~90s(`expire_time`), 后台线程**自动换新码**, 不再让用户对着过期码;
+#     · `error_code=2046` = 官方要求二次安全验证(需要签名页桥接, 纯 HTTP 做不了)→ 明确提示
+#       改用「网页登录」或 `#登录 <Cookie>`, 不再假装还在等扫码。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "login":0         隐藏「登录」分类(默认 1 = 显示)
 #   "login_server":0  不起本地二维码/登录页服务(默认 1)
 #   "app_window":0    不调宿主弹内嵌窗口(默认 1); 关掉后登录卡片退回详情页文案模式
+#   "login_watch":0   不启后台登录守护线程(默认 1)。★默认必开: 它是「手机确认后这边自动
+#                     更新状态 / 自动收割宿主 WebView 会话」的唯一执行者; 关掉后轮询退回
+#                     「只在登录页 AJAX 里打」(页面一关就断, 是第十六轮修的旧行为)。
+#   "login_host":0    不读宿主 WebView 的 Cookie(默认 1)。仅在你想完全隔离宿主时关。
+#   "login_toast":0   登录成功后不弹「✅ 登录成功」窗口(默认 1 = 弹)。
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
@@ -467,12 +515,38 @@ QR_SESSION_KEYS = ("sessionid", "sessionid_ss", "sid_guard", "sid_tt")
 QR_PORT_RANGE = (10020, 10060)          # 登录服务端口(0.0.0.0, 给手机开 /login)
 QR_TTL = 170                            # 二维码兜底有效期(秒); 官方会给 expire_time
 _LOGIN_ENABLED = True                   # 由 `init()` 依 extend 的 "login"/"login_server" 改写
+_LOGIN_WATCH_ON = True                  # 后台登录守护线程(第十六轮; "login_watch":0 关)
+_LOGIN_HOST_ON = True                   # 读宿主 WebView 的 Cookie(第十六轮; "login_host":0 关)
+_LOGIN_TOAST = True                     # 登录成功后弹「✅ 登录成功」窗口("login_toast":0 关)
 _QR_LOCK = threading.RLock()
 _QR_STATE = {"session": None, "png": b"", "token": "", "expire": 0.0, "status": "",
              "scan_url": "", "qrcode_url": "", "desc": "", "born": 0.0, "cookies": "",
-             "port": 0, "server": None}
+             "port": 0, "server": None,
+             # 第十六轮: 状态诊断字段(给 UI/回归脚本用, 让「状态变化」看得见)
+             "raw": "", "error_code": 0, "cool": 0.0, "limited": False, "verify": False,
+             "src": "", "done_pop": False}
 _LOGIN_LOCK = threading.RLock()
 _LOGIN_STATE = {"loaded": False, "cookie": "", "nick": "", "uid": "", "saved": 0.0}
+
+# ------------------------------------------------- 登录状态机 + 宿主会话收割(第十六轮)
+# 完整根因与出处见文件头「第十六轮」。这里只放常量与共享状态。
+_QR_POLL = 3.0                      # 后台轮询间隔(秒)
+_QR_COOL = 5.0                      # ★error_code=7 的冷却, 必须 5s(上游真机实测结论;
+                                    #   写成几十秒会把「扫码→确认」窗口跳过去 → 卡在 scanned)
+_QR_WATCH_MAX = 90                  # 后台线程最多跑多少轮就停(没人扫码时不必无限换码)
+_QR_STATUS_WORDS = {"new": "new", "0": "new", "1": "new",
+                    "scanned": "scanned", "scanning": "scanned", "2": "scanned",
+                    "confirmed": "confirmed", "success": "confirmed", "3": "confirmed",
+                    "expired": "expired", "expire": "expired", "timeout": "expired",
+                    "cancel": "expired", "canceled": "expired"}
+_QR_WATCH = {"thread": None}
+_HOST_LOCK = threading.RLock()
+_HOST_STATE = {"cookie": "", "checked": 0.0, "reject": ""}
+HOST_COOKIE_TTL = 2.0               # 宿主 Cookie 的短缓存(秒): 解析列很便宜, 但不能太频繁
+HOST_COOKIE_URLS = (                # CookieManager 按 URL 取 → 自带域名过滤, 多打几个域名
+    "https://api.qishui.com/", "https://www.qishui.com/", "https://bff-pc.qishui.com/",
+    "https://music.douyin.com/", "https://www.douyin.com/")
+HOST_LOGIN_URL = "https://www.qishui.com/"   # 汽水官方 Web 版(实测 title「汽水音乐 - 抖音音乐版」)
 
 # ---------------------------------------------------------------- 宿主弹窗(第十五轮)
 # ★需求: 「点击扫码登录 → 弹出二维码窗口; 点击 App 授权登录 → 直接打开系统上的汽水
@@ -620,6 +694,100 @@ def _cookie_header(jar):
     return "; ".join(pairs)
 
 
+def _cookie_pairs(text):
+    """`k=v; k=v` → 有序 dict(后出现的同名只补空值, 不覆盖已有值)。"""
+    out = {}
+    for part in str(text or "").split(";"):
+        name, _, val = part.strip().partition("=")
+        name, val = name.strip(), val.strip()
+        if name and (name not in out or (val and not out[name])):
+            out[name] = val
+    return out
+
+
+def _cookie_str(pairs):
+    return "; ".join("%s=%s" % (k, v) for k, v in (pairs or {}).items())
+
+
+def _cookie_merge(old, new):
+    """合并两串 Cookie(旧的在前, 新的补上/覆盖非空值)。"""
+    pairs = _cookie_pairs(old)
+    for key, val in _cookie_pairs(new).items():
+        if val or key not in pairs:
+            pairs[key] = val
+    return _cookie_str(pairs)
+
+
+def _set_cookie_values(resp):
+    """把响应里所有 `Set-Cookie` **手工**拼成 `k=v; k=v`。
+
+    ★为什么不用 requests 的 cookie jar: 官方下发的会话 Cookie 常带
+    `Domain=.qishui.com`, 而请求打在 `api.qishui.com` 上时, cookiejar 的默认策略会
+    **按域名拒收**这种跨域 Set-Cookie —— 那正是「状态都 confirmed 了, 本地永远收不到
+    sessionid」的另一半原因(上游 `docs/QR-LOGIN.md` 也记录「确认后登录态不在响应体」)。
+    这里改成自己解析原始响应头, 谁发的都收。
+    """
+    values = []
+    try:
+        values = list(resp.raw.headers.getlist("Set-Cookie") or [])
+    except Exception:
+        try:
+            one = resp.headers.get("Set-Cookie")
+            values = [one] if one else []
+        except Exception:
+            values = []
+    out = {}
+    for item in values:
+        pair = str(item or "").split(";", 1)[0].strip()
+        name, _, val = pair.partition("=")
+        name, val = name.strip(), val.strip()
+        if name and (name not in out or val):
+            out[name] = val
+    return _cookie_str(out)
+
+
+def _qr_follow(url, sess):
+    """跟一跳官方 `redirect_url`, 把会话 Cookie 收上来(手工解析, 见 `_set_cookie_values`)。"""
+    http = sess.get("http") if isinstance(sess, dict) else None
+    if http is None or requests is None or not url:
+        return ""
+    try:
+        resp = http.get(str(url), allow_redirects=True, timeout=15)
+    except Exception:
+        return ""
+    return _cookie_merge(_set_cookie_values(resp), _cookie_header(http.cookies))
+
+
+def _qr_norm(status, code=0):
+    """官方状态词 → 统一状态。
+
+    ★不认识的状态**原样返回**(而不是静默回落成 "new") —— 旧实现正是靠 `.get(state, "等待扫码…")`
+    把陌生状态吞掉, 表现为「手机上都确认了, 这边还写着等待扫码」。现在 UI 会把官方原文显示出来。
+    """
+    word = str(status or "").strip()
+    if word.lower() in _QR_STATUS_WORDS:
+        return _QR_STATUS_WORDS[word.lower()]
+    if int(code or 0) == 2:
+        return "expired"
+    return word
+
+
+def _qr_tip(state, raw="", limited=False, verify=False, code=0):
+    """状态 → 页面/详情页上的人话提示。"""
+    if limited:
+        return "⚠️ 官方临时限流(error_code=7), 已按 5s 冷却自动重试 · 手机上确认即可"
+    if verify:
+        return "⚠️ 官方要求二次安全验证(error_code=2046) · 请改用「网页登录」或用手机 App 确认"
+    table = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上点「确认」",
+             "confirmed": "已确认, 正在同步登录态…", "expired": "二维码已过期, 正在换新码…",
+             "error": "二维码创建失败, 正在重试…"}
+    if state in table:
+        return table[state]
+    if state or raw:
+        return "官方状态: %s%s" % (state or raw, ("(error_code=%s)" % code) if code else "")
+    return "等待扫码…"
+
+
 def _pick_nick(data):
     """从 /luna/me 的各种可能形态里抠昵称(字段名不稳定, 多路兜底)。"""
     for path in (("user", "nickname"), ("user", "nick_name"), ("user", "name"),
@@ -732,6 +900,7 @@ def _qr_scan_url(token):
 
 def _qr_ensure(force=False):
     """确保有一个未过期的二维码 → (状态, 会话)。已创建且未过期就直接复用。"""
+    fresh = False
     with _QR_LOCK:
         token = str(_QR_STATE.get("token") or "")
         expire = float(_QR_STATE.get("expire") or 0)
@@ -756,42 +925,330 @@ def _qr_ensure(force=False):
                 png = base64.b64decode(raw.split(",", 1)[1])
             except Exception:
                 png = b""
+        exp = float(data.get("expire_time") or 0)
+        if exp < 1e9:                       # ★有的是「剩余秒数」有的是「绝对时刻」, 两种都兜
+            exp = time.time() + (exp or QR_TTL)
         _QR_STATE.update({
-            "session": sess, "token": tok, "png": png,
-            "expire": float(data.get("expire_time") or (time.time() + QR_TTL)),
+            "session": sess, "token": tok, "png": png, "expire": exp,
             "qrcode_url": str(data.get("qrcode_index_url") or ""),
             "scan_url": _qr_scan_url(tok), "status": "new", "born": time.time(),
             "desc": str(data.get("web_name") or ""), "cookies": cookies,
+            # 新码 = 新一轮: 清掉上一张码的诊断字段(否则页面会显示旧状态)
+            "raw": "", "error_code": 0, "cool": 0.0, "limited": False, "verify": False,
         })
-        return "new", sess
+        fresh = True
+    if fresh:
+        _qr_watch_start()                   # 让状态推进不依赖页面是否开着
+    return "new", sess
 
 
-def _qr_check():
-    """轮询一次扫码状态; 命中会话 Cookie 就落盘。返回 {status, error_code, ok, desc}。"""
+def _qr_check(deep=True):
+    """轮询一次扫码状态 + 顺手收割宿主 WebView 的会话。返回状态快照(dict)。
+
+    字段: status(规范化状态) / raw(官方原文) / error_code / ok / desc /
+          limited(官方限流中) / verify(要二次验证) / src(Cookie 来源)。
+
+    ★本轮三处关键修正(对应文件头「第十六轮」的根因清单):
+      ① `error_code=7` 是**临时限流**: 不判失败, 也**不覆盖上一次状态**(否则「已扫码」会被
+         打回「等待扫码」= 用户眼里的"状态不更新"); 冷却 5s, 交给后台线程继续;
+      ② 状态词表补全, 陌生状态**原样透出**;
+      ③ 成功判据不再只看响应体 —— 官方在响应体里**根本不给登录态**, 所以主判据是
+         「宿主 WebView 的 Cookie 库里出现了会话字段」。
+    """
     with _QR_LOCK:
         token = str(_QR_STATE.get("token") or "")
         sess = _QR_STATE.get("session")
-        if not token or not isinstance(sess, dict):
-            return {"status": "", "error_code": 0, "ok": False, "desc": "尚未生成二维码"}
-        body = {"need_logo": "false", "need_short_url": "false", "is_frontier": "true",
-                "token": token, "is_new_login": "1", "next": API}
-        payload, cookies = _qr_call(sess, "POST", QR_CHECK, {}, body)
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        status = str(data.get("status") or "").strip()
-        code = int(data.get("error_code") or 0)
-        desc = str(data.get("description") or "")
+        prev = str(_QR_STATE.get("status") or "")
+    if not token or not isinstance(sess, dict):
+        if _login_cookie():
+            return {"status": "confirmed", "raw": "", "error_code": 0, "ok": True,
+                    "desc": "已登录", "limited": False, "verify": False, "src": "本地"}
+        return {"status": "", "raw": "", "error_code": 0, "ok": False, "desc": "尚未生成二维码",
+                "limited": False, "verify": False, "src": ""}
+    body = {"need_logo": "false", "need_short_url": "false", "is_frontier": "true",
+            "token": token, "is_new_login": "1", "next": API}
+    payload, cookies = _qr_call(sess, "POST", QR_CHECK, {}, body)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if not data:
+        data = payload if isinstance(payload, dict) else {}       # 有的形态状态挂顶层
+    raw = str(data.get("status") or "").strip()
+    code = int(data.get("error_code") or 0)
+    desc = str(data.get("description") or payload.get("message") or "")
+    limited = code == 7
+    verify = code == 2046
+    status = _qr_norm(raw, code)
+    if limited or verify:
+        status = prev or status                 # 限流/二次验证: 既不推进也不回退状态
+    if status == "confirmed":
+        redir = str(data.get("redirect_url") or data.get("desc_url") or "").strip()
+        if redir.startswith(("http://", "https://")):
+            cookies = _cookie_merge(cookies, _qr_follow(redir, sess))
+    with _QR_LOCK:
         if cookies:
-            _QR_STATE["cookies"] = cookies
+            _QR_STATE["cookies"] = _cookie_merge(_QR_STATE.get("cookies"), cookies)
         if status:
             _QR_STATE["status"] = status
+        _QR_STATE["raw"] = raw
+        _QR_STATE["error_code"] = code
+        _QR_STATE["limited"] = limited
+        _QR_STATE["verify"] = verify
+        _QR_STATE["cool"] = (time.time() + _QR_COOL) if limited else 0.0
         if desc:
             _QR_STATE["desc"] = desc
-        ok = _qr_cookie_ok(_QR_STATE.get("cookies"))
-        if ok:
+        jar = str(_QR_STATE.get("cookies") or "")
+    ok, src = False, ""
+    if _qr_cookie_ok(jar):
+        ok, src = True, "直连"
+    elif _login_host_sync():                    # ★主判据: 宿主 WebView 里的官方会话
+        ok, src = True, "宿主WebView"
+    if not ok:
+        reject = str(_HOST_STATE.get("reject") or "")
+        if reject:
+            desc = reject                       # 如实告诉用户「为什么没收下这份会话」
+    if ok:
+        with _QR_LOCK:
             _QR_STATE["status"] = "confirmed"
-            _login_save(_QR_STATE.get("cookies") or cookies)
-        return {"status": status or str(_QR_STATE.get("status") or ""), "error_code": code,
-                "ok": ok, "desc": desc, "cookie": cookies}
+            _QR_STATE["src"] = src
+            cookie = str(_QR_STATE.get("cookies") or "")
+        _login_save(cookie)
+        info = _me_info(cookie)
+        if info and int(info.get("status_code") or 0) == 1000016:
+            # 官方明确说这份 Cookie 无效 → 不留一份假登录态(否则后面取数会一直失败)
+            _login_forget()
+            ok, src = False, ""
+            desc = "官方回「登录状态已失效」(status_code=1000016), 这份 Cookie 没落地"
+        else:
+            nick = _pick_nick(info) if info else ""
+            if nick:
+                _login_save(cookie, nick=nick)
+    with _QR_LOCK:
+        if not ok:
+            _QR_STATE["src"] = ""
+        final = str(_QR_STATE.get("status") or status)
+    return {"status": final, "raw": raw, "error_code": code, "ok": ok, "desc": desc,
+            "limited": limited, "verify": verify, "src": src}
+
+
+# ------------------------------------------------------- 宿主 WebView 会话收割
+_JAVA_STATE = {"ok": None, "miss_at": 0.0}
+
+
+def _java_ready():
+    """chaquopy 的 Java 互操作是否可用。
+
+    ★带 60s 负缓存: 后台守护线程每 3s 就会来收一次 Cookie, 在**非 webhtv 宿主**(没有 chaquopy)
+    上不能每次都对 `import java` 白试一遍。
+    """
+    if _JAVA_STATE["ok"] is True:
+        return True
+    if _JAVA_STATE["ok"] is False and time.time() - float(_JAVA_STATE["miss_at"] or 0) < 60:
+        return False
+    try:
+        import java  # noqa: F401
+        _JAVA_STATE["ok"] = True
+    except Exception:
+        _JAVA_STATE["ok"] = False
+        _JAVA_STATE["miss_at"] = time.time()
+    return bool(_JAVA_STATE["ok"])
+
+
+def _host_data_dir():
+    """App 私有数据目录(`/data/data/<pkg>`)。走 chaquopy 的 Java 互操作。
+
+    `com.fongmi.android.tv.App.get()` 是 public static(App.java:61) → 拿 Application →
+    `getApplicationInfo().dataDir`。拿不到就退环境变量, 再不行返回空串(功能自动降级)。
+    """
+    if not _java_ready():
+        return ""
+    try:
+        from java import jclass
+        app = jclass("com.fongmi.android.tv.App").get()
+        if app is not None:
+            return str(app.getApplicationInfo().dataDir or "")
+    except Exception:
+        pass
+    for key in ("ANDROID_PRIVATE", "ANDROID_APP_DATA"):
+        path = os.environ.get(key)
+        if path and os.path.isdir(path):
+            return path
+    return ""
+
+
+def _host_cookie_java(url):
+    """`CookieManager.getInstance().getCookie(url)` —— 首选读法。
+
+    App 自己就在**后台线程**这么读(`web/CookieBridge.java:13` 被 `WebHomeRawAdapter` /
+    `WebHomeInlineVodStore` 调用, 见文件头第十六轮), 所以这里从后台线程读同样安全。
+    """
+    if not _java_ready():
+        return ""
+    try:
+        from java import jclass
+        manager = jclass("android.webkit.CookieManager").getInstance()
+        return str(manager.getCookie(str(url)) or "")
+    except Exception:
+        return ""
+
+
+def _host_cookie_sqlite():
+    """退路: 直读 WebView 的 Cookie SQLite(`app_webview/**/Cookies`)。
+
+    只在 Java 互操作不可用时才走。库可能被 WebView 占用 → **先复制再读**;
+    只取 qishui.com / douyin.com 这两个域的 Cookie, 免得把别的网页的 Cookie 也塞进来。
+    """
+    if not _java_ready():
+        return ""
+    try:
+        import glob
+        import shutil
+        import sqlite3
+    except Exception:
+        return ""
+    data_dir = _host_data_dir()
+    if not data_dir:
+        return ""
+    names = ("app_webview/Default/Cookies", "app_webview/default/Cookies",
+             "app_webview/Default/Network/Cookies", "app_webview/default/network/Cookies",
+             "app_hws_webview/default/Cookies")
+    cands = [os.path.join(data_dir, n) for n in names]
+    cands += glob.glob(os.path.join(data_dir, "app_webview", "*", "*Cookies"))
+    out, seen = {}, set()
+    for src in cands:
+        if not os.path.isfile(src) or src in seen:
+            continue
+        seen.add(src)
+        tmp = os.path.join(tempfile.gettempdir(), "qs_wvcookie_%d.db" % abs(hash(src)))
+        try:
+            shutil.copyfile(src, tmp)          # 被占用时直接读会报 database is locked
+            conn = sqlite3.connect(tmp)
+            rows = conn.execute("select host_key, name, value from cookies").fetchall()
+            conn.close()
+        except Exception:
+            continue
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        for host, name, value in rows:
+            host = str(host or "").lower()
+            if not (host.endswith("qishui.com") or host.endswith("douyin.com")):
+                continue
+            name, value = str(name or ""), str(value or "")
+            if name and value and name not in out:
+                out[name] = value
+    return _cookie_str(out)
+
+
+def _host_cookie(force=False):
+    """宿主 WebView 里与汽水/抖音相关的 Cookie(合并 Java 与 SQLite 两条读法)。"""
+    with _HOST_LOCK:
+        now = time.time()
+        if not force and now - float(_HOST_STATE.get("checked") or 0) < HOST_COOKIE_TTL:
+            return str(_HOST_STATE.get("cookie") or "")
+    text = ""
+    if _LOGIN_HOST_ON:
+        for url in HOST_COOKIE_URLS:
+            text = _cookie_merge(text, _host_cookie_java(url))
+        if not _qr_cookie_ok(text):
+            text = _cookie_merge(text, _host_cookie_sqlite())
+    with _HOST_LOCK:
+        _HOST_STATE["cookie"] = text
+        _HOST_STATE["checked"] = now
+    return text
+
+
+def _login_host_sync(force=False):
+    """从宿主 WebView 收割登录态 → `/luna/me` 校验 → 落盘。返回 True 表示已登录。
+
+    ★这是「手机确认登录后这边更新状态」的正面回答: 官方确认后**响应体里没有登录态**,
+    但宿主的 WebView 里有官方会话 —— 源与宿主同进程同 uid, 直接去取。
+    """
+    if _login_cookie():
+        return True
+    with _HOST_LOCK:
+        _HOST_STATE["reject"] = ""
+    host = _host_cookie(force=force)
+    if not _qr_cookie_ok(host):
+        return False
+    info = _me_info(host)
+    if int((info or {}).get("status_code") or 0) == 1000016:
+        with _HOST_LOCK:
+            _HOST_STATE["reject"] = ("宿主里的会话被官方判为已失效(status_code=1000016) —— "
+                                     "请在弹出窗口里重新登录一次")
+        return False                            # 会话不完整/已失效 → 不落盘
+    _login_save(host, nick=_pick_nick(info) if info else "")
+    with _QR_LOCK:
+        _QR_STATE["status"] = "confirmed"
+        _QR_STATE["src"] = "宿主WebView"
+        _QR_STATE["cookies"] = _cookie_merge(_QR_STATE.get("cookies"), host)
+    return True
+
+
+def _login_toast_done():
+    """登录成功后弹一个本地「✅ 登录成功」窗口(宿主可用且开关打开时; 只弹一次)。"""
+    if not _LOGIN_TOAST:
+        return False
+    with _QR_LOCK:
+        if _QR_STATE.get("done_pop"):
+            return False
+        _QR_STATE["done_pop"] = True
+    local = _login_origin()[0]
+    if not local:
+        return False
+    return _app_open_window(local + "/login?mode=done")
+
+
+def _qr_watch_start():
+    """启动后台登录守护线程(幂等)。
+
+    ★这是「状态一定会更新」的落地方式: 状态推进不再依赖登录页的 AJAX 是否还开着 ——
+    页面关掉、切到别的分类, 状态照样在推进, 成功照样落盘。
+    """
+    if not _LOGIN_WATCH_ON:
+        return
+    with _QR_LOCK:
+        th = _QR_WATCH.get("thread")
+        if th is not None and th.is_alive():
+            return
+        th = threading.Thread(target=_qr_watch_loop, name="qs-login-watch", daemon=True)
+        _QR_WATCH["thread"] = th
+    th.start()
+
+
+def _qr_watch_loop():
+    """★守护轮询循环: 每 3s(限流时 5s)推进一次状态; 二维码过期自动换新; 成功即落盘并弹窗。"""
+    rounds = 0
+    try:
+        while rounds < _QR_WATCH_MAX:
+            rounds += 1
+            with _QR_LOCK:
+                token = str(_QR_STATE.get("token") or "")
+                expire = float(_QR_STATE.get("expire") or 0)
+            if not token or _login_cookie():
+                break
+            if time.time() > expire:
+                try:
+                    _qr_ensure(force=True)      # 官方码只有 ~90s(expire_time), 自动换新
+                except Exception:
+                    pass
+                time.sleep(_QR_POLL)
+                continue
+            result = {}
+            try:
+                result = _qr_check()
+            except Exception:
+                result = {}
+            if result.get("ok"):
+                _login_toast_done()
+                break
+            wait = _QR_COOL + 0.5 if result.get("limited") else _QR_POLL
+            time.sleep(max(1.0, min(wait, 12.0)))
+    except Exception:
+        pass
+    finally:
+        with _QR_LOCK:
+            _QR_WATCH["thread"] = None
 
 
 def _lan_ip():
@@ -937,33 +1394,73 @@ def _qr_app_url():
 
 
 def _qr_status_json():
-    """给登录页 AJAX 用的状态快照(顺手按最小间隔触发一次官方轮询)。
+    """给登录页 AJAX 用的状态快照(**纯读缓存**, 不在这里打官方接口)。
 
-    AJAX 每 3s 拉一次, 但**服务端限制 ≥2.5s 才真打官方接口** —— 官方对裸 HTTP
-    轮询有风控(`error_code=7 访问太频繁`), 页面刷太快反而会把用户自己限流掉。
+    ★轮询已经搬到后台守护线程 `_qr_watch_loop`(第十六轮):
+      · 页面每 3s 只读一次快照 → 状态一定是最新的, 且页面刷多快都不会把自己限流掉;
+      · 页面关掉/切走, 状态照样推进(旧实现只挂在这儿, 页面一关就断, 正是"状态不更新"的一半原因)。
+    线程不在(首次进入 / 异常退出)时这里补一次, 并顺手从宿主 WebView 收一次会话。
     """
     with _QR_LOCK:
-        due = (time.time() - float(_QR_STATE.get("polled") or 0)) >= 2.5
         has_token = bool(_QR_STATE.get("token"))
-    if due and has_token:
+        due = (time.time() - float(_QR_STATE.get("polled") or 0)) >= 2.5
+    thread = _QR_WATCH.get("thread")
+    if _LOGIN_WATCH_ON and has_token:
+        if thread is None or not thread.is_alive():
+            _qr_watch_start()
+    elif due:
+        # 守护线程被关掉时的旧行为: 这里按 ≥2.5s 的最小间隔打一次
         with _QR_LOCK:
             _QR_STATE["polled"] = time.time()
         try:
             _qr_check()
         except Exception:
             pass
-    state = str(_QR_STATE.get("status") or "")
+    if not has_token:
+        _login_host_sync()                  # 没有活码: 也允许直接从宿主 WebView 收登录态
+    with _QR_LOCK:
+        state = str(_QR_STATE.get("status") or "")
+        raw = str(_QR_STATE.get("raw") or "")
+        code = int(_QR_STATE.get("error_code") or 0)
+        limited = bool(_QR_STATE.get("limited"))
+        verify = bool(_QR_STATE.get("verify"))
+        src = str(_QR_STATE.get("src") or "")
+        desc = str(_QR_STATE.get("desc") or "")
+        expire = max(0, int(float(_QR_STATE.get("expire") or 0) - time.time()))
     nick = str((_login_load() or {}).get("nick") or "")
     ok = bool(_login_cookie())
     if ok:
         tip = "✅ 登录成功" + (("：" + nick) if nick else "") + " · 按返回键即可"
     else:
-        tip = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上点「确认」",
-               "confirmed": "已确认, 正在同步登录态…", "expired": "二维码已过期",
-               "error": "二维码创建失败"}.get(state, "等待扫码…")
-    return {"status": state, "ok": ok, "nick": nick, "tip": tip,
-            "expire": max(0, int(float(_QR_STATE.get("expire") or 0) - time.time())),
-            "app": bool(_qr_app_url())}
+        tip = _qr_tip(state, raw, limited, verify, code)
+    return {"status": state, "ok": ok, "nick": nick, "tip": tip, "expire": expire,
+            "raw": raw, "error_code": code, "limited": limited, "verify": verify,
+            "src": src, "detail": desc[:60], "app": bool(_qr_app_url())}
+
+
+def _login_done_html():
+    """登录成功页: 后台线程从宿主 WebView 收到会话后弹出来, 给一个明确的「这边也更新了」反馈。"""
+    with _QR_LOCK:
+        src = str(_QR_STATE.get("src") or "")
+    nick = str((_login_load() or {}).get("nick") or "") or "汽水用户"
+    src_note = ("会话来源：%s" % src) if src else ""
+    return ("""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>汽水音乐 · 登录成功</title>
+<style>
+ body{margin:0;padding:8vh 20px;background:#0f1712;color:#e8eaed;text-align:center;
+      font:16px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+ h1{font-size:clamp(22px,3vh,32px);color:#39d353;margin:0 0 12px}
+ p{color:#9aa4ad;font-size:clamp(13px,1.9vh,17px)}
+ b{color:#cfd3da}
+ small{color:#5d666e;font-size:clamp(11px,1.5vh,13px)}
+</style></head><body>
+<h1>✅ 登录成功</h1>
+<p>已登录 <b>__NICK__</b>，登录态已保存到本机。</p>
+<p>请按 <b>返回键</b> 回到 TVBox：「登录」分类会显示「已登录」，<br>
+听歌模式此后按 <b>官方 App 模式</b> 取数。</p>
+<p><small>__SRC__</small></p>
+</body></html>""").replace("__NICK__", nick).replace("__SRC__", src_note)
 
 
 def _login_html(mode="qr", state=""):
@@ -976,18 +1473,24 @@ def _login_html(mode="qr", state=""):
     ★ 主按钮指向官方 `qrcode_index_url`(https)。**手机上**打开它会经 App Links
     直接唤起汽水音乐 App; 在**本机内嵌 WebView** 里打开则是官方授权页正常渲染
     (页内再跳 App 会被宿主拦, 见常量区事实清单, 源侧无解)。
+
+    ★(第十六轮) 状态由**后台守护线程**推进, 本页每 3s 只读一次快照 ⇒ 页面一关状态也照样
+    在走; 同时页面底部会显示**官方原文**(status / error_code / 会话来源), 所以「状态有没有
+    变化」是看得见的, 不再出现"手机上都确认了这里还写等待扫码"。
     """
-    mode = "app" if str(mode or "").startswith("app") else "qr"
-    nick = str((_login_load() or {}).get("nick") or "")
-    logged = bool(_login_cookie())
+    mode = str(mode or "").lower()
+    if mode == "done" or _login_cookie():
+        return _login_done_html()
+    mode = "app" if mode.startswith("app") else "qr"
+    with _QR_LOCK:
+        raw = str(_QR_STATE.get("raw") or "")
+        code = int(_QR_STATE.get("error_code") or 0)
+        limited = bool(_QR_STATE.get("limited"))
+        verify = bool(_QR_STATE.get("verify"))
     app_url = _qr_app_url()
     link = app_url or str(_QR_STATE.get("scan_url") or "")
-    if logged:
-        tip = "✅ 已登录" + (("：" + nick) if nick else "") + " · 按返回键即可"
-    else:
-        tip = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上点「确认」",
-               "confirmed": "已确认, 正在同步登录态…", "expired": "二维码已过期, 正在换新码…",
-               "error": "二维码创建失败"}.get(str(state or ""), "等待扫码…")
+    tip = _qr_tip(str(state or ""), raw, limited, verify, code)
+    diag = ("官方返回：status=%s%s" % (raw or "-", (" · error_code=%d" % code) if code else ""))
     title = "打开汽水音乐 App 完成授权" if mode == "app" else "扫码登录"
     if mode == "app" and app_url:
         lead = ("点下面按钮 → <b>手机上会直接唤起汽水音乐 App</b> 完成授权；"
@@ -1016,6 +1519,7 @@ def _login_html(mode="qr", state=""):
  a.btn:focus,a.btn:hover{background:#3d9bff;outline:3px solid #8fd694;outline-offset:2px}
  a.alt{background:#242832;color:#c9cdd4;font-weight:500}
  p.note{color:#8b909a;font-size:clamp(12px,1.6vh,14px);max-width:460px;margin:18px auto 0;text-align:left}
+ p.diag{color:#5d666e;font-size:clamp(11px,1.5vh,13px);max-width:460px;margin:10px auto 0}
  b{color:#cfd3da}
  #lnk{position:absolute;left:-9999px;top:0;opacity:0}
 </style></head><body class="__OK__">
@@ -1027,13 +1531,18 @@ def _login_html(mode="qr", state=""):
 <input id="lnk" type="text" value="__LINK__" readonly tabindex="-1">
 <p class="note">__LEAD__<br>
 扫码后本页会<b>自动</b>变成「✅ 登录成功」，不需要手动刷新；成功后按返回键回到 TVBox，
-重进「登录」分类即为「已登录」。</p>
+重进「登录」分类即为「已登录」。<br>
+<b>本页关掉也没关系</b>：状态在后台继续推进，登录成功后会自动弹一个「✅ 登录成功」窗口。</p>
+<p class="diag" id="diag">__DIAG__</p>
 <script>
 function tick(){
   fetch('/login/status',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
     document.getElementById('tip').textContent=d.tip||'';
-    document.body.className=d.ok?'ok':'';
-    if(d.ok){clearInterval(timer);return}
+    var diag='';
+    if(d.raw){diag='官方返回: status='+d.raw+(d.error_code?(' · error_code='+d.error_code):'')+(d.src?(' · 会话来源: '+d.src):'');}
+    document.getElementById('diag').textContent=diag;
+    if(d.ok){document.body.className='ok';clearInterval(timer);return}
+    if(d.limited){return}
     if(!d.expire||d.status==='expired'){location.reload()}
   }).catch(function(){});
 }
@@ -1045,11 +1554,12 @@ function copyLink(){
 var timer=setInterval(tick,3000);
 </script>
 </body></html>"""\
-        .replace("__OK__", "ok" if logged else "") \
+        .replace("__OK__", "") \
         .replace("__TITLE__", title) \
         .replace("__TIP__", tip) \
         .replace("__QR__", qr_url) \
         .replace("__LINK__", link_attr) \
+        .replace("__DIAG__", diag) \
         .replace("__COPYBTN__", (
             '\n<a class="btn alt" href="javascript:copyLink()">'
             '③ 复制授权链接（粘到手机浏览器可直接拉起 App）</a>' if link else "")) \
@@ -1295,7 +1805,7 @@ class Spider(BaseSpider):
         self._cfg = {}
 
     def init(self, extend=""):
-        global _LOGIN_ENABLED, _APP_WINDOW
+        global _LOGIN_ENABLED, _APP_WINDOW, _LOGIN_WATCH_ON, _LOGIN_HOST_ON, _LOGIN_TOAST
         try:
             self._cfg = json.loads(extend) if (isinstance(extend, str) and extend.strip()) else extend
         except Exception:
@@ -1306,6 +1816,12 @@ class Spider(BaseSpider):
         _LOGIN_ENABLED = self._flag("login", True) and self._flag("login_server", True)
         # 是否调宿主(webhtv)的 /msg 弹内嵌窗口; 关掉后登录卡片退回「详情页文案」模式
         _APP_WINDOW = self._flag("app_window", True)
+        # ★第十六轮: 后台登录守护线程(状态推进不依赖页面是否开着)
+        _LOGIN_WATCH_ON = self._flag("login_watch", True)
+        # 读宿主 WebView 的 Cookie(登录态真正来源; 见文件头第十六轮)
+        _LOGIN_HOST_ON = self._flag("login_host", True)
+        # 登录成功后弹「✅ 登录成功」窗口
+        _LOGIN_TOAST = self._flag("login_toast", True)
 
     def getName(self):
         return "汽水音乐"
@@ -1504,6 +2020,13 @@ class Spider(BaseSpider):
         两张卡都**点一下就弹窗**(宿主可用时), 不需要再"点开-刷新-再点开"。"""
         if _login_cookie():
             self._login_verify()                    # 顺手校验(明确失效才清, 网络抖动不动它)
+        if not _login_cookie():
+            # ★宿主 WebView 里可能已经有官方会话(用户在弹出窗口里登录过 / 用过官方网页登录)
+            #   → 进列表就先同步一次, 这样「登录成功了」会立刻反映成「已登录」卡片。
+            try:
+                _login_host_sync(force=True)
+            except Exception:
+                pass
         if _login_cookie():
             state = _login_load()
             nick = str(state.get("nick") or "").strip() or "汽水用户"
@@ -1522,13 +2045,21 @@ class Spider(BaseSpider):
             pass
         pic = (local + "/qr?t=%d" % int(time.time())) if local else ICON
         remark = "点开弹出二维码" if status != "error" else "二维码创建失败, 返回重进"
-        app_remark = "点开直接打开汽水音乐App授权" if _qr_app_url() else "点开弹出授权页"
+        app_remark = "点开打开官方授权页" if _qr_app_url() else "点开弹出授权页"
         cards = [
             {"vod_id": self._pack("l", {"kind": "qr"}), "vod_name": "扫码登录",
              "vod_pic": pic, "vod_remarks": remark},
             {"vod_id": self._pack("l", {"kind": "app"}), "vod_name": "App 授权登录",
              "vod_pic": pic, "vod_remarks": app_remark},
         ]
+        # ★第三张卡(第十六轮): 「网页登录」。理由很硬 —— 直连 passport 会被官方风控
+        #   (`error_code=7`), 而且确认后的登录态**只在浏览器会话里**; 本机唯一有官方浏览器
+        #   会话的地方就是宿主 WebView(`www.qishui.com` = 官方 Web 版, 登录走官方 JS 无风控)。
+        #   在它里面登录完成后, 源直接读 WebView 的 Cookie 就拿到了会话 → 状态自动更新。
+        if _APP_WINDOW and _LOGIN_HOST_ON and (_app_probe_port() or 0):
+            cards.append({"vod_id": self._pack("l", {"kind": "web"}),
+                          "vod_name": "网页登录（官方网页）", "vod_pic": ICON,
+                          "vod_remarks": "在弹出窗口里登录, 成功后自动同步"})
         return self._result(cards, page, False, len(cards))
 
     @classmethod
@@ -1563,7 +2094,24 @@ class Spider(BaseSpider):
             return self._login_vod("已退出登录",
                                    "登录态已清除, 现在回到**匿名(现在模式)**取数。\n"
                                    "要重新登录: 返回「登录」分类。")
-        if kind in ("qr", "app"):
+        if kind in ("qr", "app", "web"):
+            # ★(第十六轮) 先把后台守护线程叫起来: 之后状态的推进与宿主会话的收割都不再
+            #   依赖这个页面是否还开着 —— 这正是「手机确认后这边自动更新状态」的实现。
+            try:
+                _qr_watch_start()
+            except Exception:
+                pass
+            # 宿主 WebView 里可能已经有官方会话(用户刚在弹出窗口里登录过) → 先同步一次
+            try:
+                if _login_host_sync(force=True):
+                    nick = str(_login_load().get("nick") or "").strip() or "汽水用户"
+                    return self._login_vod(
+                        "✅ 登录成功：" + nick,
+                        "登录态已保存到本机(来源: 宿主 WebView 官方会话)：%s\n\n"
+                        "**返回上一页, 再进「登录」分类**即可看到「已登录」状态卡片。"
+                        % _login_path())
+            except Exception:
+                pass
             state = "error"
             try:
                 state, _sess = _qr_ensure()
@@ -1580,26 +2128,35 @@ class Spider(BaseSpider):
                 pass
             if kind == "qr":
                 target = (local + "/login?mode=qr") if local else ""
+            elif kind == "web":
+                target = HOST_LOGIN_URL                       # 汽水官方 Web 版(第十六轮)
             else:
                 target = _qr_app_url() or ((local + "/login?mode=app") if local else "")
             try:
                 popped = _app_open_window(target)
             except Exception:
                 popped = False
+            name_of = {"qr": "扫码登录", "app": "App 授权登录", "web": "网页登录"}.get(kind, "登录")
             if popped:
-                if kind == "app":
-                    what = "官方「打开汽水音乐 App」授权页 —— 用**手机**打开会直接唤起汽水音乐 App"
+                if kind == "web":
+                    what = ("汽水**官方网页版** —— 在窗口里点「登录」完成登录（走官方 JS，"
+                            "没有被直连风控的问题），登录成功后本机会**自动同步**登录态")
+                elif kind == "app":
+                    what = ("官方授权页 —— 用**手机**打开这条会直接唤起汽水音乐 App；"
+                            "若在窗口里操作，就用另一台手机扫「扫码登录」的二维码并在 App 里确认")
                 else:
                     what = "官方二维码 —— 用手机「抖音 App → 扫一扫」"
                 return self._login_vod(
-                    ("扫码登录" if kind == "qr" else "App 授权登录") + " · 已弹出窗口",
-                    "已在屏幕上**弹出登录窗口**, 请在里面完成授权：\n\n"
+                    name_of + " · 已弹出窗口",
+                    "已在屏幕上**弹出登录窗口**, 请在里面完成登录：\n\n"
                     "· 窗口里是%s；\n"
-                    "· 完成后窗口会**自动**变成「✅ 登录成功」；\n"
+                    "· 完成后本机会**自动同步**登录态(状态在后台推进, 窗口关掉也算)，"
+                    "并弹出一个「✅ 登录成功」窗口；\n"
                     "· 然后按返回键回到 TVBox, 重进「登录」分类即为「已登录」。\n\n"
                     "窗口没弹出来? 用手机浏览器打开: %s\n"
-                    "（还不行就用搜索框粘 Cookie: `#登录 <Cookie>`）"
-                    % (what, lan or "（本机登录页不可用）"))
+                    "（还不行就用搜索框粘 Cookie: `#登录 <Cookie>`；"
+                    "在别的页面登录过也可以搜 `#取Cookie` 同步过来）"
+                    % (what, lan or HOST_LOGIN_URL))
             result = {}
             try:
                 result = _qr_check()
@@ -1616,6 +2173,8 @@ class Spider(BaseSpider):
                     % _login_path())
             status = str(result.get("status") or state or "")
             code = int(result.get("error_code") or 0)
+            tip = _qr_tip(status, str(result.get("raw") or ""),
+                          bool(result.get("limited")), bool(result.get("verify")), code)
             refreshed = False
             if code == 2 or status in ("expired", "expire", "timeout"):
                 # 二维码过期(官方给的 expire_time 只有 ~90s): 立刻重建一张,
@@ -1625,34 +2184,42 @@ class Spider(BaseSpider):
                     refreshed = True
                 except Exception:
                     refreshed = False
-            tip = {"new": "尚未扫码", "scanned": "已扫码, 请在手机上点「确认」",
-                   "confirmed": "已确认(正在同步登录态)", "expired": "二维码已过期",
-                   "error": "二维码创建失败"}.get(status, "等待中")
             if refreshed:
                 tip = "二维码已过期, 已自动刷新 → 请返回列表重新扫码"
             extra = ""
             if code == 7:
-                extra = "\n⚠️ 官方临时限流(error_code=7), 歇几秒再点本卡片重试即可。"
+                extra = ("\n⚠️ 官方临时限流(error_code=7) —— 这是**临时**的, 后台已在按 5s 冷却"
+                         "自动重试, 请继续在手机上确认。")
+            elif code == 2046:
+                extra = ("\n⚠️ 官方要求二次安全验证(error_code=2046)。纯 HTTP 这一路做不了, "
+                         "请改用「网页登录」或 `#登录 <Cookie>`。")
             elif code and not refreshed:
                 extra += "\n(error_code=%s)" % code
             guide = ("　　2. 用手机浏览器/微信打开上面那条链接 → 会**直接唤起汽水音乐 App**, "
                      "在 App 内点「确认授权」。"
                      if kind == "app" else
                      "　　2. 用手机「抖音 App → 扫一扫」扫屏幕上的二维码, 然后在手机上点「确认」。")
+            if kind == "web":
+                guide = ("　　2. 在窗口里点页面上的「登录」→ 会走**官方登录**（扫码或账号密码）。\n"
+                         "　　3. 登录完成后源会**自动**读取宿主 WebView 的官方会话并落盘。")
             if kind == "app":
                 open_url = (lan + "/login?mode=app") if lan else (_qr_app_url() or "")
+            elif kind == "web":
+                open_url = HOST_LOGIN_URL
             else:
                 open_url = (lan + "/login?mode=qr") if lan else ""
             body = ("当前状态：**%s**%s\n\n"
-                    "① %s\n"
-                    "　1. 手机打开: %s\n"
                     "%s\n"
-                    "② 确认后**返回本页, 再点一次这张卡片**（或返回再进「登录」分类）→ 显示「✅ 登录成功」。\n\n"
-                    "③ 扫码若始终不成功(官方有风控), 用手动通道:\n"
-                    "　在 TVBox 搜索框输入 `#登录 <Cookie>`（只要含 sessionid / sid_tt 即可）。"
-                    % (tip, extra, "App 授权登录（打开官方授权链接）" if kind == "app" else "扫码登录",
-                       open_url or "（本机登录页不可用, 请用下方手动通道）", guide))
-            return self._login_vod(("App 授权登录" if kind == "app" else "扫码登录") + " · " + tip, body)
+                    "　1. 打开: %s\n"
+                    "%s\n"
+                    "② 状态由**后台线程**推进(页面关掉也算数), 成功后会自动弹「✅ 登录成功」；\n"
+                    "　也可以**返回再进「登录」分类** → 已登录就会显示「已登录：昵称」。\n\n"
+                    "③ 兜底通道(官方有风控时最可靠):\n"
+                    "　· 搜索框输入 `#登录 <Cookie>` 手动粘贴(只要含 sessionid / sid_tt)；\n"
+                    "　· 在别的页面/窗口里登录过 → 搜索框输入 `#取Cookie` 从宿主 WebView 同步过来。"
+                    % (tip, extra, name_of + "（打开官方入口）",
+                       open_url or "（本机登录页不可用, 请用下方通道）", guide))
+            return self._login_vod(name_of + " · " + tip.split("·")[0].strip(), body)
         state = _login_load()
         if state.get("cookie"):
             nick = str(state.get("nick") or "").strip() or "汽水用户"
@@ -1672,15 +2239,38 @@ class Spider(BaseSpider):
         low = raw.lower()
         head, _, arg = raw.partition(" ")
         head_low = head.lower()
-        if head_low not in ("#登录", "#login", "#退出", "#logout", "#登录状态", "#状态"):
+        if head_low not in ("#登录", "#login", "#退出", "#logout", "#登录状态", "#状态",
+                           "#取cookie", "#取ck", "#同步", "#sync"):
             return None
         if head_low in ("#退出", "#logout"):
             _login_forget()
             return self._login_msg("已退出登录", "已清除本机登录态, 回到匿名模式")
+        if head_low in ("#取cookie", "#取ck", "#同步", "#sync"):
+            # ★(第十六轮) 从**宿主 WebView 的官方会话**里同步登录态 —— 用户在弹出窗口/官方网页
+            #   里登录完, 一条命令就把登录态拉过来(这也是「登录成功后这边更新状态」的手动版)。
+            ok = False
+            try:
+                ok = _login_host_sync(force=True)
+            except Exception:
+                ok = False
+            if ok:
+                nick = str((_login_load() or {}).get("nick") or "").strip()
+                return self._login_msg(
+                    "✅ 已同步宿主登录态" + (("：" + nick) if nick else ""),
+                    "会话已落盘, 返回「登录」分类即为「已登录」")
+            return self._login_msg(
+                "⚠️ 没在宿主 WebView 里找到汽水会话",
+                "先用「网页登录」在弹出窗口里登录; 或 `#登录 <Cookie>`")
         if head_low in ("#登录状态", "#状态"):
             state = _login_load()
             if state.get("cookie"):
                 self._login_verify()
+                state = _login_load()
+            if not state.get("cookie"):
+                try:
+                    _login_host_sync(force=True)        # 顺手同步一次宿主会话
+                except Exception:
+                    pass
                 state = _login_load()
             if state.get("cookie"):
                 return self._login_msg("已登录：" + (str(state.get("nick") or "").strip() or "汽水用户"),
