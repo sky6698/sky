@@ -6,6 +6,7 @@ import bisect
 import hashlib
 import json
 import lzma
+import os
 import random
 import re
 import struct
@@ -82,6 +83,24 @@ PUBLIC_SITE = "https://hongguoduanju.com"
 PUBLIC_QUALITY = "360p"
 PLAY_LINE = "红果┃短剧"
 
+# ---------------------------------------------------------------- 账号登录
+# 红果官网自身挂着番茄小说 passport 网关(aid=2503), 扫码登录流程:
+#   get_qrcode 拿 token+二维码 -> 用「抖音/番茄小说/红果」APP 扫码并确认
+#   -> check_qrconnect 轮询到 confirmed -> 跟随 redirect_url 收割 sessionid 等 cookie。
+# 登录态落盘(hongguo_account.json)后注入 App 接口(cookie + x-tt-token),
+# 用于解锁 >360p 的受保护流; 未登录时自动只用官网 360p 公开直链。
+PASSPORT_AID = "2503"
+PASSPORT_SDK = "3.0.16"
+LOGIN_TID = "hg_login"
+LOGIN_QR = "hg_login:qr"
+LOGIN_APP = "hg_login:app"
+LOGIN_LOGOUT = "hg_login:logout"
+LOGIN_TITLE = "登录"
+ACCOUNT_NAME = "hongguo_account.json"
+_QR_TTL_FALLBACK = 240          # 服务端 expire_time 缺失时的二维码有效期兜底(秒)
+_QR_POLL_ROUNDS = 4             # 进详情页时同步轮询次数
+_QR_POLL_INTERVAL = 1.2         # 每次轮询间隔(秒)
+
 _HTTP = None
 
 
@@ -135,6 +154,229 @@ def _accessible_count(series_id: str, first_vid: str) -> int:
     except Exception:
         pass
     return 0
+
+
+class _HongguoLogin:
+    """扫码登录状态机 + 凭证落盘(线程安全)。模块级单例见 _LOGIN。
+
+    二维码内容就是服务端下发的 qrcode_index_url(含 token, uc_sdk=scan-auth),
+    手机用「抖音 / 番茄小说 / 红果」APP 扫它 -> APP 内点确认 -> 本端轮询到 confirmed,
+    再跟随 redirect_url 收割 sessionid 等 cookie 落盘。
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._sess = None
+        self.token = ""
+        self.qr_b64 = ""
+        self.qr_bytes = b""
+        self.qr_url = ""
+        self.prompt_text = ""
+        self.created = 0.0
+        self.expire = 0
+        self.cookies = {}
+        self.user = {}
+        self._loaded = False
+
+    # ---------------------------------------------------------- 落盘
+
+    def _path(self):
+        try:
+            base = os.path.dirname(os.path.abspath(__file__))
+        except Exception:
+            base = ""
+        if not base or not os.path.isdir(base):
+            base = os.getcwd()
+        return os.path.join(base, ACCOUNT_NAME)
+
+    def load(self):
+        with self._lock:
+            if self._loaded:
+                return
+            self._loaded = True
+            try:
+                with open(self._path(), encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, Mapping):
+                    self.cookies = dict(data.get("cookies") or {})
+                    self.user = dict(data.get("user") or {})
+            except Exception:
+                pass
+
+    def save(self):
+        with self._lock:
+            try:
+                tmp = self._path() + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump({"cookies": self.cookies, "user": self.user,
+                               "saved_at": int(time.time())}, fh,
+                              ensure_ascii=False, indent=1)
+                os.replace(tmp, self._path())
+            except Exception:
+                pass
+
+    def logout(self):
+        with self._lock:
+            self.cookies = {}
+            self.user = {}
+            self.token = ""
+            self.qr_b64 = ""
+            self.qr_bytes = b""
+            self._sess = None
+            try:
+                os.remove(self._path())
+            except OSError:
+                pass
+
+    # ---------------------------------------------------------- 凭证
+
+    def logged_in(self):
+        self.load()
+        with self._lock:
+            return bool(self.cookies)
+
+    def cookie_header(self):
+        self.load()
+        with self._lock:
+            if not self.cookies:
+                return ""
+            return "; ".join("%s=%s" % (k, v) for k, v in self.cookies.items())
+
+    def app_token(self):
+        """App 接口用的 x-tt-token; web 登录态下退化为 sid_tt/sessionid。"""
+        self.load()
+        with self._lock:
+            for key in ("x-tt-token", "sid_tt", "sessionid_ss", "sessionid"):
+                value = self.cookies.get(key)
+                if value:
+                    return str(value)
+            return ""
+
+    def display(self):
+        self.load()
+        with self._lock:
+            return dict(self.user or {})
+
+    # ---------------------------------------------------------- passport
+
+    def _session(self):
+        if self._sess is None:
+            sess = requests.Session()
+            sess.headers.update({"User-Agent": UA, "Referer": SITE + "/"})
+            self._sess = sess
+        return self._sess
+
+    @staticmethod
+    def _params(extra=None):
+        p = {"aid": PASSPORT_AID, "language": "zh", "account_sdk_source": "web",
+             "passport_jssdk_version": PASSPORT_SDK, "passport_jssdk_type": "normal"}
+        if extra:
+            p.update(extra)
+        return p
+
+    def new_qrcode(self, force=False):
+        """生成二维码; 未过期且未确认的 token 直接复用, 免得重进详情页把二维码刷掉。"""
+        with self._lock:
+            fresh = (time.time() - self.created) < (self.expire or _QR_TTL_FALLBACK)
+            if not force and self.token and self.qr_bytes and fresh:
+                return True
+        resp = self._session().get(
+            SITE + "/passport/web/get_qrcode/",
+            params=self._params({"next": SITE + "/", "need_logo": "true"}), timeout=20)
+        data = (resp.json() or {}).get("data") or {}
+        if data.get("error_code") or not data.get("token"):
+            raise HongguoPluginError(
+                "二维码获取失败: %s" % (data.get("description") or data.get("error_code")))
+        raw = b""
+        try:
+            raw = base64.b64decode(data.get("qrcode") or "")
+        except Exception:
+            raw = b""
+        prompt = ""
+        try:
+            copy = json.loads(data.get("copywriting") or "{}")
+            prompt = str(copy.get("desc") or "")
+            # 去掉服务端富文本标记: [color=red]..[/] 之类
+            prompt = re.sub(r"\[[^\[\]]{0,24}\]", "", prompt).strip()
+        except Exception:
+            prompt = ""
+        with self._lock:
+            self.token = str(data.get("token"))
+            self.qr_b64 = str(data.get("qrcode") or "")
+            self.qr_bytes = raw or self.qr_bytes
+            self.qr_url = str(data.get("qrcode_index_url") or "")
+            self.prompt_text = prompt or "请使用「抖音 / 番茄小说」APP 扫码并在手机上确认"
+            self.created = time.time()
+            try:
+                self.expire = int(data.get("expire_time") or 0)
+            except Exception:
+                self.expire = 0
+        return True
+
+    def check(self):
+        """轮询一次扫码状态; confirmed 时收割 cookie 并落盘。"""
+        with self._lock:
+            token = self.token
+        if not token:
+            return {"status": "none"}
+        try:
+            resp = self._session().get(
+                SITE + "/passport/web/check_qrconnect/",
+                params=self._params({"next": "/", "token": token}), timeout=15)
+            data = (resp.json() or {}).get("data") or {}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:60]}
+        if data.get("error_code"):
+            with self._lock:
+                if self.token == token:
+                    self.token = ""
+                    self.qr_bytes = b""
+            return {"status": "expired", "error_code": data.get("error_code")}
+        status = str(data.get("status") or "new")
+        if status in ("confirmed", "complete", "success") or data.get("redirect_url"):
+            self._harvest(data.get("redirect_url"))
+            return {"status": "confirmed", "user": self.display()}
+        return {"status": status}
+
+    def _harvest(self, redirect_url):
+        """跟随 redirect 收割 cookie(与取二维码同一个 session), 再取昵称。"""
+        sess = self._session()
+        try:
+            if redirect_url:
+                sess.get(redirect_url, timeout=20, allow_redirects=True)
+        except Exception:
+            pass
+        try:
+            cookies = {k: v for k, v in sess.cookies.get_dict().items() if v}
+        except Exception:
+            cookies = {}
+        user = {}
+        try:
+            resp = sess.get(SITE + "/passport/account/info/v2/",
+                            params=self._params(), timeout=15)
+            info = (resp.json() or {}).get("data") or {}
+            name = info.get("name") or info.get("screen_name") or info.get("nickname")
+            if name:
+                user = {"name": str(name),
+                        "avatar": str(info.get("avatar_url") or info.get("avatar") or "")}
+        except Exception:
+            pass
+        with self._lock:
+            if cookies:
+                self.cookies = cookies
+            self.user = user
+            self.token = ""
+            self.qr_bytes = b""
+        self.save()
+
+    # ---------------------------------------------------------- 二维码图片
+
+    def qr_bytes_now(self):
+        with self._lock:
+            return self.qr_bytes or b""
+
+
+_LOGIN = _HongguoLogin()
 
 
 
@@ -761,6 +1003,24 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _serve_login_qr(self, body: bool) -> None:
+        data = _LOGIN.qr_bytes_now()
+        if not data:
+            self._fail(404, b"no qrcode")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not body:
+            return
+        try:
+            self.wfile.write(data)
+        except OSError:
+            self.close_connection = True
+
     def do_HEAD(self) -> None:  # noqa: N802 - 标准库回调命名
         self._serve(body=False)
 
@@ -769,6 +1029,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _serve(self, body: bool) -> None:
         route = urlparse(self.path).path
+        # 登录二维码: 详情页 vod_pic 指到本机这个端点, 无需外网图床
+        if route.rstrip("/").endswith("/login/qr.png"):
+            self._serve_login_qr(body)
+            return
         if not route.endswith(".mp4"):
             self._fail(404, b"not found")
             return
@@ -2913,6 +3177,9 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
     install_id = _text(config.get("install_id"))
     if not device_id or not install_id:
         raise HongguoPluginError("缺少红果 device_id/install_id 配置")
+    # 登录态: 站点 ext 显式指定优先, 否则用扫码登录落盘的凭证
+    cookie = _text(config.get("cookie")) or _LOGIN.cookie_header()
+    token = _text(config.get("x_tt_token")) or _LOGIN.app_token()
     return {
         "device_id": device_id, "iid": install_id, "install_id": install_id,
         "device_brand": "Redmi", "device_model": "25053RT47C", "device_type": "25053RT47C",
@@ -2920,6 +3187,8 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
         "x_tt_dt": _text(config.get("x_tt_dt")),
         "sec_device_token": _text(config.get("sec_device_token")),
         "device_sec_device_token": _text(config.get("device_sec_device_token")),
+        "cookie": cookie,
+        "x_tt_token": token,
         "ua": APP_UA,
     }
 
@@ -2980,6 +3249,8 @@ def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
     }
     if devices.get("cookie"):
         request_headers["Cookie"] = devices["cookie"]
+    if devices.get("x_tt_token"):
+        request_headers["x-tt-token"] = devices["x_tt_token"]
     signed_headers, signed_url = _core_sixgod(
         VIDEO_URL,
         params,
@@ -3042,6 +3313,79 @@ def _video_list_from_model(model: Mapping[str, Any]) -> Any:
 
 
 _QUALITY_ORDER = ("2160", "1440", "1080", "720", "576", "540", "480", "360")
+
+_PROBE_LOCK = threading.RLock()
+_PROBE_STATE = {"until": 0.0, "tiers": []}
+_PROBE_COOLDOWN = 600           # 探测失败后的冷却(秒), 免得每次进详情都白等一次超时
+
+
+def _iter_tracks(value: Any):
+    """摊平 video_model 里所有含直链的轨道条目。"""
+    if isinstance(value, Mapping):
+        if any(k in value for k in ("main_url", "backup_url", "backup_url_1",
+                                    "play_addr", "spade_a", "encrypt_info")):
+            yield dict(value)
+            return
+        for item in value.values():
+            for row in _iter_tracks(item):
+                yield row
+    elif isinstance(value, list):
+        for item in value:
+            for row in _iter_tracks(item):
+                yield row
+
+
+def _definition_of(item: Mapping[str, Any]) -> str:
+    meta = item.get("video_meta") if isinstance(item.get("video_meta"), Mapping) else {}
+    raw = _text(item.get("definition") or meta.get("definition") or "")
+    m = re.search(r"(2160|1440|1080|720|576|540|480|360)", raw)
+    return m.group(1) if m else ""
+
+
+def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
+    """登录后探测该视频实际可用的清晰度档位(走 App 接口 multi_video_model)。
+
+    返回 [(显示名, 档位), ...]; 拿不到(签名/风控被拒)则返回 [] 并进入冷却,
+    调用方据此决定用多线路还是回退官网 360p 单线路。
+    """
+    now = time.time()
+    with _PROBE_LOCK:
+        if now < _PROBE_STATE["until"]:
+            return list(_PROBE_STATE["tiers"])
+    found = set()
+    try:
+        model = _video_model(str(video_id), config)
+        for item in _iter_tracks(_video_list_from_model(model)):
+            definition = _definition_of(item)
+            if definition:
+                found.add(definition)
+    except Exception:
+        found = set()
+    tiers = [(name, tier) for name, tier in QUALITY_TIERS if tier in found]
+    with _PROBE_LOCK:
+        _PROBE_STATE["tiers"] = list(tiers)
+        _PROBE_STATE["until"] = time.time() + (0 if tiers else _PROBE_COOLDOWN)
+    return tiers
+
+
+def _build_play(pairs: list, tiers: list) -> tuple:
+    """按可用档位生成 vod_play_from / vod_play_url。
+
+    pairs: [(标题, vid), ...]; tiers 非空 -> 每档一条线路(走 App 流+本地解密),
+    为空 -> 官网 360p 单线路。
+    """
+    if tiers:
+        play_from = "$$$".join(name for name, _ in tiers)
+        play_url = "$$$".join(
+            "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier)
+                     for title, vid in pairs)
+            for _, tier in tiers)
+    else:
+        play_from = PLAY_LINE
+        play_url = "#".join("%s$%s%s" % (title, EPISODE_PREFIX, vid)
+                            for title, vid in pairs)
+    return play_from, play_url
+
 
 def _int(value: Any) -> int:
     match = re.search(r"\d+", _text(value))
@@ -3226,6 +3570,10 @@ def _api_post(path, body, config):
         "passport-sdk-version": "50561",
         "x-vc-bdturing-sdk-version": "3.7.2.cn",
     }
+    if devices.get("cookie"):
+        request_headers["Cookie"] = devices["cookie"]
+    if devices.get("x_tt_token"):
+        request_headers["x-tt-token"] = devices["x_tt_token"]
     url = API_HOST + path
     signed_headers, signed_url = _core_sixgod(url, params, devices, body, request_headers)
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -3338,7 +3686,8 @@ class Spider(Spider):
         cfg = {"device_id": self.device_id, "install_id": self.install_id}
         extra = getattr(self, "_extra_config", None)
         if isinstance(extra, dict):
-            for key in ("cookie", "x_tt_dt", "sec_device_token", "device_sec_device_token"):
+            for key in ("cookie", "x_tt_token", "x_tt_dt", "sec_device_token",
+                        "device_sec_device_token"):
                 if _text(extra.get(key)):
                     cfg[key] = _text(extra.get(key))
         return cfg
@@ -3352,6 +3701,7 @@ class Spider(Spider):
             {"type_id": "hot", "type_name": "最热"},
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
+            {"type_id": LOGIN_TID, "type_name": LOGIN_TITLE},
         ]
         groups = [
             {"key": "topic", "name": "主题", "value": [
@@ -3407,7 +3757,126 @@ class Spider(Spider):
         p = (_data(SITE + "/category?" + urlencode(q)).get("loaderData") or {}).get("category_page") or {}
         return p
 
+    # ---------------------------------------------------------------- 登录页
+    def _login_pic(self):
+        """详情页 vod_pic: 优先走本机流服务的二维码端点, 起不来再退化到外网图床。"""
+        try:
+            port = _start_stream_server()
+        except Exception:
+            port = 0
+        if port:
+            return "http://127.0.0.1:%d/login/qr.png" % port
+        link = _LOGIN.qr_url
+        if link:
+            return ("https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=8&data="
+                    + quote(link, safe=""))
+        return ""
+
+    def _login_ok_item(self, vod_id):
+        user = _LOGIN.display()
+        name = str(user.get("name") or "已登录")
+        return {
+            "vod_id": vod_id, "vod_name": "账号: " + name,
+            "vod_pic": str(user.get("avatar") or ""), "vod_year": "", "vod_area": "",
+            "vod_director": "", "vod_actor": "",
+            "vod_content": (
+                "已登录。播放时优先使用登录账号走 App 接口取流, 以获取高于官网 360p 的清晰度;\n"
+                "若上游仍拒绝(签名/风控), 会自动回退到官网 360p 公开直链, 不影响观看。\n\n"
+                "换号请先退出登录, 再重新扫码。"
+            ),
+            "vod_remarks": "已登录",
+            "vod_play_from": "", "vod_play_url": "",
+        }
+
+    def _login_category(self):
+        user = _LOGIN.display()
+        name = str(user.get("name") or "")
+        logged = _LOGIN.logged_in()
+        state = ("已登录: " + name) if (logged and name) else ("已登录" if logged else "未登录")
+        items = [
+            {"vod_id": LOGIN_QR, "vod_name": "扫码登录", "vod_pic": "", "vod_remarks": state},
+            {"vod_id": LOGIN_APP, "vod_name": "跳转 APP 登录确认", "vod_pic": "",
+             "vod_remarks": "手机打开链接" if not logged else state},
+        ]
+        if logged:
+            items.append({"vod_id": LOGIN_LOGOUT, "vod_name": "退出登录", "vod_pic": "",
+                          "vod_remarks": ""})
+        return {"page": 1, "pagecount": 1, "limit": len(items),
+                "total": len(items), "list": items}
+
+    def _login_detail(self, vod_id):
+        if vod_id == LOGIN_LOGOUT:
+            _LOGIN.logout()
+            return {"list": [{
+                "vod_id": LOGIN_LOGOUT, "vod_name": "已退出登录", "vod_pic": "",
+                "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+                "vod_content": "登录凭证已清除, 播放回退到官网 360p 公开直链。",
+                "vod_remarks": "未登录", "vod_play_from": "", "vod_play_url": "",
+            }]}
+
+        if _LOGIN.logged_in():
+            return {"list": [self._login_ok_item(vod_id)]}
+
+        # 未登录: 生成(或复用)二维码
+        error = ""
+        try:
+            _LOGIN.new_qrcode(force=False)
+        except Exception as exc:
+            error = str(exc)[:100]
+
+        status = "none"
+        if not error:
+            try:
+                status = str(_LOGIN.check().get("status"))
+            except Exception:
+                status = "none"
+            # 已扫码待确认时才继续等(提升一次进入就成功的概率); 没扫就直接返回, 免得详情页干等
+            if status and status not in ("new", "confirmed", "expired", "none", "error"):
+                for _ in range(_QR_POLL_ROUNDS):
+                    time.sleep(_QR_POLL_INTERVAL)
+                    try:
+                        status = str(_LOGIN.check().get("status"))
+                    except Exception:
+                        break
+                    if status in ("confirmed", "expired", "none"):
+                        break
+
+        if _LOGIN.logged_in():
+            return {"list": [self._login_ok_item(vod_id)]}
+
+        prompt = _LOGIN.prompt_text or "请使用「抖音 / 番茄小说」APP 扫一扫"
+        if error:
+            head = "二维码获取失败: " + error
+        elif status == "expired":
+            head = "二维码已过期, 请返回列表重新进入本页获取新码。"
+        elif status in ("error",):
+            head = "状态查询超时, 请返回列表重新进入本页重试。"
+        elif status and status != "new":
+            head = "已扫码, 请在手机上点「确认登录」, 然后返回列表重新进入本页即可生效。"
+        else:
+            head = prompt + "(在手机上用「抖音」或「番茄小说」APP 扫码)"
+
+        link = _LOGIN.qr_url or ""
+        content = (
+            head + "\n\n"
+            "操作步骤:\n"
+            "1. 手机打开「抖音」或「番茄小说」APP 的扫一扫, 扫描上方二维码;\n"
+            "2. 手机上点「确认登录」;\n"
+            "3. 返回列表并重新进入本页, 显示「已登录」即完成。\n\n"
+            "不方便扫码时, 可复制下面的链接到手机浏览器打开, APP 会自动接管确认:\n"
+            + (link if link else "(本次未取到链接, 可用二维码)")
+        )
+        name = "扫码登录" if vod_id == LOGIN_QR else "跳转 APP 登录确认"
+        return {"list": [{
+            "vod_id": vod_id, "vod_name": name, "vod_pic": self._login_pic(),
+            "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+            "vod_content": content, "vod_remarks": "未登录",
+            "vod_play_from": "", "vod_play_url": "",
+        }]}
+
     def categoryContent(self, tid, pg, filter, extend):
+        if str(tid) == LOGIN_TID:
+            return self._login_category()
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
         if isinstance(extend, str) and extend:
@@ -3445,6 +3914,8 @@ class Spider(Spider):
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
         sid = sid.replace("hg-series-v1:", "")
+        if sid in (LOGIN_QR, LOGIN_APP, LOGIN_LOGOUT):
+            return self._login_detail(sid)
         config = self._cfg()
         # 优先走 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
         meta, eps = _app_episode_detail(sid, config)
@@ -3454,15 +3925,15 @@ class Spider(Spider):
             for e in eps:
                 title, _, ep = str(e).partition("$")
                 pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
-            # 单线路: 选集 id 仍保留 "@档位" 以兼容旧记录, 播放时统一走官网公开直链
-            play_from = PLAY_LINE
             accessible = _accessible_count(sid, pairs[0][1]) if pairs else 0
             marked = []
             for i, (title, vid) in enumerate(pairs, 1):
                 # 超出免费集数的 vid 没有公开直链, 提前标注免得点了播不了
                 mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
-                marked.append("%s%s$%s%s" % (title, mark, EPISODE_PREFIX, vid))
-            play_url = "#".join(marked)
+                marked.append((title + mark, vid))
+            # 已登录 -> 探测真实可用档位: 通 -> 多线路(1080P/720P/...), 不通 -> 官网 360p
+            tiers = _probe_tiers(pairs[0][1], config) if (_LOGIN.logged_in() and pairs) else []
+            play_from, play_url = _build_play(marked, tiers)
             remarks = meta.get("remarks") or ""
             if accessible > 0:
                 remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
@@ -3479,13 +3950,13 @@ class Spider(Spider):
         vids = s.get("vid_list") or []
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
         pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
-        play_from = PLAY_LINE
         accessible = _int(s.get("accessible_episode_cnt"))
         marked = []
         for i, (title, vid) in enumerate(pairs, 1):
             mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
-            marked.append("%s%s$%s%s" % (title, mark, EPISODE_PREFIX, vid))
-        play_url = "#".join(marked)
+            marked.append((title + mark, vid))
+        tiers = _probe_tiers(pairs[0][1], config) if (_LOGIN.logged_in() and pairs) else []
+        play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
         if accessible > 0:
             remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
@@ -3493,14 +3964,34 @@ class Spider(Spider):
 
     def playerContent(self, flag, id, vipFlags=None):
         raw = str(id).replace(EPISODE_PREFIX, "")
-        # "vid@档位" 或纯 vid: 档位仅用于兼容旧记录, 取流统一走官网公开直链
-        vid = raw.split("@")[0].strip()
-        public_url = _public_media_url(vid)
+        # 登录相关条目被误点时, 交给播放器打开登录页(不至于黑屏报错)
+        if raw.startswith("hg_login"):
+            return {"parse": 1, "jx": 0, "playUrl": "",
+                    "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
+        # "vid@档位" 或纯 vid
+        parts = raw.split("@")
+        vid = parts[0].strip()
+        tier = parts[-1].strip() if len(parts) > 1 else ""
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
+
+        # 已登录 + 指定档位(多线路模式): 走 App 流 + 本地解密串流, 拿 >360p
+        if _LOGIN.logged_in() and tier.isdigit():
+            try:
+                port = _start_stream_server()
+            except Exception:
+                port = 0
+            if port and vid.isdigit():
+                query = urlencode({"vid": raw, "did": self.device_id or "",
+                                   "iid": self.install_id or ""})
+                return {"parse": 0, "jx": 0, "playUrl": "",
+                        "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
+                        "header": {"User-Agent": UA}}
+
         # 首选: 官网公开直链 (秒开/可拖动/无签名)
+        public_url = _public_media_url(vid)
         if public_url and _public_ok(public_url):
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
-        # 回退: App 取流 + 本地 CENC 解密流服务 (上游需真机签名+登录态, 当前多返 110001)
+        # 回退: App 取流 + 本地 CENC 解密流服务 (上游需真机签名+登录态)
         try:
             port = _start_stream_server()
         except Exception:
