@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 汽水音乐  TVBox / sky py 源
+# 汽水音乐  TVBox / 影视仓 py 源
 # 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
 #
 # 端点(2026-10-13 全部实测可用, 无需登录):
@@ -44,12 +44,28 @@
 #   - ★因此本版默认形态 = 原版验证可用的形态: 直连上游(不走代理) + music_player:1 +
 #     第三方 MP3 线路排最前。本地代理降级为实验特性, 默认关闭(见下方开关)。
 #
+# ★★「走 App(汽水官方流) 能不能出声」——已找到可落地的做法(2026-10-13 实测):
+#   - 官方音频是 audio-only 的 M4A(media_type=audio, vtype=m4a, AAC-LC), 在 /video/tos/...
+#     路径下分发, 响应头 Content-Type **随 CDN 节点而异**:
+#        v26-luna / v11-luna / v5-se-*-luna → **audio/mp4**(播放器认音频, 有声)
+#        v5-ex-luna / v5-luna             → video/mp4(播放器当视频起链, 无声)
+#     两者字节 100% 相同(md5 核对: 头 256KB + 尾 8KB 全等), 只有响应头不同。
+#   - 同一 URL 的 Content-Type 是**粘滞**的(同一客户端连续 8 次 HEAD 结果一致) →
+#     「先用 HEAD 探出 audio/mp4 的地址再交给播放器」可靠。
+#   - 每首曲目有 12 个候选地址(seo 的 main/backup × 各档 + 备用端点 url_player_info
+#     的 VOD GetPlayInfo main/backup × 各档), 实测至少 6 个是 audio/mp4。
+#   - 换 CDN 域名无效(签名绑定 host, 一律 403); 路径加 .m4a 也 403; 追加任意 query
+#     参数不影响(CDN 忽略未知参数); CDN 对 UA/Referer 完全不挑(任意 UA 都 200)。
+#   → 实现: `_app_audio_url()` 播放官方档位时逐个候选 HEAD 探测, 取第一个 audio/* 的;
+#     找不到则回落 main_url。开关见下 "app_probe"。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
 #   "prefer_mp3":0    官方档位排到最前(默认第三方 MP3 排最前, 那是实测确保有声的配置;
-#                     若你的播放器能正常播 极高音质 官方流, 设 0 可优先官方档)
+#                     若官方档位(现在会挑 audio/mp4 地址)也能出声, 设 0 可优先官方高清)
+#   "app_probe":0     关闭官方流的 audio/mp4 地址探测(直接给 main_url, 即旧行为)
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -57,6 +73,7 @@ import base64
 import hashlib
 import json
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -82,6 +99,9 @@ ICON = ("https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/23/19/5a/"
 
 # 热歌榜 / 新歌榜(实测可用)
 CHARTS = [("热歌榜", "7036274230471712007"), ("新歌榜", "7060812597884869927")]
+# 官方档位 → audio/mp4 候选地址的探测结果缓存 {(track_id, quality): (url, ts)}
+# URL 有效期约 1 天, 缓存只保 300s, 避免过期地址被复用。
+_APP_PROBE_CACHE = {}
 # 怀旧电台(「熟悉模式」用)
 NOSTALGIA_RADIO = "7408841207276748809"
 # 听抖音分类: (显示名, 搜索关键词)。★关键词用分类名本身; 不要用「热门视频」。
@@ -689,6 +709,113 @@ class Spider(BaseSpider):
             uniq[(s["key"], s["bitrate"])] = s
         return sorted(uniq.values(), key=lambda x: x["bitrate"], reverse=True)
 
+    # --------------------------------------- 官方(App)流: 挑 audio/mp4 的候选地址
+    # ★实测(2026-10-13)关键规律:
+    #   1) 官方音频是 audio-only 的 M4A(media_type=audio / vtype=m4a), CDN 在
+    #      /video/tos/... 路径下分发, **响应头 Content-Type 会因 CDN 节点而异**:
+    #         v26-luna / v11-luna / v5-se-*-luna  → audio/mp4  (播放器认作音频, 有声)
+    #         v5-ex-luna / v5-luna                → video/mp4  (播放器当视频起链, 无声)
+    #      同一份字节, 只有响应头不同(已 md5 逐字节核对: 头 256KB + 尾 8KB 完全一致)。
+    #   2) 同一 URL 的 Content-Type 是**粘滞**的(同客户端连续 8 次 HEAD 全部一致), 所以
+    #      「先探测出 audio/mp4 的地址, 再交给播放器」是可靠的。
+    #   3) 换域名无效(签名绑定 host, 换 host 一律 403); 改路径加 .m4a 也 403;
+    #      但追加任意 query 参数不影响(CDN 忽略未知参数)。
+    #   4) CDN 对请求头完全不挑(任意 UA / 无 Referer 均 200/206 + 正确字节)。
+    #   5) 每首曲目有 12 个候选地址(seo 的 main/backup × 各档 + VOD GetPlayInfo 的
+    #      main/backup × 各档), 实测至少 6 个是 audio/mp4。
+    # 故播放官方档位时, 逐个候选 HEAD 探测, 取第一个 audio/* 的地址。
+    def _app_candidates(self, data, quality):
+        """seo_track 里该档位的候选地址(main_url / backup_url)"""
+        out = []
+        player = data.get("track_player") if isinstance(data.get("track_player"), dict) else {}
+        model = player.get("video_model")
+        if isinstance(model, str) and model:
+            try:
+                model = json.loads(model)
+            except Exception:
+                model = {}
+        for item in (model or {}).get("video_list") or []:
+            if not isinstance(item, dict):
+                continue
+            meta = item.get("video_meta") or {}
+            if str(meta.get("quality") or "") != str(quality):
+                continue
+            for field in ("main_url", "backup_url"):
+                if item.get(field):
+                    out.append(str(item[field]))
+        return out
+
+    def _app_candidates_vod(self, data, quality):
+        """备用端点 url_player_info(字节 VOD GetPlayInfo)里该档位的候选地址"""
+        player = data.get("track_player") if isinstance(data.get("track_player"), dict) else {}
+        upi = player.get("url_player_info")
+        if not upi:
+            return []
+        box = ((self._req_url(str(upi)).get("Result") or {}).get("Data") or {})
+        out = []
+        for item in box.get("PlayInfoList") or []:
+            if str(item.get("Quality") or "") != str(quality):
+                continue
+            for field in ("MainPlayUrl", "BackupPlayUrl"):
+                if item.get(field):
+                    out.append(str(item[field]))
+        return out
+
+    def _head_is_audio(self, url):
+        """HEAD 探测该地址的 Content-Type 是否 audio/*; 响应头缺失时用 1 字节 GET 复核。"""
+        if requests is None:
+            return False
+        try:
+            r = requests.head(url, headers=self._play_headers(), timeout=6, allow_redirects=True)
+            ctype = str(r.headers.get("Content-Type") or "").lower()
+            if not ctype:
+                r = requests.get(url, headers=dict(self._play_headers(), **{"Range": "bytes=0-0"}), timeout=6)
+                ctype = str(r.headers.get("Content-Type") or "").lower()
+            return ctype.startswith("audio/") and r.status_code in (200, 206)
+        except Exception:
+            return False
+
+    def _app_audio_url(self, data, track_id, quality):
+        """返回该档位一个 Content-Type 为 audio/* 的官方地址; 找不到返回 ''(调用方回落 main_url)。
+
+        注意: 每次 seo_track 拿到的 URL 会被随机指到不同 CDN 节点, 而节点决定 Content-Type,
+        所以单次探测可能全落在 video/mp4 上 → 失败时**重取一次 seo_track 再探**(节点会变)。
+
+        extend 传 "app_probe":0 可关闭探测(直接给 main_url, 即旧行为)。
+        """
+        if not self._flag("app_probe", True):
+            return ""
+        key = (str(track_id), str(quality))
+        now = time.time()
+        hit = _APP_PROBE_CACHE.get(key)
+        if hit and now - hit[1] < 300:
+            return hit[0]
+        picked, cur = "", data
+        # 第 1 轮: 当前数据(seo 候选 + VOD GetPlayInfo 候选); 第 2 轮: 重取 seo_track
+        for attempt in range(2):
+            urls, seen = [], set()
+            for url in self._app_candidates(cur, quality) + self._app_candidates_vod(cur, quality):
+                if url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+            for url in urls[:4]:
+                if self._head_is_audio(url):
+                    picked = url
+                    break
+            if picked or attempt:
+                break
+            try:
+                fresh = self._seo(track_id)
+                if isinstance(fresh, dict) and fresh.get("track_player"):
+                    cur = fresh
+            except Exception:
+                pass
+        _APP_PROBE_CACHE[key] = (picked, now)
+        return picked
+
+    def _play_headers(self):
+        return {"User-Agent": UA, "Referer": "https://music.douyin.com/"}
+
     @staticmethod
     def _safe(name):
         return str(name or "播放").replace("$", " ").replace("#", " ")
@@ -849,8 +976,7 @@ class Spider(BaseSpider):
         url = str(url or "")
         if url and self._flag("proxy", False):
             url = _proxy_url(url, ext) or url
-        out = {"parse": 0, "jx": 0, "url": url,
-               "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
+        out = {"parse": 0, "jx": 0, "url": url, "header": self._play_headers()}
         if self._flag("music_player", True):
             out["music_player"] = 1
         return out
@@ -891,7 +1017,10 @@ class Spider(BaseSpider):
             chosen = next((s for s in streams if s["key"] == quality), streams[0] if streams else None)
             if not chosen:
                 return {"parse": 1, "jx": 0, "url": value, "header": {}}
-            return self._play(chosen["url"])
+            # ★官方档位: 优先挑 CDN 返回 Content-Type: audio/mp4 的候选地址(否则播放器
+            #   会把 audio-only 的流当视频起链 → 能播没声音)。拿不到就回落 main_url。
+            url = self._app_audio_url(data, track_id, chosen["key"]) or chosen["url"]
+            return self._play(url)
         except Exception:
             return {"parse": 1, "jx": 0, "url": value, "header": {}}
 
