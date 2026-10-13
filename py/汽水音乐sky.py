@@ -269,9 +269,24 @@
 #   ★开关: `"login":0` 关闭登录分类(整块隐藏, 回到纯匿名);
 #          `"login_server":0` 不起本地登录服务(此时卡片封面退化为默认图标)。
 #
+# ================================================================== 宿主弹窗(第十五轮)
+# 需求原文: 「点击扫码登录 → 弹出二维码窗口; 点击 App 授权登录 → 直接打开系统上的
+#            汽水音乐 App 授权登录」。
+# 变动: 登录两张卡片从「点开→详情页写文案+手动刷新」升级为**点一下直接弹内嵌窗口**。
+#   ① 「扫码登录」→ 宿主弹 WebView 窗口, 里面是官方二维码 PNG + 实时状态(AJAX, 不闪屏);
+#   ② 「App 授权登录」→ 宿主弹 WebView 窗口, 直接打开官方授权深链
+#      `data.qrcode_index_url`(`https://bff-pc.qishui.com/ucenter_web/app/sdk-next?…&uc_sdk=scan-auth`)
+#      —— 手机浏览器/微信打开这条会**直接唤起手机上的汽水音乐 App**;
+#      ⚠️ 但**在本机内嵌 WebView 里点「打开 App」会被宿主拦**(CatWebActivity
+#         只放行 http/https, 见下方常量区详注) —— 宿主硬限制, 源侧无解。
+#   实现手段: py 源直接调宿主的本地 HTTP 接口 `/msg`(CatMessage, **无来源校验**);
+#   宿主不可用时(非 webhtv / 服务未起)**逐字回落到原来的详情页文案链路**。
+# 详见常量区 `APP_PORT_RANGE` 上方的事实清单(含 App 源码行号)。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "login":0         隐藏「登录」分类(默认 1 = 显示)
 #   "login_server":0  不起本地二维码/登录页服务(默认 1)
+#   "app_window":0    不调宿主弹内嵌窗口(默认 1); 关掉后登录卡片退回详情页文案模式
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
@@ -458,6 +473,54 @@ _QR_STATE = {"session": None, "png": b"", "token": "", "expire": 0.0, "status": 
              "port": 0, "server": None}
 _LOGIN_LOCK = threading.RLock()
 _LOGIN_STATE = {"loaded": False, "cookie": "", "nick": "", "uid": "", "saved": 0.0}
+
+# ---------------------------------------------------------------- 宿主弹窗(第十五轮)
+# ★需求: 「点击扫码登录 → 弹出二维码窗口; 点击 App 授权登录 → 直接打开系统上的汽水
+#          音乐 App 授权登录」。
+#
+# ★事实清单(全部读自**实测 App 源码** mo-webhtv-5.6.0, 不是反编译猜的):
+#   · app/.../server/Server.java:66-80
+#       宿主 HTTP 服务端口**从 9978 起顺序试**(失败才 +1), 上限 < 9999;
+#       `Server.getAddress(true)` = `http://127.0.0.1:<port>`。
+#   · app/.../server/Nano.java:44-62
+#       路由表(按序): /action /cache /debug /drive /local /m3u8 /manage /media /parse
+#       /api/playback /proxy **/msg** /remote /spider /webResource, 另特判 /device /tvbus。
+#   · app/.../server/process/CatMessage.java:34-53  ★关键
+#       `isRequest` 只判 `url.startsWith("/msg")` —— **没有任何来源/IP/白名单校验**,
+#       所以**同机的 py 源可以直接 POST 它**:
+#           POST /msg  {"action":"openInternalWebview","opt":{"url":"<任意 http(s)>"}}
+#        → `CatWebview.open(url)` → 启动内嵌 `CatWebActivity` → **弹出一个 WebView 窗口**,
+#          并顺手 post `CatWebEvent` 让详情页立刻退场(所以不会先闪一个空白详情页)。
+#       这就是「弹出二维码窗口」的落地方式, 比在详情页堆文案强一个量级。
+#   · app/.../ui/web/CatWebActivity.java:222-228
+#       内嵌页 `shouldOverrideUrlLoading` **只放行 http/https**; 非 http(s) 的 scheme
+#       (`intent://` / `market://` / 汽水自定义 scheme)**一律丢弃, 明确"不去唤起外部应用"**。
+#       ⇒ **宿主主动禁止从内嵌页拉起第三方 App**, 这是设计意图, 不是 bug。
+#   · 其余可能的"打开外部 App"通路**全部走不通**(逐条查过, 不再试错):
+#       - `/action?do=push|search|setting` → `ServerEvent.*` —— 本 fork **没有任何
+#         @Subscribe 订阅者**(全仓库 grep 只有 post 处), 属于死代码;
+#       - `/action?do=file&path=` → `FileUtil.openFile` 只对**本地文件** setDataAndType;
+#       - `PlayerHelper.choose()` 有 `ACTION_VIEW`, 但入口在播放页菜单里, 源侧触不到;
+#       - Lab 的 `open`/`webview`/`qrcode` 动作要用户在 `lab.json` 里预置, 源侧注入不了;
+#       - `CatWebview.external()` 的 `ACTION_VIEW` 只在"内嵌页起不来"时兜底, 而
+#         `CatWebActivity` 已在 manifest 注册(第 115 行), 正常情况永不触发。
+#
+# ★结论(如实记录, 避免下次再绕):
+#   ① 「扫码登录」= 弹内嵌窗口显示官方二维码 + 实时状态          → **完全可行**;
+#   ② 「App 授权登录」= 弹内嵌窗口打开官方授权深链 `qrcode_index_url`
+#      (实测形态 `https://bff-pc.qishui.com/ucenter_web/app/sdk-next?…&uc_sdk=scan-auth`)
+#      → 是 https, 内嵌页放行, 官方授权页能正常渲染;
+#        **手机上**(浏览器/微信)打开这条链接会经 App Links **直接唤起汽水音乐 App 完成授权**;
+#        但**本机内嵌 WebView 里点"打开 App"仍会被拦** —— 宿主硬限制, 源侧无解。
+#   ⇒ 兜底通道永不删: 搜索框 `#登录 <Cookie>`(见 `_login_command`)与此前的详情页文案链路。
+APP_PORT_RANGE = (9978, 9999)           # 宿主 HTTP 服务端口区间(Server.start 从 9978 起)
+APP_PORT_TTL = 300.0                    # 命中后的缓存时长(秒)
+APP_PORT_MISS_TTL = 20.0                # 未命中的短缓存: 别每点一次卡片就扫一遍端口
+APP_DEVICE = "/device"                  # 探测判别用: Nano 特判, 回 Device 的 JSON
+APP_MSG = "/msg"                        # CatMessage: 无来源校验 → 本机源可直接 POST
+_APP_LOCK = threading.RLock()
+_APP_STATE = {"port": 0, "checked": 0.0}
+_APP_WINDOW = True                      # 由 `init()` 依 extend 的 "app_window" 改写
 
 
 def _login_path():
@@ -656,7 +719,13 @@ def _qr_call(sess, method, path, extra=None, body=None):
 
 
 def _qr_scan_url(token):
-    """「拉起官方 App」入口: 手机浏览器/相机打开会唤起汽水·抖音 App 完成授权。"""
+    """`light/invoke/scan_login` 形态链接 —— ⚠️ **不能用来完成授权**。
+
+    上游 libresoda 的 `docs/QR-LOGIN.md` 实测记录: 这个形态"只上报 scanned,
+    确认后永远停在 scanned", 即**确认落不了地**。这里保留它仅作"手机浏览器能打开"
+    的兜底链接; **「App 授权登录」必须用官方下发的 `qrcode_index_url`**
+    (见 `_qr_app_url()`) —— 上一版页面把它当成主按钮, 是个真 bug, 已修。
+    """
     return "https://bff-pc.qishui.com/light/invoke/scan_login?" + urllib.parse.urlencode(
         {"token": str(token or ""), "os": "Android", "computer_name": "TVBox"})
 
@@ -769,46 +838,222 @@ def _login_origin():
     return local, lan
 
 
-def _login_html(state=""):
-    """`/login` 页面: 二维码 + 「手动拉起官方 App 授权」按钮 + 自动刷新状态。"""
-    token = str(_QR_STATE.get("token") or "")
-    scan = str(_QR_STATE.get("scan_url") or "")
-    state_map = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上确认",
-                 "confirmed": "✅ 登录成功, 回到 TVBox 重新进入「登录」分类",
-                 "expired": "二维码已过期, 刷新本页重试", "error": "二维码创建失败, 刷新本页重试"}
-    tip = state_map.get(str(state or ""), "等待扫码…")
+def _app_probe_port():
+    """探测宿主(webhtv)本地 HTTP 服务端口 → 0 = 不可用(非此 App / 服务未起)。
+
+    判别请求用 `/device`: `Nano.serve` 对它特判, 直接回 `Device.get().toString()`
+    的 JSON(含 `"name"` 字段), 比"回 200 就算"可靠得多。
+
+    性能: 9978 是 `Server.start()` 第一个候选, 命中率最高 → 先单点试; 不中才并发扫
+    其余端口(0.35s 超时, 总开销从最坏 7s 压到 ~0.4s)。结果带缓存(命中 300s /
+    未命中 20s), 不会每点一次卡片都扫一遍。
+    """
+    if requests is None:
+        return 0
+    now = time.time()
+    with _APP_LOCK:
+        port = int(_APP_STATE.get("port") or 0)
+        checked = float(_APP_STATE.get("checked") or 0)
+        if port and now - checked < APP_PORT_TTL:
+            return port
+        if not port and now - checked < APP_PORT_MISS_TTL:
+            return 0
+    hit = {"port": 0}
+    lock = threading.Lock()
+
+    def probe(p):
+        if hit["port"]:
+            return
+        try:
+            resp = requests.get("http://127.0.0.1:%d%s" % (p, APP_DEVICE), timeout=0.35)
+            if resp.status_code == 200 and '"name"' in (resp.text or "")[:600]:
+                with lock:
+                    if not hit["port"]:
+                        hit["port"] = p
+        except Exception:
+            pass
+
+    probe(APP_PORT_RANGE[0])
+    if not hit["port"]:
+        threads = [threading.Thread(target=probe, args=(p,), daemon=True)
+                   for p in range(APP_PORT_RANGE[0] + 1, APP_PORT_RANGE[1])]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(1.0)
+    with _APP_LOCK:
+        _APP_STATE["port"] = int(hit["port"] or 0)
+        _APP_STATE["checked"] = time.time()
+    return int(hit["port"] or 0)
+
+
+def _app_call(path, payload, timeout=3.0):
+    """POST 一次宿主本地服务 → HTTP 状态码; 不可达返回 None。"""
+    port = _app_probe_port()
+    if not port or requests is None:
+        return None
+    try:
+        resp = requests.post(
+            "http://127.0.0.1:%d%s" % (port, path),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            timeout=timeout)
+        return int(resp.status_code)
+    except Exception:
+        return None
+
+
+def _app_open_window(url):
+    """让宿主**弹出内嵌 WebView 窗口**(`/msg` → `openInternalWebview`)。
+
+    成功后宿主会顺手 post `CatWebEvent` 让详情页立刻退场 —— 用户看到的就是
+    「点卡片 → 直接弹窗」, 不会先闪一个空白详情页。
+
+    ★ 只接受 http(s): 内嵌页把非 http(s) 的 scheme 一律丢弃(见常量区事实清单),
+    传 scheme 过去纯属浪费一次调用, 不如省下来直接走文案兜底。
+    """
+    if not _APP_WINDOW or not url:
+        return False
+    if not str(url).startswith(("http://", "https://")):
+        return False
+    return _app_call(APP_MSG, {"action": "openInternalWebview",
+                               "opt": {"url": str(url)}}) is not None
+
+
+def _qr_app_url():
+    """官方「打开 App 授权」深链 = `data.qrcode_index_url`(实测是 https)。
+
+    ★与 `_qr_scan_url()` 的区别(这正是一个真 bug 的修复):
+      历史版本页面上那个「打开汽水音乐 App」按钮指向 `light/invoke/scan_login`,
+      而上游 docs/QR-LOGIN.md 实测记录该形态"只上报 scanned, 确认后永远停在 scanned"
+      → 点它授权**落不了地**。官方真正给的是 `qrcode_index_url`
+      (`/ucenter_web/app/sdk-next?…&uc_sdk=scan-auth`), 它才是能在手机上唤起 App
+      并完成确认的入口。
+    """
+    url = str(_QR_STATE.get("qrcode_url") or "").strip()
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return ""
+
+
+def _qr_status_json():
+    """给登录页 AJAX 用的状态快照(顺手按最小间隔触发一次官方轮询)。
+
+    AJAX 每 3s 拉一次, 但**服务端限制 ≥2.5s 才真打官方接口** —— 官方对裸 HTTP
+    轮询有风控(`error_code=7 访问太频繁`), 页面刷太快反而会把用户自己限流掉。
+    """
+    with _QR_LOCK:
+        due = (time.time() - float(_QR_STATE.get("polled") or 0)) >= 2.5
+        has_token = bool(_QR_STATE.get("token"))
+    if due and has_token:
+        with _QR_LOCK:
+            _QR_STATE["polled"] = time.time()
+        try:
+            _qr_check()
+        except Exception:
+            pass
+    state = str(_QR_STATE.get("status") or "")
+    nick = str((_login_load() or {}).get("nick") or "")
+    ok = bool(_login_cookie())
+    if ok:
+        tip = "✅ 登录成功" + (("：" + nick) if nick else "") + " · 按返回键即可"
+    else:
+        tip = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上点「确认」",
+               "confirmed": "已确认, 正在同步登录态…", "expired": "二维码已过期",
+               "error": "二维码创建失败"}.get(state, "等待扫码…")
+    return {"status": state, "ok": ok, "nick": nick, "tip": tip,
+            "expire": max(0, int(float(_QR_STATE.get("expire") or 0) - time.time())),
+            "app": bool(_qr_app_url())}
+
+
+def _login_html(mode="qr", state=""):
+    """登录引导页: 官方二维码 + 实时状态(AJAX, 不闪屏) + 「打开汽水音乐 App 授权」入口。
+
+    `mode="app"`(App 授权登录) 把官方授权深链提到最显眼处; `mode="qr"`(扫码登录)
+    以二维码为主。两种模式共用同一张官方码 —— 区别只在"谁来扫": 另一台手机扫 =
+    扫码登录; 在本机/手机点链接 = App 授权登录。
+
+    ★ 主按钮指向官方 `qrcode_index_url`(https)。**手机上**打开它会经 App Links
+    直接唤起汽水音乐 App; 在**本机内嵌 WebView** 里打开则是官方授权页正常渲染
+    (页内再跳 App 会被宿主拦, 见常量区事实清单, 源侧无解)。
+    """
+    mode = "app" if str(mode or "").startswith("app") else "qr"
     nick = str((_login_load() or {}).get("nick") or "")
     logged = bool(_login_cookie())
+    app_url = _qr_app_url()
+    link = app_url or str(_QR_STATE.get("scan_url") or "")
     if logged:
-        tip = "✅ 已登录" + ("：" + nick if nick else "") + "（回 TVBox 重新进入「登录」分类）"
+        tip = "✅ 已登录" + (("：" + nick) if nick else "") + " · 按返回键即可"
+    else:
+        tip = {"new": "等待扫码…", "scanned": "已扫码, 请在手机上点「确认」",
+               "confirmed": "已确认, 正在同步登录态…", "expired": "二维码已过期, 正在换新码…",
+               "error": "二维码创建失败"}.get(str(state or ""), "等待扫码…")
+    title = "打开汽水音乐 App 完成授权" if mode == "app" else "扫码登录"
+    if mode == "app" and app_url:
+        lead = ("点下面按钮 → <b>手机上会直接唤起汽水音乐 App</b> 完成授权；"
+                "也可以直接用手机扫下面的码。")
+    else:
+        lead = "用手机「抖音 App → 扫一扫」扫下面的码，然后在手机上点「确认」。"
     qr_url = "/qr?t=%d" % int(time.time())
-    scan_attr = str(scan or "#").replace("&", "&amp;").replace('"', "&quot;")
+    link_attr = str(link or "#").replace("&", "&amp;").replace('"', "&quot;")
     return """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>汽水音乐 · 登录</title>
 <style>
- body{margin:0;padding:24px 16px;background:#111;color:#eee;
+ *{box-sizing:border-box}
+ body{margin:0;padding:3vh 16px;background:#101216;color:#e8eaed;
       font:16px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
-      text-align:center}
- h1{font-size:19px;margin:0 0 4px}
- .tip{color:#8fd694;font-size:14px;min-height:22px;margin:10px 0 14px}
- .box{background:#fff;border-radius:12px;padding:12px;display:inline-block}
- .box img{display:block;width:min(76vw,260px);height:auto}
- a.btn{display:block;max-width:320px;margin:18px auto 0;padding:13px 16px;border-radius:10px;
-       background:#1e88ff;color:#fff;text-decoration:none;font-weight:600}
- a.alt{background:#2a2a2a;color:#ddd;font-weight:400;font-size:14px}
- p.note{color:#888;font-size:13px;max-width:360px;margin:16px auto 0;text-align:left}
- code{color:#bbb;word-break:break-all;font-size:12px}
-</style></head><body>
-<h1>汽水音乐 · 登录</h1>
-<div class="tip">__TIP__</div>
+      text-align:center;-webkit-user-select:none;user-select:none}
+ h1{font-size:clamp(19px,2.6vh,26px);margin:0 0 6px;font-weight:600}
+ .tip{color:#ffd166;font-size:clamp(14px,1.9vh,18px);min-height:1.6em;margin:8px 0 14px}
+ body.ok .tip{color:#39d353;font-weight:600}
+ .box{background:#fff;border-radius:14px;padding:14px;display:inline-block;
+      box-shadow:0 8px 28px rgba(0,0,0,.45)}
+ .box img{display:block;width:min(52vh,320px);height:auto}
+ a.btn{display:block;max-width:420px;margin:16px auto 0;padding:clamp(12px,1.7vh,16px) 18px;
+       border-radius:11px;background:#1e88ff;color:#fff;text-decoration:none;font-weight:600;
+       font-size:clamp(15px,2vh,18px)}
+ a.btn:focus,a.btn:hover{background:#3d9bff;outline:3px solid #8fd694;outline-offset:2px}
+ a.alt{background:#242832;color:#c9cdd4;font-weight:500}
+ p.note{color:#8b909a;font-size:clamp(12px,1.6vh,14px);max-width:460px;margin:18px auto 0;text-align:left}
+ b{color:#cfd3da}
+ #lnk{position:absolute;left:-9999px;top:0;opacity:0}
+</style></head><body class="__OK__">
+<h1>__TITLE__</h1>
+<div class="tip" id="tip">__TIP__</div>
 <div class="box"><img src="__QR__" alt="二维码"></div>
-<a class="btn" href="__SCAN__">① 打开汽水音乐 App 完成授权</a>
-<a class="btn alt" href="javascript:location.reload()">② 刷新状态</a>
-<p class="note">扫码登录：用手机「抖音 App → 扫一扫」直接扫上面这张码，确认后点「刷新状态」。<br>
-App 授权登录：点第一个按钮，会自动拉起汽水音乐/抖音 App，在 App 内确认授权即可。</p>
-<script>setTimeout(function(){location.reload()},5000)</script>
-</body></html>""".replace("__TIP__", tip).replace("__QR__", qr_url).replace("__SCAN__", scan_attr)
+<a class="btn" href="__LINK__">① 打开汽水音乐 App 完成授权</a>
+<a class="btn alt" href="javascript:location.reload()">② 刷新状态</a>__COPYBTN__
+<input id="lnk" type="text" value="__LINK__" readonly tabindex="-1">
+<p class="note">__LEAD__<br>
+扫码后本页会<b>自动</b>变成「✅ 登录成功」，不需要手动刷新；成功后按返回键回到 TVBox，
+重进「登录」分类即为「已登录」。</p>
+<script>
+function tick(){
+  fetch('/login/status',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('tip').textContent=d.tip||'';
+    document.body.className=d.ok?'ok':'';
+    if(d.ok){clearInterval(timer);return}
+    if(!d.expire||d.status==='expired'){location.reload()}
+  }).catch(function(){});
+}
+function copyLink(){
+  var el=document.getElementById('lnk'),tip=document.getElementById('tip');
+  try{el.select();document.execCommand('copy');tip.textContent='✅ 链接已复制, 粘到手机浏览器打开即可拉起 App';}
+  catch(e){tip.textContent='复制失败, 请长按上方按钮手动复制链接';}
+}
+var timer=setInterval(tick,3000);
+</script>
+</body></html>"""\
+        .replace("__OK__", "ok" if logged else "") \
+        .replace("__TITLE__", title) \
+        .replace("__TIP__", tip) \
+        .replace("__QR__", qr_url) \
+        .replace("__LINK__", link_attr) \
+        .replace("__COPYBTN__", (
+            '\n<a class="btn alt" href="javascript:copyLink()">'
+            '③ 复制授权链接（粘到手机浏览器可直接拉起 App）</a>' if link else "")) \
+        .replace("__LEAD__", lead)
 
 
 _URL_EXTS = (".m4a", ".mp3", ".flac", ".aac", ".wav", ".ogg", ".mp4")
@@ -926,10 +1171,15 @@ class _AudioHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _serve_login(self):
-        """手机端登录引导页(二维码 + 拉起官方 App 授权按钮)。"""
+        """登录引导页(手机浏览器打开 / 宿主内嵌窗口打开 都用它)。
+
+        `?mode=app` 走「App 授权登录」形态(突出官方授权深链), 缺省 `qr` 走扫码形态。
+        """
         try:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            mode = str((query.get("mode") or ["qr"])[0] or "qr")
             _qr_ensure()
-            html = _login_html(str(_QR_STATE.get("status") or "")).encode("utf-8")
+            html = _login_html(mode, str(_QR_STATE.get("status") or "")).encode("utf-8")
         except Exception:
             html = "<h1>登录服务异常</h1>".encode("utf-8")
         try:
@@ -944,11 +1194,31 @@ class _AudioHandler(BaseHTTPRequestHandler):
         except OSError:
             self.close_connection = True
 
+    def _serve_login_status(self):
+        """`/login/status` → 状态 JSON(给登录页 AJAX 用, 免得整页 reload 闪屏)。"""
+        try:
+            body = json.dumps(_qr_status_json(), ensure_ascii=False).encode("utf-8")
+        except Exception:
+            body = b'{"status":"","ok":false,"tip":"","expire":0}'
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except OSError:
+            self.close_connection = True
+
     def _serve(self, body):
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/qr"):              # 登录二维码(官方 PNG)
             return self._serve_qr()
-        if path == "/login" or path.startswith("/login"):   # 手机端登录引导页
+        if path.startswith("/login/status"):    # ★必须排在 /login 之前, 否则被它吞掉
+            return self._serve_login_status()
+        if path == "/login" or path.startswith("/login"):   # 登录引导页(手机/宿主内嵌窗口)
             return self._serve_login()
         name = path.rsplit("/", 1)[-1]
         token, _, ext = name.partition(".")
@@ -1025,7 +1295,7 @@ class Spider(BaseSpider):
         self._cfg = {}
 
     def init(self, extend=""):
-        global _LOGIN_ENABLED
+        global _LOGIN_ENABLED, _APP_WINDOW
         try:
             self._cfg = json.loads(extend) if (isinstance(extend, str) and extend.strip()) else extend
         except Exception:
@@ -1034,6 +1304,8 @@ class Spider(BaseSpider):
             self._cfg = {}
         # 登录服务(0.0.0.0 上的二维码/引导页)是否启用; 关掉不影响「手动 Cookie 通道」
         _LOGIN_ENABLED = self._flag("login", True) and self._flag("login_server", True)
+        # 是否调宿主(webhtv)的 /msg 弹内嵌窗口; 关掉后登录卡片退回「详情页文案」模式
+        _APP_WINDOW = self._flag("app_window", True)
 
     def getName(self):
         return "汽水音乐"
@@ -1220,13 +1492,16 @@ class Spider(BaseSpider):
             return self._result([], page)
 
     # ------------------------------------------------------------------ 登录
-    # ★需求原文: 「分类最后加登录, 分扫码登录 / 手动拉起官方 app 授权登录;
+    # ★需求原文(第十三轮): 「分类最后加登录, 分扫码登录 / 手动拉起官方 app 授权登录;
     #             没登录按现在模式, 登录后按官方 app 模式获取」。
-    #   实现要点: TVBox 没有交互界面 → 把「扫码」做成**卡片封面**(vod_pic 指向本机
-    #   /qr, 那里转发官方下发的二维码 PNG); 点开卡片进详情页时**轮询一次**并把结果
-    #   写进 vod_content —— 手机确认后再点一次即可看到「✅ 登录成功」。
+    #   实现要点: TVBox 没有交互界面 → 卡片封面(vod_pic)指向本机 `/qr`(转发官方二维码);
+    #   ★**点卡片那一刻**(第十五轮)由源直接调宿主 `/msg` 弹出**内嵌 WebView 窗口**,
+    #   窗口里是官方二维码 + AJAX 实时状态, 登录成功自动变绿。宿主不可用时(非 webhtv /
+    #   服务未起)逐字回落到原来的「详情页文案 + 手动刷新」链路, 行为与上一版一致。
     def _login_cards(self, page):
-        """「登录」分类: 未登录 → 「扫码登录」+「App 授权登录」; 已登录 → 状态 + 退出。"""
+        """「登录」分类: 未登录 → 「扫码登录」+「App 授权登录」; 已登录 → 状态 + 退出。
+
+        两张卡都**点一下就弹窗**(宿主可用时), 不需要再"点开-刷新-再点开"。"""
         if _login_cookie():
             self._login_verify()                    # 顺手校验(明确失效才清, 网络抖动不动它)
         if _login_cookie():
@@ -1239,20 +1514,20 @@ class Spider(BaseSpider):
                  "vod_pic": ICON, "vod_remarks": "清除本机登录态, 回到匿名模式"},
             ]
             return self._result(cards, page, False, len(cards))
-        status, local, lan = "error", "", ""
+        status, local = "error", ""
         try:
             status, _sess = _qr_ensure()
-            local, lan = _login_origin()
+            local, _lan = _login_origin()
         except Exception:
             pass
         pic = (local + "/qr?t=%d" % int(time.time())) if local else ICON
-        remark = "抖音App扫一扫" if status != "error" else "二维码创建失败, 返回重进"
+        remark = "点开弹出二维码" if status != "error" else "二维码创建失败, 返回重进"
+        app_remark = "点开直接打开汽水音乐App授权" if _qr_app_url() else "点开弹出授权页"
         cards = [
             {"vod_id": self._pack("l", {"kind": "qr"}), "vod_name": "扫码登录",
              "vod_pic": pic, "vod_remarks": remark},
             {"vod_id": self._pack("l", {"kind": "app"}), "vod_name": "App 授权登录",
-             "vod_pic": pic,
-             "vod_remarks": ("手机开 " + lan + "/login") if lan else "手机扫码后确认"},
+             "vod_pic": pic, "vod_remarks": app_remark},
         ]
         return self._result(cards, page, False, len(cards))
 
@@ -1294,6 +1569,37 @@ class Spider(BaseSpider):
                 state, _sess = _qr_ensure()
             except Exception:
                 pass
+            # ★点卡片 = 直接弹窗(第十五轮): 宿主(webhtv)可用时立刻弹出内嵌 WebView
+            #   窗口, 宿主顺手 post CatWebEvent 让本详情页退场 —— 用户看到的就是
+            #   「点一下 → 窗口弹出来」, 不需要再手动刷新。宿主不可见时下面整段
+            #   文案链路逐字保留, 行为与之前完全一致。
+            local, lan = "", ""
+            try:
+                local, lan = _login_origin()
+            except Exception:
+                pass
+            if kind == "qr":
+                target = (local + "/login?mode=qr") if local else ""
+            else:
+                target = _qr_app_url() or ((local + "/login?mode=app") if local else "")
+            try:
+                popped = _app_open_window(target)
+            except Exception:
+                popped = False
+            if popped:
+                if kind == "app":
+                    what = "官方「打开汽水音乐 App」授权页 —— 用**手机**打开会直接唤起汽水音乐 App"
+                else:
+                    what = "官方二维码 —— 用手机「抖音 App → 扫一扫」"
+                return self._login_vod(
+                    ("扫码登录" if kind == "qr" else "App 授权登录") + " · 已弹出窗口",
+                    "已在屏幕上**弹出登录窗口**, 请在里面完成授权：\n\n"
+                    "· 窗口里是%s；\n"
+                    "· 完成后窗口会**自动**变成「✅ 登录成功」；\n"
+                    "· 然后按返回键回到 TVBox, 重进「登录」分类即为「已登录」。\n\n"
+                    "窗口没弹出来? 用手机浏览器打开: %s\n"
+                    "（还不行就用搜索框粘 Cookie: `#登录 <Cookie>`）"
+                    % (what, lan or "（本机登录页不可用）"))
             result = {}
             try:
                 result = _qr_check()
@@ -1329,10 +1635,14 @@ class Spider(BaseSpider):
                 extra = "\n⚠️ 官方临时限流(error_code=7), 歇几秒再点本卡片重试即可。"
             elif code and not refreshed:
                 extra += "\n(error_code=%s)" % code
-            guide = ("　　2. 手机扫上面的二维码后会打开官方授权页, 在 App 内点「确认授权」。"
+            guide = ("　　2. 用手机浏览器/微信打开上面那条链接 → 会**直接唤起汽水音乐 App**, "
+                     "在 App 内点「确认授权」。"
                      if kind == "app" else
                      "　　2. 用手机「抖音 App → 扫一扫」扫屏幕上的二维码, 然后在手机上点「确认」。")
-            lan = _login_origin()[1]
+            if kind == "app":
+                open_url = (lan + "/login?mode=app") if lan else (_qr_app_url() or "")
+            else:
+                open_url = (lan + "/login?mode=qr") if lan else ""
             body = ("当前状态：**%s**%s\n\n"
                     "① %s\n"
                     "　1. 手机打开: %s\n"
@@ -1340,8 +1650,8 @@ class Spider(BaseSpider):
                     "② 确认后**返回本页, 再点一次这张卡片**（或返回再进「登录」分类）→ 显示「✅ 登录成功」。\n\n"
                     "③ 扫码若始终不成功(官方有风控), 用手动通道:\n"
                     "　在 TVBox 搜索框输入 `#登录 <Cookie>`（只要含 sessionid / sid_tt 即可）。"
-                    % (tip, extra, "App 授权登录（手动拉起官方 App）" if kind == "app" else "扫码登录",
-                       lan or "（本机登录页不可用, 请用下方手动通道）", guide))
+                    % (tip, extra, "App 授权登录（打开官方授权链接）" if kind == "app" else "扫码登录",
+                       open_url or "（本机登录页不可用, 请用下方手动通道）", guide))
             return self._login_vod(("App 授权登录" if kind == "app" else "扫码登录") + " · " + tip, body)
         state = _login_load()
         if state.get("cookie"):
