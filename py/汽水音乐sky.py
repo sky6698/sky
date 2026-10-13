@@ -167,13 +167,13 @@
 #                 scene_mode_id:<场景号>}          ← 场景模式
 #                / {..., mode:"default|familiar|fresh"}  ← 偏好模式
 #         返回 `inner_block[].resources[].entity.playlist` = 该模式下的**歌单**。
-#     - 主数据源: **`POST /luna/pc/discover/mix`** 的官方推荐歌单池(保持服务端顺序), 用
-#       `POST /luna/playlist/detail`(count=300) 展开成曲目。实测一个歌单动辄 100+ 首
-#       (「经典摇滚入坑指南」121 首), 所以 **1~2 次请求即可凑够 50 首**(约 1~1.5s)。
+#     - ~~主数据源: `POST /luna/pc/discover/mix` 的官方推荐歌单池, 用 `playlist/detail`
+#       展开~~ → **第十二轮已弃用**: 那个池子是按**流派**拼的(摇滚/电音/J-pop/indie/
+#       欧美民谣…), 抽到什么看运气, 加上 `scene_mode_id` 零过滤 → 结果「模式里全是
+#       英文歌」。详见下面第十二轮。
 #     - `POST /luna/pc/feed/song-tab`(官方推荐队列, `items[].entity.track_wrapper.track`)
-#       虽是"进模式后真正播放的流", 但实测每次固定 6 首、忽略 count, **且对所有
-#       `scene_mode_id` / `mode` 返回的是同一条随机流**(7 个模式的前 3 首几乎完全一样)
-#       → 用它会让所有模式长得一模一样, 还慢 3 倍。故**不采用**(留档备查)。
+#       每次固定 6 首、忽略 count、对所有 `scene_mode_id`/`mode` 返回同一条随机流, 但
+#       **81% 是中文** → 第十二轮改为**兜底**用它补充(不再当主路径)。
 #     ⚠️ **未登录拿不到「场景专属流」**(重要实测, 别再重复踩):
 #       - `scene_mode_id` 对 discover/mix **基本不过滤** —— 同一场景连采样 4 次, 歌单集合
 #         **零交集**; 跨场景交集率(5~9 / 33)与「完全不带场景」的基线相同。早先单次采样
@@ -194,14 +194,33 @@
 #   ⚠️ 偏好模式的 `mode`(default/familiar/fresh) 参数**对未登录请求不生效**(同参数连调
 #      3 次结果全不同, 三个 mode 间也无稳定差异 —— 服务端个性化需要登录态)。故「默认/
 #      熟悉/新鲜」三个模式拿到的是同一个官方随机推荐池; 参数照传, 源侧无法进一步区分。
-#   改动: 1) 新增 `_mode_playlists()` / `_feed_mode_tracks()`(走官方 discover/mix 的
-#            推荐歌单池 → playlist/detail 展开);
-#         2) `kind="preference"` / `"scene"` 改走 `_feed_mode_tracks()`, **删掉**「热歌榜/
-#            新歌榜/怀旧电台顶替」与「按模式名搜索」两条兜底(怀旧电台仅留作 familiar 的
-#            最终兜底);
+#   改动(第十一轮): 1) 新增 `_feed_mode_tracks()`;
+#         2) `kind="preference"` / `"scene"` 改走它, **删掉**「热歌榜/新歌榜/怀旧电台顶替」
+#            与「按模式名搜索」两条兜底(怀旧电台仅留作 familiar 的最终兜底);
 #         3) `_radio_tracks(radio_id, want)` 增加多轮累积去重;
 #         4) 新增 `mode_count` 开关与 `_mode_want()`; 新增 `_MODE_TRACK_CACHE`(600s 缓存,
-#            推荐池是随机采样, 不缓存会让详情页每次结果都变)。
+#            推荐流是随机采样, 不缓存会让详情页每次结果都变)。
+#
+# ★★★ 第十二轮(2026-10-13): **听歌模式改为中文优先(修「模式都变成英文歌了」)**
+#   用户反馈: 「模式都变成英文歌了, 官方 app 里都是好听的中文歌」。
+#   根因: 第十一轮的主数据源 `discover/mix` 歌单池**是按流派拼的**(摇滚/电音/J-pop/
+#         indie/欧美民谣…), 抽到什么全看运气; 且 `scene_mode_id` 对未登录请求零过滤
+#         → 于是满屏外文歌。
+#   新数据源(全部实测):
+#     ① **主题搜索** `POST /luna/search/track`, 关键词取 MODE_KEYWORDS(按模式名归一)。
+#        命中准且是中文 —— 粤语→灰色轨迹/傻女/富士山下, 国风→醉春烟/破阵曲,
+#        助眠→助眠轻音乐, 车载→中文经典老歌。
+#     ② **官方中文榜单**: 热歌榜(**94% 中文**, 50 首 / 0.23s) + 新歌榜(86% 中文)。
+#        「好听的中文歌」主要来自这里, 也保证一次给足 `mode_count` 条。
+#     ③ **官方推荐流** `song-tab`(81% 中文) 降级为**兜底**(①②通常已够 50, 走不到)。
+#   ⚠️ **不做全局中文过滤**: 「欧美 / 日语 / k-pop」三个**语种/地区模式**本来就该是外文歌
+#      → 它们改用①的关键词多翻 2 页, **不掺中文榜单**(实测 k-pop 模式 0% 中文, 正确)。
+#   实测: 默认/熟悉/新鲜/图书馆/动感健身/粤语/深夜EMO/洗澡/驾车 均 **96% 中文**、50 首、
+#         0.7~1.9s; 欧美(外文)/日语/ k-pop 保持原语种。
+#   改动: 1) 新增 `MODE_KEYWORDS`(48 个模式 → 中文主题词) + `MODE_FOREIGN` + `_mode_key()`;
+#         2) `_feed_mode_tracks(scene_id, mode, name, want)` 重写为「主题搜索 → 中文榜单 →
+#            推荐流」三级, 并接收模式名以便查关键词; `_mode_playlists()` **删除**(英文源头);
+#         3) `_collection_detail()` 把 `info["name"]` 透传给 `_feed_mode_tracks()`。
 #
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
@@ -305,6 +324,50 @@ MODE_ORDER = [
     "治愈", "轻音乐", "小酒馆", "ktv必点", "起床", "浪漫情歌", "摇滚", "r&b", "佛系时间",
     "怀旧老歌", "民谣", "甜美女声", "k-pop", "日语", "旅行", "儿歌", "雨天", "海边", "乡村", "古典",
 ]
+
+# ------------------------------------------------------- 听歌模式 → 官方搜索关键词
+# ★为什么需要这张表: 官方「听歌模式」的场景流要**登录态**才拿得到 —— 未登录时
+#   `scene_mode_id` / `mode` 参数实测**零过滤**(同一场景连采样 4 次歌单集合零交集,
+#   跨场景交集率与「完全不带场景」的基线相同), 而不带主题的通用推荐池是按**流派**
+#   拼的(摇滚/电音/J-pop/indie/欧美民谣…), 抽到什么都看运气 → 用户反馈
+#   「模式都变成英文歌了, 官方 app 里都是好听的中文歌」。
+#   故改为: 按该模式的**中文主题词**走官方**搜索接口**取内容(实测命中率高、基本全中文),
+#   再用官方**中文榜单**(热歌榜 94% 中文 / 新歌榜 86% 中文)补足到 mode_count。
+# ⚠️ 只有 MODE_FOREIGN 里这三个**语种/地区模式**允许外文内容(欧美/日语/k-pop 本来
+#   就该是外文歌); 其余 45 个模式一律**中文优先**, 不掺外文。
+MODE_KEYWORDS = {
+    "默认模式": "抖音热歌", "熟悉模式": "经典老歌 中文", "新鲜模式": "新歌 中文",
+    "深夜emo": "伤感 中文 情歌", "助眠模式": "助眠 轻音乐 舒缓", "洗澡": "民谣 中文 轻松",
+    "dj模式": "中文 DJ 舞曲", "动感健身": "运动 燃脂 中文", "抖音漫游": "抖音热歌",
+    "chill放松": "chill 中文 放松", "快乐时光": "欢快 中文 流行", "电音": "中文 电音",
+    "好运": "好运 中文 喜庆", "图书馆": "轻音乐 钢琴 纯音乐", "粤语": "粤语",
+    "通勤必听": "通勤 中文 流行", "失恋必听": "失恋 中文 伤感", "躺平": "慵懒 中文",
+    "欧美": "欧美 流行", "打扫": "轻快 中文", "国风": "国风 古风",
+    "打游戏": "游戏 战歌 中文", "驾车": "车载 中文 经典老歌", "专注模式": "轻音乐 纯音乐 学习",
+    "说唱": "中文说唱", "沉浸0.8x": "抒情 慢歌 中文", "夜晚": "夜晚 中文 抒情",
+    "治愈": "治愈 中文", "轻音乐": "轻音乐 纯音乐", "小酒馆": "民谣 小酒馆",
+    "ktv必点": "KTV 必点 中文", "起床": "清晨 中文 轻快", "浪漫情歌": "浪漫 中文 情歌",
+    "摇滚": "中国摇滚", "r&b": "中文 R&B", "佛系时间": "佛系 安静 中文",
+    "怀旧老歌": "怀旧 经典老歌", "民谣": "中文民谣", "甜美女声": "甜美女声 中文",
+    "k-pop": "k-pop", "日语": "日语", "旅行": "旅行 中文 轻快",
+    "摸鱼": "轻松 中文 摸鱼", "儿歌": "儿歌", "雨天": "雨天 中文 抒情",
+    "海边": "海边 中文", "乡村": "乡村 中文", "古典": "古典 钢琴",
+}
+# 只有这三个模式下允许内容以外文为主(它们本身就是语种/地区模式)
+MODE_FOREIGN = ("欧美", "日语", "k-pop")
+MODE_FOREIGN_KEYS = {re.sub(r"\s+", "", x).lower() for x in MODE_FOREIGN}
+# 主题搜索里常混进「串烧/合集/DJ版」这类**多曲连播的长音频** —— 它们不是"一首歌", 播起来
+# 是一个小时的长条。这里**只降序不删除**(有些模式本来就该是合集), 让真歌排在前面。
+MODE_JUNK = ("串烧", "连播", "合集", "合辑", "精选集", "伴奏", "铃声", "DJ版", "串烧版")
+
+
+def _mode_key(name):
+    """模式名归一: 去空白 + 转小写。
+
+    接口返回名有 '深夜 EMO' / 'K-pop' / 'Chill 放松' / 'DJ模式' 等大小写与空格不一致的
+    写法, 归一后才能与 MODE_KEYWORDS 对上。
+    """
+    return re.sub(r"\s+", "", str(name or "")).lower()
 
 
 # ====================================================================== 本地音频代理
@@ -1294,12 +1357,13 @@ class Spider(BaseSpider):
     def _collection_detail(self, info):
         """合集(歌单/电台/榜单/听歌模式) → 曲目列表。
 
-        ★听歌模式(preference / scene)不再用「热歌榜/新歌榜/怀旧电台」或「按模式名搜索」
-          兜底 —— 那些拿到的列表和官方**根本不是一回事**(见文件头「第十一轮」)。
-          现直接走官方同款接口:
-            偏好模式 → POST /luna/pc/discover/mix  {mode: default|familiar|fresh}
-            场景模式 → POST /luna/pc/discover/mix  {scene_mode_id: N}
-          再把该模式下的歌单展开成曲目, 默认凑够 `mode_count`(50) 首。
+        ★听歌模式(preference / scene)走 `_feed_mode_tracks()`:
+          按模式的中文主题词走**官方搜索接口**打底, 再用**官方中文榜单**(热歌榜/新歌榜)
+          补足到 `mode_count`(默认 50) 首。
+        ⚠️ 曾用过「官方 discover/mix 歌单池」, 但那个池子是按**流派**拼的(摇滚/电音/
+          J-pop/indie/欧美民谣…), 且 `scene_mode_id` 对未登录请求零过滤 → 结果满屏
+          **外文歌**(用户反馈「模式都变成英文歌了」)。已弃用, 详见 `_feed_mode_tracks`。
+        ⚠️ 「欧美 / 日语 / k-pop」三个**语种模式**仍给外文内容(它们本来就该是外文歌)。
         """
         kind, rid = str(info.get("kind") or ""), str(info.get("id") or "")
         want = self._mode_want()
@@ -1310,11 +1374,12 @@ class Spider(BaseSpider):
         elif kind == "radio":
             tracks = self._radio_tracks(rid, want)
         elif kind == "preference":
-            tracks = self._feed_mode_tracks(mode=rid or "default", want=want)
+            tracks = self._feed_mode_tracks(mode=rid or "default",
+                                            name=info.get("name"), want=want)
             if not tracks and rid == "familiar":        # 最后兜底: 怀旧电台
                 tracks = self._radio_tracks(NOSTALGIA_RADIO, want)
         elif kind == "scene":
-            tracks = self._feed_mode_tracks(scene_id=rid, want=want)
+            tracks = self._feed_mode_tracks(scene_id=rid, name=info.get("name"), want=want)
         else:
             tracks = []                                 # 未知 kind(防御): 下面按名字搜索
         if not tracks:
@@ -1348,76 +1413,98 @@ class Spider(BaseSpider):
                  data.get("tracks") or data.get("items") or [])
         return [t for t in (self._track(x) for x in items) if t]
 
-    def _mode_playlists(self, scene_id="", mode=""):
-        """官方 `/luna/pc/discover/mix`: 取官方推荐歌单池(用于补足曲目)。
+    def _feed_mode_tracks(self, scene_id="", mode="", name="", want=50):
+        """听歌模式曲目: 官方**主题搜索**打底 + 官方**中文榜单**补足, 去重凑 want 首。
 
-        返回 `[(playlist_id, count_tracks), ...]`, **保持服务端原始顺序**; 拿不到返回 []。
+        数据源与顺序(全部实测):
+          ① **主题搜索** `POST /luna/search/track`, 关键词取 MODE_KEYWORDS(按模式名归一)。
+             命中准且是中文: 粤语→灰色轨迹/傻女/富士山下, 国风→醉春烟/破阵曲,
+             助眠→助眠轻音乐, 车载→中文经典老歌。约 1.0s / 20 首。
+          ② **官方中文榜单**: 热歌榜(94% 中文, 50 首, 0.23s) / 新歌榜(86% 中文, 50 首)
+             —— 「好听的中文歌」主要来自这里。TVBox 详情页不能翻页, 需要一次给足。
+          ③ **官方推荐流** `POST /luna/pc/feed/song-tab`(每次 6 首, ~0.5s, 81% 中文)
+             仅当①②仍不足时兜底。
 
-        ★不要按曲数排序! 服务端是按相关性排的, 按曲数降序会把「经典摇滚入坑指南」这类
-          **大而泛**的歌单顶到第一位(实测踩过这个坑)。
+        ⚠️ 「欧美 / 日语 / k-pop」这类**语种/地区模式**不掺中文榜单, 而是把①的关键词多翻
+           2 页(它们本来就该是外文歌); 其余 45 个模式一律**中文优先**。
 
-        ⚠️ 实测 `scene_mode_id` / `mode` 对未登录请求**基本不过滤**: 同一 scene 连采样
-          4 次歌单集合**零交集**, 跨场景交集率(~5~9/33)与「完全不带场景」的基线相同。
-          即这个接口返回的是一**个巨大的随机推荐池**; 早先单次采样看到的「动感健身→
-          刷脂电音」只是巧合。参数仍照传(服务端认了就自动生效), 但源侧不依赖它做过滤。
+        ★为什么弃用 `discover/mix` 歌单池(上一版) —— 这是「模式都变成英文歌了」的根源:
+          该池是按**流派**拼的(摇滚/电音/J-pop/indie/欧美民谣…), 抽到什么都看运气, 且
+          `scene_mode_id` / `mode` 对未登录请求**零过滤**(同一场景连采样 4 次歌单集合
+          零交集, 跨场景交集率与「完全不带场景」的基线相同 —— 官方场景专属流要登录态)。
+          于是「模式里全是英文歌」。已弃用。
         """
-        body = {"block_type": "discovery_playlist", "sub_channel_id": 0,
-                "exposure_radio_list": [], "cursor": "", "count": 20}
-        if scene_id not in (None, ""):
-            try:
-                body["scene_mode_id"] = int(str(scene_id))
-            except Exception:
-                body["scene_mode_id"] = str(scene_id)
-        if mode:
-            body["mode"] = str(mode)
-        data = self._req("/luna/pc/discover/mix", body)
-        out = []
-        for block in (data.get("inner_block") or []):
-            for res in (block.get("resources") or []):
-                pl = ((res.get("entity") or {}).get("playlist") or {})
-                pid = str(pl.get("id") or "")
-                if pid:
-                    out.append((pid, int(pl.get("count_tracks") or 0)))
-        return out                                   # 保持服务端顺序(相关性优先)
-
-    def _feed_mode_tracks(self, scene_id="", mode="", want=50):
-        """听歌模式曲目: 用官方推荐歌单(`discover/mix`)展开, 凑够 want 首。
-
-        为什么这么取(全部实测):
-          ① `POST /luna/pc/discover/mix` 是官方推荐内容池, 返回 `inner_block[].resources[]`
-             `.entity.playlist`; 用 `POST /luna/playlist/detail`(count=300) 展开即曲目。
-             实测一个歌单动辄 100+ 首(「经典摇滚入坑指南」121 首) → 通常 1~2 次请求够 50。
-          ② **不用** `POST /luna/pc/feed/song-tab`(官方推荐队列)当主路径, 尽管它才是"进模式
-             后真正播放的流": 它每次固定 6 首、忽略 count、**且对所有 scene/mode 参数返回的
-             都是同一条随机流**(实测 7 个模式的前 3 首几乎完全一样) → 用它会让所有模式
-             长得一模一样, 还慢 3 倍(3s vs 1s)。故不采用。
-        合计约 1~1.5s, 且有 600s 缓存(推荐池是随机采样, 不缓存会让详情页每次结果都变)。
-
-        ⚠️ 未登录拿不到「场景专属流」(见 `_mode_playlists` 的说明): 同一场景连采样 4 次
-          歌单集合零交集, 跨场景交集率与「不带场景」的基线相同。所以各模式拿到的是
-          **官方推荐池的不同随机采样** —— 模式之间内容不同(观感上"每个模式一个样"),
-          但不是服务端按场景精确过滤的结果。这仍远好于旧实现(旧的是「默认→热歌榜,
-          熟悉→怀旧电台, 新鲜→新歌榜」和「场景→按模式名搜索」, 与官方无关)。
-          `scene_mode_id` / `mode` 照传, 服务端认了就自动生效。
-        """
-        key = "s:%s|m:%s|%d" % (scene_id, mode, want)
+        key = "s:%s|m:%s|n:%s|%d" % (scene_id, mode, name, want)
         now = time.time()
         hit = _MODE_TRACK_CACHE.get(key)
         if hit and now - hit[1] < _MODE_TRACK_TTL:
             return hit[0]
+
+        mkey = _mode_key(name) or _mode_key(mode)
+        kw = MODE_KEYWORDS.get(mkey, "")
+        foreign = mkey in MODE_FOREIGN_KEYS
         tracks, seen = [], set()
-        for pid, _count in self._mode_playlists(scene_id, mode):
-            if len(tracks) >= want:
-                break
-            try:
-                part = self._playlist_tracks(pid)
-            except Exception:
-                part = []
+
+        def add_many(objs, demote_junk=False):
+            part = [self._track(x) for x in (objs or [])]
+            part = [t for t in part if t and t.get("id")]
+            if demote_junk:                             # 把「串烧/合集/DJ版」压到后面(不删)
+                part.sort(key=lambda t: 1 if any(
+                    j in str(t.get("name") or "") for j in MODE_JUNK) else 0)
             for t in part:
-                tid = str((t or {}).get("id") or "")
-                if tid and tid not in seen:
+                tid = str(t.get("id"))
+                if tid not in seen:
                     seen.add(tid)
                     tracks.append(t)
+
+        # ① 主题搜索 —— 保证内容贴合该模式, 且(非语种模式时)是中文
+        if kw:
+            for page in range(1, 3 if foreign else 2):
+                if len(tracks) >= want:
+                    break
+                try:
+                    part = self._search_tracks(kw, page)
+                except Exception:
+                    part = []
+                add_many(part, demote_junk=True)
+
+        # ② 补足
+        if len(tracks) < want:
+            if foreign:                                 # 语种模式: 同词继续翻页
+                for page in (3, 4):
+                    if len(tracks) >= want:
+                        break
+                    try:
+                        part = self._search_tracks(kw, page)
+                    except Exception:
+                        part = []
+                    add_many(part, demote_junk=True)
+            else:                                       # 其余模式: 官方中文榜单
+                for _cname, cid in CHARTS:
+                    if len(tracks) >= want:
+                        break
+                    try:
+                        part = self._chart_tracks(cid)
+                    except Exception:
+                        part = []
+                    add_many(part)
+
+        # ③ 仍不足 → 官方推荐流(中文为主的随机流)
+        rounds = 0
+        while (not foreign) and len(tracks) < want and rounds < 4:
+            rounds += 1
+            try:
+                data = self._req("/luna/pc/feed/song-tab", {
+                    "played_media": [], "is_first_request": rounds == 1,
+                    "is_did_first_request": rounds > 1,
+                    "feed_counts": {"mix_session_count": rounds - 1}})
+            except Exception:
+                data = {}
+            items = data.get("items") or []
+            if not items:
+                break
+            add_many(items)
+
         tracks = tracks[:want]
         if tracks:
             _MODE_TRACK_CACHE[key] = (tracks, now)
