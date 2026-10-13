@@ -104,6 +104,30 @@
 #      *.rtsp)会改变 MediaSource 类型, 其余一律 ProgressiveMediaSource + 嗅探。
 #   → 源侧保底策略: 把**实测有声**的酷我 MP3 直连排在第一位(`prefer_mp3` 默认 1)。
 #
+# ★★★「EXO 能播但没声音」根因已定案(2026-10-13 第九轮) —— **不是源的问题, 源侧修不了**:
+#   症状: 官方档位(汽水 AAC/M4A)在 EXO 内核下**能播、进度在走、但完全没声音**;
+#         同源的「MP3源」在 EXO 下有声; 切 MPV/IJK 全都有声。
+#   根因是 App 的**音频直通(encoded bypass)**, 链路(App 源码已逐条核对):
+#     1) `KernelPerformanceSetting.isAudioPassThrough(kernel)`
+#        = `Prefers.getBoolean("...audio_pass_through", true)` → **默认开启**(EXO/MPV 各一份)。
+#     2) `ExoUtil.buildAudioSink()` 用它决定音频输出链, 并把 `ExoCompressedAudioDirectPolicy`
+#        挂到 AudioTrack 输出提供者上。
+#     3) 该 policy 的白名单 = **MP3 / AAC-LC / AAC-HE v1,v2 / AAC-XHE / AAC-ELD**;
+#        若设备的 `AudioManager.getDirectPlaybackSupport()` 也判支持, 就标成
+#        `FORMAT_SUPPORTED_DIRECTLY` —— 即 **不解码, 把压缩帧直接塞给 AudioTrack/DSP**。
+#     4) 它**只在初始化失败 / write 抛异常时**才回退 PCM。「DSP 收下数据但不出声」不产生
+#        任何异常 → **不回退 → 永久静音**。App 自己的 UI 文案就是这么写的(EXO「音频直通」):
+#        「出现无声立即关闭。代价：输出链不支持时不会自动变成可播放音频。」
+#     5) 自洽性: 同源内 MP3 的 direct 路径能出音、AAC 的静默失败, 是两条独立路径, 可以不成;
+#        MPV 正常是因为它要求先有 passthrough 输出设备(`MpvAudioCapabilities`), 否则走 PCM;
+#        而 EXO 的 vendor-direct 不要求, 更激进所以更容易踩到静默失败。
+#   → **修复只能在 App 侧**(设置, 不是源): 播放性能 → 选 EXO 内核 → 关「音频直通」;
+#     仍无声再开「音频软解优先」; 都不行就用 MPV 内核。
+#   → **源侧无解**: 直通判定只看解码器解析出的 `Format`(encoding/sampleRate/channelMask),
+#     URL、header、`format` 字段都改变不了它 —— 不要再试图用 `format` 去影响它(见上文)。
+#   → 确认手段: 打开调试日志(类别含 ALL), 看标签 `exo-audio-direct` 的
+#     `reason=vendor-direct`(即命中直通) / `standard-offload` / `no-direct-support`。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
