@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 汽水音乐  TVBox / sky 源
 # 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
 #
 # 端点(2026-10-13 全部实测可用, 无需登录):
@@ -71,6 +72,25 @@
 #     多已命中内存缓存 → 秒开。同曲 900s 内重播零网络等待。
 #   - 聚合站 yx520 保留为**兜底**(酷我直连失败时才用)。
 #
+# ★★「EXO 内核无声」根因与修复(2026-10-13 第六轮; 用户反馈「只有 EXO 播放无音, MPV/IJK 正常」):
+#   现象: 同一源下, 酷我 MP3 线路在 EXO 上有声, 而汽水官方档位无声; 换 MPV/IJK 则全部有声。
+#   实测(逐字节, qs_exo_verify.py): 官方 M4A 容器与编码完全正常 ——
+#     ftyp="M4A " / moov 在文件头(faststart) / 无 moof / hdlr=soun / stsd=mp4a /
+#     AAC-LC 44.1kHz 立体声 257k / 未加密 / Range 206 / Content-Type: audio/mp4。
+#     → 流本身没有问题, 问题在播放器的「音频/视频路径」判定。
+#   ★根因(读 App 源码确认): 播放器用 `AudioUtil.isAudio(result)` 决定这条流走**音频播放
+#     路径(AudioActivity)** 还是普通视频路径, 判据只有两条:
+#         if (format != null && format.toLowerCase().contains("audio")) return true;   // ①
+#         return isAudioUrl(url) || isAudioUrl(realUrl());                              // ②
+#         // isAudioUrl(): 先把 `?` 与 `#` 之后的内容截掉, 再 endsWith(.mp3/.m4a/.flac/...)
+#     官方档位 URL = `.../video/tos/cn/.../<id>?<query>` —— **没有任何后缀**, 两条判据
+#     都不满足 → 被当作视频起链 → **能播但没声音**; 酷我 MP3 以 `.mp3` 结尾 → 判为音频 → 有声。
+#     (旁证: `PlaybackResourceClassifier.hasProgressiveExtension()` 用同一套后缀表, 并且
+#      同样截断 `?`/`#`, 所以「往 query 或 fragment 里补后缀」这条路走不通。)
+#   ★修复: `_play()` 默认回填 `format`(音频 MIME), 由 `_CTYPE` 表按后缀给出
+#     audio/mp4(官方 M4A) / audio/mpeg(酷我 MP3)。播放器读到 format 即判为音频,
+#     官方档位与 MP3 线路走同一条路径。开关 `"audio_format":0` 可关闭。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
@@ -79,6 +99,8 @@
 #                     若官方档位(现在会挑 audio/mp4 地址)也能出声, 设 0 可优先官方高清)
 #   "app_probe":0     关闭官方流的 audio/mp4 地址探测(直接给 main_url, 即旧行为)
 #   "prefetch":0      关闭详情页后台预热(默认开; 关掉后首次播放按需解析, 会慢 ~0.2s)
+#   "audio_format":0  不回填 format(默认回填)。关闭后官方档位会因 URL 无后缀被播放器
+#                     当成视频 → 大概率「能播没声」, 仅用于对照排查。
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -1189,6 +1211,15 @@ class Spider(BaseSpider):
           实验性功能, extend 传 "proxy":1 才启用。
         - **默认带 music_player: 1**: 原版一直输出该标记且能正常出声, 它是手机端
           「音乐播放器分流」标记; 去掉它反而会让部分播放器走视频分支。传 "music_player":0 可关。
+        - ★**默认带 `format`(音频 MIME)** —— 这是「EXO 无声」的修复点:
+          FongMi 系播放器靠 `AudioUtil.isAudio(result)` 决定**这条流走音频播放路径
+          (AudioActivity) 还是普通视频路径**, 判据只有两条:
+            ① 接口返回的 `format` 里含 "audio"  →  直接判为音频;
+            ② URL 以音频后缀结尾(.mp3/.m4a/.flac/... 且 `?`、`#` 之后会被截断)。
+          汽水官方档位 URL 形如 `.../video/tos/cn/.../okFeBaTVaQtAQz5xEQD8?<query>`
+          **无任何后缀** → 两条都不满足 → 被当成视频起链 → **能播但没声音**;
+          而酷我 MP3 线路 URL 以 `.mp3` 结尾 → 一直有声。补上 format 后官方档位
+          同样走音频路径。extend 传 "audio_format":0 可关闭。
         """
         url = str(url or "")
         if url and self._flag("proxy", False):
@@ -1196,6 +1227,8 @@ class Spider(BaseSpider):
         out = {"parse": 0, "jx": 0, "url": url, "header": self._play_headers()}
         if self._flag("music_player", True):
             out["music_player"] = 1
+        if self._flag("audio_format", True):
+            out["format"] = _CTYPE.get(ext or _ext_of(url, ".m4a"), "audio/mp4")
         return out
 
     def _with_mp3(self, sources, urls, mp3_group):
