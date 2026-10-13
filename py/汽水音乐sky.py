@@ -28,26 +28,28 @@
 #   - 播放: aweme.snssdk.com/aweme/v1/play/?video_id=<vid>&ratio=1080p&line=0
 #     (HEAD 200 video/mp4; 注意用 vid(字符串) 不是 video_id(数字))。
 #
-# 播放地址格式 / Exo 无声问题(2026-10-13 实测):
+# 播放地址格式 / 「能播没声音」结论(2026-10-13 实测 + 用户反馈校正):
 #   - 官方主源 = MP4/M4A 容器(ftyp="M4A ") + AAC-LC 44.1kHz 立体声, 三档 65k/129k/257k;
-#     VIP 替代源 = MP3 320kbps。
-#   - ★服务端把音频流标成 Content-Type: video/mp4, 且 URL 无扩展名(形如 /video/tos/cn/...)。
-#     Exo/TVBox 据此按「视频源」建链, 而该流只有音频轨 → 等不到首帧 → 音频渲染不启动
-#     → 现象「能播、进度条在走、但没声音」。
-#   - 流本身完全正常: moov 在文件头(faststart) / Range 支持 206 / ffmpeg volumedetect
-#     mean -16.6dB(有声音, 非静音非加密)。
-#   - 修复: 源内起本地 HTTP 代理(见 _proxy_url), 用 /audio/<token>.m4a(或 .mp3) 暴露,
-#     强制正确 Content-Type(audio/mp4 / audio/mpeg) + 正确后缀, 让播放器走音频渲染链路;
-#     Range 头原样转发, 拖动正常。可用 extend 里 "proxy":0 关掉, 回落直连上游。
-#   - 已核对: moov 内 hdlr=soun / stsd=mp4a / esds 完整(csd-0=1210 → AAC-LC 44.1k 立体声) /
-#     elst 正常(2048 samples priming) / 经代理全量字节与上游 md5 完全一致。即容器无任何问题。
-#   - 若播放器仍不出声, 每条线路末尾附了一条「MP3源」(第三方 yx520, audio/mpeg),
-#     兼容性最好, 可直接切过去验证; extend 传 "prefer_mp3":1 则把它排到最前。
+#     第三方替代源 = MP3(酷我 kwyy, ~320k, audio/mpeg)。
+#   - 容器层完全正常(已逐字节核对): moov 在文件头(faststart) / hdlr=soun / stsd=mp4a /
+#     esds 完整(csd-0=1210 → AAC-LC 44.1k 立体声) / elst 正常 / Range 206 / ffmpeg
+#     volumedetect mean -16.6dB(有声音, 非静音非加密)。★即「源侧/流本身」无任何问题。
+#   - ★根因(关键证据: 用户确认「原版(蜜果版)有声音」):
+#     原版实际返回的是**第三方(酷我)yh520 的 MP3 直链**(它的 VIP 判定过宽, 几乎每首都走
+#     这条路), 直连 CDN、带 music_player:1 → 用户播放器有声。
+#     本 sky 版一度: ① 走汽水官方 audio-only M4A(无后缀 + Content-Type: video/mp4);
+#                    ② 又加了本地代理, 把 URL 改成 http://127.0.0.1:<port>/audio/xxx.m4a。
+#     ② 是致命的 —— 播放器不接受 loopback 地址, 整条线路(含 MP3 那条)全部无声, 这正好
+#     解释了「连 MP3源 也没声音」。
+#   - ★因此本版默认形态 = 原版验证可用的形态: 直连上游(不走代理) + music_player:1 +
+#     第三方 MP3 线路排最前。本地代理降级为实验特性, 默认关闭(见下方开关)。
 #
 # 开关(写在源配置的 extend 里, 均为可选):
-#   "proxy":0        关闭本地音频代理, 回上游直连
-#   "music_player":1 输出 music_player 标记(默认已关闭, 它可能让播放器走不走音频渲染的分支)
-#   "prefer_mp3":1   第三方 MP3 线路排到最前(默认为最后一条「MP3源」)
+#   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
+#                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
+#   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
+#   "prefer_mp3":0    官方档位排到最前(默认第三方 MP3 排最前, 那是实测确保有声的配置;
+#                     若你的播放器能正常播 极高音质 官方流, 设 0 可优先官方档)
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -835,30 +837,34 @@ class Spider(BaseSpider):
         return str(raw).strip().lower() not in ("0", "false", "off", "no")
 
     def _play(self, url, ext=None):
-        """组装播放结果。
+        """组装播放结果(★默认与原版「蜜果版」完全一致, 这是实测确认有声音的形态)。
 
-        默认走本地音频代理: 上游是「无后缀 + Content-Type: video/mp4」, Exo 会当视频源建链
-        导致只有音频轨时永远不启动音频渲染(能播没声音)。代理改写为 /audio/<token>.m4a +
-        audio/mp4, 播放器即按音频处理。extend 传 "proxy":0 可关闭。
+        - 直连上游, **默认不走本地代理**: 实测「原版有声音 / 加代理后无声」——播放器
+          不接受 127.0.0.1 地址(不少 TVBox 系播放器对 loopback 有限制), 一旦包成
+          http://127.0.0.1:10010/audio/... 就整条线路无声(连 MP3 也没声)。代理仅为
+          实验性功能, extend 传 "proxy":1 才启用。
+        - **默认带 music_player: 1**: 原版一直输出该标记且能正常出声, 它是手机端
+          「音乐播放器分流」标记; 去掉它反而会让部分播放器走视频分支。传 "music_player":0 可关。
         """
         url = str(url or "")
-        if url and self._flag("proxy", True):
+        if url and self._flag("proxy", False):
             url = _proxy_url(url, ext) or url
         out = {"parse": 0, "jx": 0, "url": url,
                "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
-        # ★默认不再输出 music_player 标记: 它是原版(蜜果)加的「手机端音乐播放器分流标记」,
-        #   会让部分播放器转到不走音频渲染的分支, 是「能播没声音」的可疑变量; 需要时传 "music_player":1。
-        if self._flag("music_player", False):
+        if self._flag("music_player", True):
             out["music_player"] = 1
         return out
 
     def _with_mp3(self, sources, urls, mp3_group):
-        """在官方线路基础上补一条第三方 MP3 线路(兼容兜底)。
+        """在官方线路基础上补一条第三方 MP3 线路, 并**默认排到最前**。
 
-        官方流是 audio-only 的 M4A(标准 AAC-LC), 少数播放器/内核仍不放声音; MP3 是
-        兼容性最好的格式, 用它兜底可直接出声。放最后; extend 传 "prefer_mp3":1 则放最前。
+        ★为什么放最前: 实测「原版有声音」时, 原版实际返回的就是第三方(酷我)yh520 的
+        完整 MP3 直链(它的 VIP 判定过宽, 几乎每首都走这条路), 而汽水官方的 audio-only
+        M4A(无后缀 + Content-Type: video/mp4)在用户播放器上不出声。故把这条「实测可用」
+        的线路放在第一位, 播放器默认就选它, 保证出声。
+        需要优先官方档位时 extend 传 "prefer_mp3":0。
         """
-        if self._flag("prefer_mp3", False):
+        if self._flag("prefer_mp3", True):
             return ["MP3源"] + list(sources), [mp3_group] + list(urls)
         return list(sources) + ["MP3源"], list(urls) + [mp3_group]
 
