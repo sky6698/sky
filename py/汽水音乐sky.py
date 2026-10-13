@@ -39,6 +39,15 @@
 #   - 修复: 源内起本地 HTTP 代理(见 _proxy_url), 用 /audio/<token>.m4a(或 .mp3) 暴露,
 #     强制正确 Content-Type(audio/mp4 / audio/mpeg) + 正确后缀, 让播放器走音频渲染链路;
 #     Range 头原样转发, 拖动正常。可用 extend 里 "proxy":0 关掉, 回落直连上游。
+#   - 已核对: moov 内 hdlr=soun / stsd=mp4a / esds 完整(csd-0=1210 → AAC-LC 44.1k 立体声) /
+#     elst 正常(2048 samples priming) / 经代理全量字节与上游 md5 完全一致。即容器无任何问题。
+#   - 若播放器仍不出声, 每条线路末尾附了一条「MP3源」(第三方 yx520, audio/mpeg),
+#     兼容性最好, 可直接切过去验证; extend 传 "prefer_mp3":1 则把它排到最前。
+#
+# 开关(写在源配置的 extend 里, 均为可选):
+#   "proxy":0        关闭本地音频代理, 回上游直连
+#   "music_player":1 输出 music_player 标记(默认已关闭, 它可能让播放器走不走音频渲染的分支)
+#   "prefer_mp3":1   第三方 MP3 线路排到最前(默认为最后一条「MP3源」)
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -577,12 +586,32 @@ class Spider(BaseSpider):
     #   ② 抖音 dyyy → 返回 douyin audio_mp4 直链(完整, ~7MB)
     # 两个都是第三方免费接口, 任一可用即可; 全挂则回落官方试听档, 不阻断播放。
     @staticmethod
-    def _is_vip(data):
-        track = Spider._track((data or {}).get("seo_track") or {}) or {}
+    def _clip_seconds(streams):
+        """估算官方流实际时长(秒)。用最高档的 size/bitrate 反推; 拿不到返回 0。"""
+        if not streams:
+            return 0.0
+        top = max(streams, key=lambda s: s.get("bitrate") or 0)
+        bitrate = float(top.get("bitrate") or 0)
+        size = float(top.get("size") or 0)
+        if bitrate <= 0 or size <= 0:
+            return 0.0
+        return size * 8.0 / bitrate
+
+    def _is_vip(self, data, streams=None):
+        """会员/试听曲判定 → 决定是否需要第三方替代源拿完整曲。
+
+        ★判据是「官方流实际时长 vs 曲目完整时长」: 官方对会员/版权曲只放片段(实测 30s/60s),
+        故 est < full*0.8 即判为片段。不能只看 audition_info —— 实测存在「带 audition_info
+        但官方流是完整曲」的情况(稻香 269.6s), 只看它会误判并把完整曲也改走替代源。
+        size/bitrate 拿不到时才退回 label_info.only_vip_playable。
+        """
+        track = self._track((data or {}).get("seo_track") or {}) or {}
         label = track.get("label_info") if isinstance(track.get("label_info"), dict) else {}
-        if label.get("only_vip_playable"):
-            return True
-        return bool(track.get("audition_info"))
+        full = int(track.get("duration") or 0) / 1000.0
+        est = self._clip_seconds(streams or [])
+        if est > 0 and full > 0:
+            return est < full * 0.8
+        return bool(label.get("only_vip_playable"))
 
     def _alt_url(self, name):
         """VIP 替代: 酷我(kwyy) 优先 → 抖音(dyyy) 兜底; 取不到返回 ('', '')
@@ -641,7 +670,8 @@ class Spider(BaseSpider):
                 continue
             quality = str(meta.get("quality") or idx)
             out.append({"key": quality, "label": self._label(quality, meta.get("bitrate"), idx),
-                        "bitrate": int(meta.get("bitrate") or 0), "url": str(url)})
+                        "bitrate": int(meta.get("bitrate") or 0), "size": int(meta.get("size") or 0),
+                        "url": str(url)})
         if not out and player.get("url_player_info"):
             box = ((self._req_url(str(player["url_player_info"])).get("Result") or {}).get("Data") or {})
             for idx, item in enumerate(box.get("PlayInfoList") or []):
@@ -649,7 +679,9 @@ class Spider(BaseSpider):
                 if url:
                     quality = str(item.get("Quality") or idx)
                     out.append({"key": quality, "label": self._label(quality, item.get("Bitrate"), idx),
-                                "bitrate": int(item.get("Bitrate") or 0), "url": str(url)})
+                                "bitrate": int(item.get("Bitrate") or 0),
+                                "size": int(item.get("Size") or item.get("SizeBytes") or 0),
+                                "url": str(url)})
         uniq = {}
         for s in out:
             uniq[(s["key"], s["bitrate"])] = s
@@ -674,18 +706,25 @@ class Spider(BaseSpider):
             urls = ["%s$a:%s:%s" % (name, track_id, s["key"]) for s in streams]
         else:
             sources, urls = ["汽水音乐"], ["%s$a:%s:auto" % (name, track_id)]
-        # VIP/试听歌: 官方档位只能听片段 → 在最前插一条「VIP替代」线路(播放时取完整音源)
-        vip = self._is_vip(data)
+        # 会员/试听曲: 官方只放片段(实测 60s) → 在最前插「VIP替代」, 播放时取第三方完整曲
+        vip = self._is_vip(data, streams)
+        clip = self._clip_seconds(streams)
         if vip:
             sources = ["VIP替代"] + sources
             urls = ["%s$a:%s:vip" % (name, track_id)] + urls
+        else:
+            # 完整曲也补一条 MP3 兼容线路: 少数播放器/内核不放 audio-only M4A 的声音
+            sources, urls = self._with_mp3(sources, urls, "%s$a:%s:mp3" % (name, track_id))
         lyric = str(((data.get("lyric") or {}).get("content")) or "")
+        if vip:
+            mark = "（官方仅%d秒·已加替代源）" % int(clip) if clip else "（会员曲·已加替代源）"
+        else:
+            mark = ""
         vod = dict(card)
         vod.update({
             "type_name": "音乐",
             "vod_actor": artists,
-            "vod_remarks": (str(card.get("vod_remarks") or "").split(" · ")[0] +
-                            ("（会员曲·替代源）" if vip else "")),
+            "vod_remarks": (str(card.get("vod_remarks") or "").split(" · ")[0] + mark),
             "vod_content": "专辑：" + str(album.get("name") or "未知专辑") + ("\n" + lyric[:1500] if lyric else ""),
             "vod_play_from": "$$$".join(sources),
             "vod_play_url": "$$$".join(urls),
@@ -759,6 +798,10 @@ class Spider(BaseSpider):
         else:
             sources = ["最高音质"]
             groups = ["#".join("%s$a:%s:auto" % (self._safe(t.get("name")), t["id"]) for t in valid)]
+        # 补一条 MP3 兼容线路(播放时才去第三方取, 详情页零额外请求)
+        sources, groups = self._with_mp3(
+            sources, groups,
+            "#".join("%s$a:%s:mp3" % (self._safe(t.get("name")), t["id"]) for t in valid))
         return {
             "vod_id": self._pack("c", info),
             "vod_name": name,
@@ -803,9 +846,21 @@ class Spider(BaseSpider):
             url = _proxy_url(url, ext) or url
         out = {"parse": 0, "jx": 0, "url": url,
                "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
-        if self._flag("music_player", True):
+        # ★默认不再输出 music_player 标记: 它是原版(蜜果)加的「手机端音乐播放器分流标记」,
+        #   会让部分播放器转到不走音频渲染的分支, 是「能播没声音」的可疑变量; 需要时传 "music_player":1。
+        if self._flag("music_player", False):
             out["music_player"] = 1
         return out
+
+    def _with_mp3(self, sources, urls, mp3_group):
+        """在官方线路基础上补一条第三方 MP3 线路(兼容兜底)。
+
+        官方流是 audio-only 的 M4A(标准 AAC-LC), 少数播放器/内核仍不放声音; MP3 是
+        兼容性最好的格式, 用它兜底可直接出声。放最后; extend 传 "prefer_mp3":1 则放最前。
+        """
+        if self._flag("prefer_mp3", False):
+            return ["MP3源"] + list(sources), [mp3_group] + list(urls)
+        return list(sources) + ["MP3源"], list(urls) + [mp3_group]
 
     def playerContent(self, flag, id, vipFlags=None):
         value = str(id or "")
@@ -819,12 +874,13 @@ class Spider(BaseSpider):
             else:
                 track_id, quality = value, "auto"
             data = self._seo(track_id)
-            if quality == "vip":
+            if quality in ("vip", "mp3"):
+                # 会员曲(VIP替代) / 通用 MP3 兜底线路: 都走第三方 yx520 拿完整音源
                 track = self._track(data.get("seo_track") or {}) or {}
                 alt, alt_ext = self._alt_url(track.get("name"))
                 if alt:
                     return self._play(alt, alt_ext)
-                quality = "auto"  # 替代源不可用 → 回落官方试听档
+                quality = "auto"  # 第三方不可用 → 回落官方档位, 不阻断播放
             streams = self._streams(data)
             chosen = next((s for s in streams if s["key"] == quality), streams[0] if streams else None)
             if not chosen:
