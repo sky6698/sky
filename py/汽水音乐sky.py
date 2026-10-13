@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# 汽水音乐  TVBox / 影视仓 py 源
 # 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
 #
 # 端点(2026-10-13 全部实测可用, 无需登录):
@@ -59,6 +58,19 @@
 #   → 实现: `_app_audio_url()` 播放官方档位时逐个候选 HEAD 探测, 取第一个 audio/* 的;
 #     找不到则回落 main_url。开关见下 "app_probe"。
 #
+# ★★「MP3源」起播提速(2026-10-13 第五轮, 用户反馈「排在第一个的 mp3 源 起播太慢」):
+#   - 旧实现走第三方聚合站 yx520(它再代理酷我), 实测冷启 2.4s / 热 1s, 再加一次 seo_track
+#     回查 → 起播要 1.5~3s。
+#   - 现改为**直连酷我官方接口**: ① search.kuwo.cn/r.s 搜歌 → rid; ② nmobi.kuwo.cn/mobi.s
+#     (convert_url_with_sign) 取流。实测**搜索+取流合计 0.12~0.19s**, 且拿到的 320k mp3
+#     与聚合站返回的是**同一份文件**(字节数一致, 例如稻香 8940938B)。
+#   - ★坑: 高码率必须写 `br=320kmp3`(带单位); 写成 `bitrate=320kmp3` 服务端只给 128k。
+#     另有无损档 `br=2000kflac&format=flac`(~26MB, audio/x-flac)可用, 默认不启用。
+#   - 再加两道提速: ① 线路 id 里直接编入「歌名+歌手」(_pack("m",{...})), 播放时省掉一次
+#     seo_track 回查; ② 打开详情时**后台线程预热**直链(_prefetch_alt), 用户按下播放前
+#     多已命中内存缓存 → 秒开。同曲 900s 内重播零网络等待。
+#   - 聚合站 yx520 保留为**兜底**(酷我直连失败时才用)。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
@@ -66,12 +78,14 @@
 #   "prefer_mp3":0    官方档位排到最前(默认第三方 MP3 排最前, 那是实测确保有声的配置;
 #                     若官方档位(现在会挑 audio/mp4 地址)也能出声, 设 0 可优先官方高清)
 #   "app_probe":0     关闭官方流的 audio/mp4 地址探测(直接给 main_url, 即旧行为)
+#   "prefetch":0      关闭详情页后台预热(默认开; 关掉后首次播放按需解析, 会慢 ~0.2s)
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
 import base64
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -102,6 +116,35 @@ CHARTS = [("热歌榜", "7036274230471712007"), ("新歌榜", "70608125978848699
 # 官方档位 → audio/mp4 候选地址的探测结果缓存 {(track_id, quality): (url, ts)}
 # URL 有效期约 1 天, 缓存只保 300s, 避免过期地址被复用。
 _APP_PROBE_CACHE = {}
+
+# ---------------------------------------------------------------- 完整音源(酷我直连)
+# 「MP3源」/「VIP替代」线原本走第三方聚合站(yx520), 单次冷启 2.4s / 热 1s → 起播慢。
+# 实测: 酷我官方接口「搜索 + 取流」合计只要 0.1~0.2s, 且拿到的 320k mp3 与聚合站是
+# **同一份文件**(字节数完全一致) → 直接打酷我, 起播快 10 倍以上。
+#   ① 搜索 https://search.kuwo.cn/r.s?client=kt&all=<歌名 歌手>&ft=music&rformat=json&mobi=1
+#   ② 取流 https://nmobi.kuwo.cn/mobi.s?type=convert_url_with_sign&rid=<rid>&br=320kmp3&format=mp3
+# ★参数坑: 高码率必须用 `br=320kmp3`(名字里带单位), 用 `bitrate=320kmp3` 只会给 128k。
+#   另有无损档 `br=2000kflac`(format=flac, ~26MB), 默不启用。
+# 聚合站(yx520)保留为兜底: 酷我直连失败时才用。
+_KUWO_SEARCH = "https://search.kuwo.cn/r.s"
+_KUWO_SIGN = "https://nmobi.kuwo.cn/mobi.s"
+_KUWO_SOURCE = "kwplayer_ar_4.4.2.7_B_nuoweida_vh.apk"
+# 结果缓存 "歌名|歌手" → {"url","ext","ts"}。酷我直连 token 会过期, 故给 TTL。
+_ALT_CACHE = {}
+_ALT_LOCK = threading.Lock()
+_ALT_FRESH = 900         # 900s 内直接复用(重解析只要 0.15s, 故无需更长的无校验窗口)
+_ALT_TTL = 6 * 3600      # 超过 6h 直接丢弃
+# 详情页后台预热: 打开详情时把「MP3源」的直链先解析好, 用户点播放即秒开。
+_PREFETCH_LOCK = threading.Lock()
+_PREFETCH_DONE = set()
+_PREFETCH_MAX = 3        # 合集最多预热前 N 首(避免同时打太多请求)
+# 匹配打分: 命中这些修饰词的版本重罚(伴奏/翻唱/Live/epic 等短版或改编版), 优先原版。
+# ★实测: 「孤勇者(热血epic版)」只有 48 秒; 不重罚这类词就会选中短版当原版。
+# 中文词用子串判定; 英文词必须独立成词(否则 "inst" 会误伤 "Instinct" 这类正常曲名)。
+_ALT_NOISE_CJK = ("伴奏", "纯音乐", "铃声", "翻唱", "改编", "串烧", "合唱", "对唱", "童声",
+                  "钢琴", "吉他", "唢呐", "二胡", "环绕", "现场", "摇滚", "慢摇", "片段",
+                  "试听", "演唱会", "巡演", "音乐节", "原曲", "旧版")
+_ALT_NOISE_EN = ("dj", "remix", "live", "cover", "inst", "epic", "demo", "remaster", "ktv", "3d")
 # 怀旧电台(「熟悉模式」用)
 NOSTALGIA_RADIO = "7408841207276748809"
 # 听抖音分类: (显示名, 搜索关键词)。★关键词用分类名本身; 不要用「热门视频」。
@@ -288,6 +331,7 @@ class _AudioHandler(BaseHTTPRequestHandler):
 class Spider(BaseSpider):
     def __init__(self):
         self._sess = None
+        self._kuwo_sess = None
         self._cfg = {}
 
     def init(self, extend=""):
@@ -403,13 +447,17 @@ class Spider(BaseSpider):
                 return value
         return None
 
+    @staticmethod
+    def _artists(track):
+        return " / ".join(str(a.get("name") or "") for a in (track.get("artists") or [])
+                          if isinstance(a, dict) and a.get("name"))
+
     @classmethod
     def _card(cls, track):
         """track → TVBox 卡片"""
         if not isinstance(track, dict) or not track.get("id"):
             return None
-        artists = " / ".join(str(a.get("name") or "") for a in (track.get("artists") or [])
-                             if isinstance(a, dict) and a.get("name"))
+        artists = cls._artists(track)
         album = track.get("album") if isinstance(track.get("album"), dict) else {}
         remark = artists or str(album.get("name") or "汽水音乐")
         return {
@@ -635,14 +683,114 @@ class Spider(BaseSpider):
             return est < full * 0.8
         return bool(label.get("only_vip_playable"))
 
-    def _alt_url(self, name):
-        """VIP 替代: 酷我(kwyy) 优先 → 抖音(dyyy) 兜底; 取不到返回 ('', '')
+    # ------------------------------------------------- 完整音源: 酷我直连(快) → 聚合站(兜底)
+    def _kuwo_session(self):
+        if self._kuwo_sess is None:
+            s = requests.Session()
+            s.headers.update({"User-Agent": UA, "Referer": "https://www.kuwo.cn/"})
+            self._kuwo_sess = s
+        return self._kuwo_sess
 
-        返回 (url, ext): ext 是推断的后缀(kwyy→.mp3 / dyyy→.m4a), 供本地代理定 Content-Type。
+    @staticmethod
+    def _norm_text(text, keep_brackets=False):
+        """归一化曲名/歌手用于比对: 去标点空白 + 小写; 默认再去括号内容。
+
+        keep_brackets=True 时保留括号内容 —— 打分必须用它, 否则「孤勇者(热血epic版)」
+        去括号后会与「孤勇者」完全相等, 版本信息被抹掉, 假原版拿满分(实测踩过)。
         """
-        name = str(name or "").strip()
-        if not name:
+        t = str(text or "").lower()
+        if not keep_brackets:
+            t = re.sub(r"[（(\[【].*?[)）\]】]", "", t)
+        t = re.sub(r"[\s\-—_·、,，.。!！?？'\"“”~:：]+", "", t)
+        return t.strip()
+
+    @staticmethod
+    def _alt_score(item, name, artist):
+        """给酷我搜索结果打分; 名字对不上直接判不可用(-1)。
+
+        ★核心是「去掉标题后还剩多少字符」(extra) —— 越接近纯标题越像原版。
+        实测教训: 改用此判据前, 搜「孤勇者」会选中「孤勇者(热血epic版)」(48 秒短版),
+        而真原版「孤勇者-《英雄联盟…》主题曲」和排第 9 的纯「孤勇者」都落选。
+        """
+        raw = str(item.get("SONGNAME") or "")
+        flat = Spider._norm_text(raw, keep_brackets=True)
+        target = Spider._norm_text(name)
+        if not flat or not target or target not in flat:
+            return -1
+        extra = len(flat.replace(target, "", 1))
+        score = 100 - min(extra, 30) * 3          # 多余字符越多越不像原版
+        low = raw.lower()
+        if any(bad in low for bad in _ALT_NOISE_CJK) or any(
+                re.search(r"(?<![a-z0-9])" + re.escape(bad) + r"(?![a-z0-9])", low)
+                for bad in _ALT_NOISE_EN):
+            score -= 45                           # 伴奏/翻唱/Live/epic/片段 等版本重罚
+        if artist:
+            mine = [Spider._norm_text(x) for x in re.split(r"[/&、,，]", artist)]
+            mine = [x for x in mine if x]
+            theirs = Spider._norm_text(item.get("ARTIST"))
+            if mine and theirs:
+                if any(x in theirs or theirs in x for x in mine):
+                    score += 40
+                else:
+                    score -= 25
+        return score
+
+    def _kuwo_search(self, keyword, rn=10):
+        url = ("%s?client=kt&pn=0&rn=%d&all=%s&vipver=1&ft=music&encoding=utf8&rformat=json&mobi=1"
+               % (_KUWO_SEARCH, rn, urllib.parse.quote(keyword)))
+        try:
+            resp = self._kuwo_session().get(url, timeout=8)
+            try:
+                data = resp.json()
+            except Exception:
+                data = json.loads(resp.text.replace("'", '"'))
+            return data.get("abslist") or []
+        except Exception:
+            return []
+
+    def _kuwo_rid(self, name, artist):
+        """搜出最匹配的酷我 rid: 先用「歌名 歌手」, 没好的再退化到只用「歌名」。"""
+        first_artist = re.split(r"[/&、,，]", artist or "")[0].strip()
+        queries = ([name + " " + first_artist] if first_artist else []) + [name]
+        best, best_score, seen = "", -1, set()
+        for keyword in queries:
+            for pos, item in enumerate(self._kuwo_search(keyword)):
+                rid = str(item.get("DC_TARGETID") or item.get("MUSICRID") or "").replace("MUSIC_", "").strip()
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                score = self._alt_score(item, name, artist)
+                if score < 0:
+                    continue
+                score -= pos * 2              # 同分时尊重酷我原排序(靠前的更可能是原版)
+                if score > best_score:
+                    best, best_score = rid, score
+            if best and best_score >= 55:
+                break
+        if not best:                          # 打分全军覆没 → 退化为只用歌名搜的第一条
+            for item in self._kuwo_search(name):
+                rid = str(item.get("DC_TARGETID") or item.get("MUSICRID") or "").replace("MUSIC_", "").strip()
+                if rid:
+                    return rid
+        return best
+
+    def _kuwo_url(self, name, artist, br="320kmp3", fmt="mp3"):
+        """酷我直连取流: 搜索 → convert_url_with_sign, 实测全程 0.1~0.2s。"""
+        rid = self._kuwo_rid(name, artist)
+        if not rid:
             return "", ""
+        url = ("%s?f=web&user=0&source=%s&type=convert_url_with_sign&rid=%s&br=%s&format=%s"
+               % (_KUWO_SIGN, _KUWO_SOURCE, rid, br, fmt))
+        try:
+            link = str((((self._kuwo_session().get(url, timeout=8).json()).get("data") or {}).get("url")) or "")
+        except Exception:
+            link = ""
+        if link.startswith("http"):
+            return link, _ext_of(link, "." + fmt)
+        return "", ""
+
+    def _yx520_url(self, name):
+        """聚合站兜底(冷启 ~2.4s, 慢): 只在酷我直连失败时用。"""
         q = urllib.parse.quote(name)
         try:
             j = self._req_url("http://www.yx520.ltd/API/kwyy/api.php?msg=%s&a=10&n=1" % q)
@@ -662,6 +810,67 @@ class Spider(BaseSpider):
         except Exception:
             pass
         return "", ""
+
+    def _alt_url(self, name, artist=""):
+        """第三方完整音源: 酷我直连(0.1~0.2s) 优先 → 聚合站 yx520 兜底; 取不到返回 ('', '')。
+
+        返回 (url, ext), ext 供本地代理判定 Content-Type(.mp3 / .m4a)。
+        带内存缓存(900s 内直接复用) → 同一首重播/连续播放时零网络等待。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return "", ""
+        artist = str(artist or "").strip()
+        key = name.lower() + "|" + artist.lower()
+        now = time.time()
+        with _ALT_LOCK:
+            hit = _ALT_CACHE.get(key)
+        if hit and now - hit["ts"] < _ALT_FRESH:
+            return hit["url"], hit["ext"]                 # 900s 内直接复用, 播放秒开
+        url, ext = self._kuwo_url(name, artist)
+        if not url:
+            url, ext = self._yx520_url(name)
+        if not url and hit and now - hit["ts"] < _ALT_TTL:
+            return hit["url"], hit["ext"]                 # 重解析失败 → 保留旧地址兜底
+        if url:
+            with _ALT_LOCK:
+                _ALT_CACHE[key] = {"url": url, "ext": ext, "ts": time.time()}
+                if len(_ALT_CACHE) > 400:                 # 简单 LRU 清理, 防无界增长
+                    for k in sorted(_ALT_CACHE, key=lambda x: _ALT_CACHE[x]["ts"])[:100]:
+                        _ALT_CACHE.pop(k, None)
+        return url, ext
+
+    def _prefetch_alt(self, values):
+        """详情页后台预热「完整音源」直链(不阻塞详情返回)。
+
+        用户点开详情后通常还要 1s 以上才按播放, 预热完即命中缓存 → 点下去立刻出声。
+        """
+        if not self._flag("prefetch", True):
+            return
+        jobs = []
+        for value in values:
+            info = self._unpack(value, "m")
+            if isinstance(info, dict) and info.get("n"):
+                jobs.append((str(info["n"]), str(info.get("r") or "")))
+        if not jobs:
+            return
+        jobs = jobs[:_PREFETCH_MAX]
+
+        def run():
+            for n, r in jobs:
+                key = n.lower() + "|" + r.lower()
+                with _PREFETCH_LOCK:
+                    if key in _PREFETCH_DONE:
+                        continue
+                    if len(_PREFETCH_DONE) > 500:
+                        _PREFETCH_DONE.clear()
+                    _PREFETCH_DONE.add(key)
+                try:
+                    self._alt_url(n, r)
+                except Exception:
+                    pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     @staticmethod
     def _label(quality, bitrate, index):
@@ -830,20 +1039,25 @@ class Spider(BaseSpider):
         album = track.get("album") if isinstance(track.get("album"), dict) else {}
         streams = self._streams(data)
         name = self._safe(track.get("name"))
+        raw_name = str(track.get("name") or name)
         if streams:
             sources = [s["label"] for s in streams]
             urls = ["%s$a:%s:%s" % (name, track_id, s["key"]) for s in streams]
         else:
             sources, urls = ["汽水音乐"], ["%s$a:%s:auto" % (name, track_id)]
+        # 完整音源线路的 id 直接把「歌名+歌手」编进去 → 播放时无需再回查 seo_track, 少一次请求
+        alt_id = self._pack("m", {"n": raw_name, "r": artists, "t": track_id})
+        alt_entry = "%s$%s" % (name, alt_id)
         # 会员/试听曲: 官方只放片段(实测 60s) → 在最前插「VIP替代」, 播放时取第三方完整曲
         vip = self._is_vip(data, streams)
         clip = self._clip_seconds(streams)
         if vip:
             sources = ["VIP替代"] + sources
-            urls = ["%s$a:%s:vip" % (name, track_id)] + urls
+            urls = [alt_entry] + urls
         else:
             # 完整曲也补一条 MP3 兼容线路: 少数播放器/内核不放 audio-only M4A 的声音
-            sources, urls = self._with_mp3(sources, urls, "%s$a:%s:mp3" % (name, track_id))
+            sources, urls = self._with_mp3(sources, urls, alt_entry)
+        self._prefetch_alt([alt_id])          # 后台预热直链, 用户点播放即秒开
         lyric = str(((data.get("lyric") or {}).get("content")) or "")
         if vip:
             mark = "（官方仅%d秒·已加替代源）" % int(clip) if clip else "（会员曲·已加替代源）"
@@ -927,10 +1141,13 @@ class Spider(BaseSpider):
         else:
             sources = ["最高音质"]
             groups = ["#".join("%s$a:%s:auto" % (self._safe(t.get("name")), t["id"]) for t in valid)]
-        # 补一条 MP3 兼容线路(播放时才去第三方取, 详情页零额外请求)
-        sources, groups = self._with_mp3(
-            sources, groups,
-            "#".join("%s$a:%s:mp3" % (self._safe(t.get("name")), t["id"]) for t in valid))
+        # 补一条 MP3 兼容线路(歌名+歌手 编进 id, 播放时才取直链; 详情页只起后台预热不阻塞)
+        alt_ids = [self._pack("m", {"n": str(t.get("name") or ""), "r": self._artists(t),
+                                    "t": str(t["id"])}) for t in valid]
+        alt_group = "#".join("%s$%s" % (self._safe(t.get("name")), aid)
+                             for t, aid in zip(valid, alt_ids))
+        sources, groups = self._with_mp3(sources, groups, alt_group)
+        self._prefetch_alt(alt_ids)
         return {
             "vod_id": self._pack("c", info),
             "vod_name": name,
@@ -994,6 +1211,22 @@ class Spider(BaseSpider):
             return ["MP3源"] + list(sources), [mp3_group] + list(urls)
         return list(sources) + ["MP3源"], list(urls) + [mp3_group]
 
+    def _third_party_play(self, name, artist, track_id):
+        """「MP3源 / VIP替代」线路: 拿第三方完整音源(酷我直连优先); 失败回落官方最高档。"""
+        name = str(name or "").strip()
+        if name:
+            url, ext = self._alt_url(name, artist)
+            if url:
+                return self._play(url, ext)
+        track_id = str(track_id or "")
+        if track_id:                                   # 替代源不可用 → 回落官方档, 不阻断播放
+            data = self._seo(track_id)
+            streams = self._streams(data)
+            if streams:
+                url = self._app_audio_url(data, track_id, streams[0]["key"]) or streams[0]["url"]
+                return self._play(url)
+        return None
+
     def playerContent(self, flag, id, vipFlags=None):
         value = str(id or "")
         try:
@@ -1001,17 +1234,24 @@ class Spider(BaseSpider):
                 url = ("https://aweme.snssdk.com/aweme/v1/play/?"
                        "video_id=%s&ratio=1080p&line=0" % value[2:])
                 return {"parse": 0, "jx": 0, "url": url, "header": {"User-Agent": UA}}
+            # 新形态: 「歌名+歌手+track_id」已编进 id → 免掉一次 seo_track 回查, 起播更快
+            if value.startswith("m:"):
+                info = self._unpack(value, "m") or {}
+                out = self._third_party_play(info.get("n"), info.get("r"), info.get("t"))
+                if out:
+                    return out
+                return {"parse": 1, "jx": 0, "url": value, "header": {}}
             if value.startswith("a:"):
                 _, track_id, quality = value.split(":", 2)
             else:
                 track_id, quality = value, "auto"
             data = self._seo(track_id)
             if quality in ("vip", "mp3"):
-                # 会员曲(VIP替代) / 通用 MP3 兜底线路: 都走第三方 yx520 拿完整音源
+                # 旧形态(兼容旧缓存列表): 回查 seo_track 取歌名/歌手, 再走第三方完整音源
                 track = self._track(data.get("seo_track") or {}) or {}
-                alt, alt_ext = self._alt_url(track.get("name"))
-                if alt:
-                    return self._play(alt, alt_ext)
+                out = self._third_party_play(track.get("name"), self._artists(track), track_id)
+                if out:
+                    return out
                 quality = "auto"  # 第三方不可用 → 回落官方档位, 不阻断播放
             streams = self._streams(data)
             chosen = next((s for s in streams if s["key"] == quality), streams[0] if streams else None)
