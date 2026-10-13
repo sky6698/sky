@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 汽水音乐  TVBox / sky 源
+# 汽水音乐  TVBox / 影视仓 py 源
 # 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
 #
 # 端点(2026-10-13 全部实测可用, 无需登录):
@@ -87,20 +87,36 @@
 #     都不满足 → 被当作视频起链 → **能播但没声音**; 酷我 MP3 以 `.mp3` 结尾 → 判为音频 → 有声。
 #     (旁证: `PlaybackResourceClassifier.hasProgressiveExtension()` 用同一套后缀表, 并且
 #      同样截断 `?`/`#`, 所以「往 query 或 fragment 里补后缀」这条路走不通。)
-#   ★修复: `_play()` 默认回填 `format`(音频 MIME), 由 `_CTYPE` 表按后缀给出
-#     audio/mp4(官方 M4A) / audio/mpeg(酷我 MP3)。播放器读到 format 即判为音频,
-#     官方档位与 MP3 线路走同一条路径。开关 `"audio_format":0` 可关闭。
+#   ★★结论修正(2026-10-13 第八轮, 读 App 源码 + 用户确认播放样式后定案):
+#     ① 的判断本身是对的(`format` 含 "audio" → `AudioUtil.isAudio()` 直接 true), 但
+#     **用户已确认其播放样式是「沉浸式(默认)」**, 而沉浸式下所有 `AudioActivity.startIfAudio`
+#     入口第一行就是 `if (PlayerSetting.isImmersiveAudioMode()) return false;`
+#     → **此模式下 format 全程不生效**。
+#     因此: 「加了 format 才播不了」这个归因**不成立**(format 在该模式下等于没加)。
+#     `audio_format` 保持默认 0, 理由退化为最简单的一条: 原版就没这个字段, 保持原样。
+#   ⚠️ 归因史(留档避免再绕): 本轮先后给出过两个都不够硬的解释 ——
+#     (1)「format 只落到 media3 的 MediaItem.mimeType, 故无害」→ 不完整, 它还会命中
+#        App 的**音频/视频分流**判据 `AudioUtil.isAudio()`(只是沉浸式下走不到);
+#     (2)「是 format 把官方档位分流进 AudioActivity 才播不了」→ 前提(非沉浸式)不成立。
+#     已确认的**硬事实**只有一条: 用户设备上官方档位「一直转圈/黑屏」, 且只有官方档位。
+#   ⚠️ 与本版 media3 无关: `MediaItem.Builder.setMimeType(format)` → `Util
+#      .inferContentTypeForUriAndMimeType()`, 只有 4 个清单 MIME(*.mpd/*.m3u8/*.ism/
+#      *.rtsp)会改变 MediaSource 类型, 其余一律 ProgressiveMediaSource + 嗅探。
+#   → 源侧保底策略: 把**实测有声**的酷我 MP3 直连排在第一位(`prefer_mp3` 默认 1)。
 #
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
 #   "prefer_mp3":0    官方档位排到最前(默认第三方 MP3 排最前, 那是实测确保有声的配置;
-#                     若官方档位(现在会挑 audio/mp4 地址)也能出声, 设 0 可优先官方高清)
-#   "app_probe":0     关闭官方流的 audio/mp4 地址探测(直接给 main_url, 即旧行为)
+#                     若官方档位也能出声, 设 0 可优先官方高清)
+#   "app_probe":1     打开官方流的地址探测(★默认 0=关闭)。关闭时直接给 seo 的 main_url,
+#                     **逐字节等同于原版行为**; 打开会按 Content-Type=audio/* 且真能取到
+#                     字节来挑候选, 但起播会多 0.6~1.1s。仅用于对照排查。
 #   "prefetch":0      关闭详情页后台预热(默认开; 关掉后首次播放按需解析, 会慢 ~0.2s)
-#   "audio_format":0  不回填 format(默认回填)。关闭后官方档位会因 URL 无后缀被播放器
-#                     当成视频 → 大概率「能播没声」, 仅用于对照排查。
+#   "audio_format":1  回填 format=音频 MIME(★默认 0=不回填)。它在**非沉浸式**下会命中
+#                     `AudioUtil.isAudio()` 判据①把官方档位分流到 AudioActivity; 沉浸式
+#                     (默认)下不生效。保留仅为对照排查。
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -212,6 +228,22 @@ def _ext_of(url, fallback=".m4a"):
         if path.endswith(ext):
             return ext
     return fallback
+
+
+def _uniq(seq):
+    """去重且保持原顺序, 顺手丢掉空值。
+
+    用途: seo 的 main_url / backup_url 经常是同一条 URL 的两个副本, 不去重会把
+    同一个地址 HEAD 探测两遍(`_head_is_audio` 要发 1 次 HEAD + 1 次 Range GET,
+    重复探测纯属浪费, 在设备上还会拖慢起播)。
+    """
+    out, seen = [], set()
+    for item in seq or ():
+        key = str(item or "")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def _register(url):
@@ -954,7 +986,9 @@ class Spider(BaseSpider):
     #   4) CDN 对请求头完全不挑(任意 UA / 无 Referer 均 200/206 + 正确字节)。
     #   5) 每首曲目有 12 个候选地址(seo 的 main/backup × 各档 + VOD GetPlayInfo 的
     #      main/backup × 各档), 实测至少 6 个是 audio/mp4。
-    # 故播放官方档位时, 逐个候选 HEAD 探测, 取第一个 audio/* 的地址。
+    # 故播放官方档位时, 逐个候选探测, 取第一个「头是 audio/* 且真能取到字节」的地址。
+    # 探测分两级(见 `_pick_verified`): 先用便宜的 HEAD 把所有候选筛一遍, 再只对幸存者
+    # 做一次带 Range 的真取数 —— 后者是为了剔除「头正常、字节不下来」的死节点。
     def _app_candidates(self, data, quality):
         """seo_track 里该档位的候选地址(main_url / backup_url)"""
         out = []
@@ -992,29 +1026,88 @@ class Spider(BaseSpider):
                     out.append(str(item[field]))
         return out
 
+    #      ↓ 补充(同日实测用户设备反馈): 只按响应头挑地址还不够 —— 出现过「HEAD 看起来是
+    #        audio/mp4, 交给播放器却**一直转圈/黑屏**(EXO 与 MPV 都拉不动)」, 说明
+    #        backup_url 那一族里存在「头正常、字节不下来」的死节点。故最终判据加一条
+    #        **真取数**(见 `_can_pull`); 为不拖慢起播, 先用便宜的 HEAD 筛, 只对幸存者真拉。
+    _PROBE_HEAD_TIMEOUT = 2.5      # 单条候选 HEAD 超时(设备弱网下也别超 3s)
+    _PROBE_HEAD_MAX = 4            # 单轮最多 HEAD 几条候选
+    _PROBE_PULL_MAX = 2            # 单轮最多对几条幸存者做真取数
+    _PROBE_PULL_TIMEOUT = 3.5      # 真取数超时
+
     def _head_is_audio(self, url):
-        """HEAD 探测该地址的 Content-Type 是否 audio/*; 响应头缺失时用 1 字节 GET 复核。"""
+        """便宜探测: HEAD 一下, 只回答「连得上 + Content-Type 是 audio/*」。
+
+        这只是**初筛**, 不能当最终判据(见 `_can_pull` 的说明)。
+        """
         if requests is None:
             return False
         try:
-            r = requests.head(url, headers=self._play_headers(), timeout=6, allow_redirects=True)
+            r = requests.head(url, headers=self._play_headers(),
+                              timeout=self._PROBE_HEAD_TIMEOUT, allow_redirects=True)
             ctype = str(r.headers.get("Content-Type") or "").lower()
-            if not ctype:
-                r = requests.get(url, headers=dict(self._play_headers(), **{"Range": "bytes=0-0"}), timeout=6)
-                ctype = str(r.headers.get("Content-Type") or "").lower()
-            return ctype.startswith("audio/") and r.status_code in (200, 206)
+            return r.status_code in (200, 206) and ctype.startswith("audio/")
         except Exception:
             return False
 
+    def _can_pull(self, url):
+        """最终判据: 带 Range 真读一小段字节, 确认 CDN **确实会下发数据**。
+
+        ★为什么必须真拉: 用户实测官方档位「一直转圈/黑屏」, EXO 与 MPV 都拉不动 ——
+        即连接建立了(HEAD 200 + 头也正常)但字节不下来。只信响应头就会把这种死地址
+        交给播放器, 结果是无限转圈。这里拿不到字节一律判不可用 → 调用方回落。
+        """
+        if requests is None:
+            return False
+        try:
+            g = requests.get(url, headers=dict(self._play_headers(), **{"Range": "bytes=0-2047"}),
+                             timeout=self._PROBE_PULL_TIMEOUT, allow_redirects=True, stream=True)
+            try:
+                if g.status_code not in (200, 206):
+                    return False
+                for piece in g.iter_content(512):     # 真读一小段, 确认有字节
+                    return bool(piece)
+                return False
+            finally:
+                g.close()
+        except Exception:
+            return False
+
+    def _pick_verified(self, urls):
+        """从候选里挑一个「头是 audio/* 且真能取到字节」的地址; 没有则返回 ''。
+
+        开销刻意压到最低: 先对最多 `_PROBE_HEAD_MAX` 条做 HEAD 初筛(快), 再只对其中
+        最多 `_PROBE_PULL_MAX` 条做真取数(慢)。正常网络下每条 HEAD ~0.1-0.3s, 整体
+        在 1s 内出结果; 网络不通时最坏 ~2.5s×4 就止损, 不会无限转圈。
+        """
+        heads = []
+        for url in _uniq(urls)[:self._PROBE_HEAD_MAX]:
+            if self._head_is_audio(url):
+                heads.append(url)
+        for url in heads[:self._PROBE_PULL_MAX]:
+            if self._can_pull(url):
+                return url
+        return ""
+
     def _app_audio_url(self, data, track_id, quality):
-        """返回该档位一个 Content-Type 为 audio/* 的官方地址; 找不到返回 ''(调用方回落 main_url)。
+        """返回该档位一个**本机实测可播**的官方地址; 探测关闭或找不到时返回 ''(调用方回落)。
+
+        ★**默认关闭**(`app_probe` 默认 0) —— 返回 '' 后 `playerContent` 用 `chosen["url"]`
+        (seo 自带的 main_url), 即**逐字节等同于原版行为**。为什么默认关:
+          1) 实测在本机, 探测选出来的地址**就是原版本来会用的那个**(同为 seo main_url),
+             所以它不带来任何实际收益, 却给起播多加 0.6~1.1s;
+          2) 它是本版相对原版**唯一**会改变「交给播放器的地址」的改动 —— 用户报「这次不能
+             播放了」时它刚好在场, 在定位清楚前不该默认开启;
+          3) 用户明确要求「保持官方地址」(不做第三方回落), 保持原版最符合该预期。
+        需要对照排查时 extend 传 "app_probe":1 打开。
+
+        打开后的判据两条, 缺一不可: ① Content-Type 是 audio/*; ② 本机真能取到字节。
+        ② 是必须的: 实测 backup_url 一族里存在「HEAD 头正常、字节不下来」的死节点。
 
         注意: 每次 seo_track 拿到的 URL 会被随机指到不同 CDN 节点, 而节点决定 Content-Type,
         所以单次探测可能全落在 video/mp4 上 → 失败时**重取一次 seo_track 再探**(节点会变)。
-
-        extend 传 "app_probe":0 可关闭探测(直接给 main_url, 即旧行为)。
         """
-        if not self._flag("app_probe", True):
+        if not self._flag("app_probe", False):
             return ""
         key = (str(track_id), str(quality))
         now = time.time()
@@ -1022,17 +1115,17 @@ class Spider(BaseSpider):
         if hit and now - hit[1] < 300:
             return hit[0]
         picked, cur = "", data
-        # 第 1 轮: 当前数据(seo 候选 + VOD GetPlayInfo 候选); 第 2 轮: 重取 seo_track
+        # 第 1 轮: 当前数据; 第 2 轮: 重取 seo_track(节点会变, 值得再试一次)
         for attempt in range(2):
-            urls, seen = [], set()
-            for url in self._app_candidates(cur, quality) + self._app_candidates_vod(cur, quality):
-                if url and url not in seen:
-                    seen.add(url)
-                    urls.append(url)
-            for url in urls[:4]:
-                if self._head_is_audio(url):
-                    picked = url
-                    break
+            # 先只用 seo 候选(main_url / backup_url, 零额外请求);
+            # 都不行才去问 VOD GetPlayInfo 端点 —— 那次请求本身也要几百 ms, 不该每次都发。
+            picked = self._pick_verified(self._app_candidates(cur, quality))
+            if not picked:
+                try:
+                    vod_urls = self._app_candidates_vod(cur, quality)
+                except Exception:
+                    vod_urls = []
+                picked = self._pick_verified(vod_urls)
             if picked or attempt:
                 break
             try:
@@ -1211,15 +1304,10 @@ class Spider(BaseSpider):
           实验性功能, extend 传 "proxy":1 才启用。
         - **默认带 music_player: 1**: 原版一直输出该标记且能正常出声, 它是手机端
           「音乐播放器分流」标记; 去掉它反而会让部分播放器走视频分支。传 "music_player":0 可关。
-        - ★**默认带 `format`(音频 MIME)** —— 这是「EXO 无声」的修复点:
-          FongMi 系播放器靠 `AudioUtil.isAudio(result)` 决定**这条流走音频播放路径
-          (AudioActivity) 还是普通视频路径**, 判据只有两条:
-            ① 接口返回的 `format` 里含 "audio"  →  直接判为音频;
-            ② URL 以音频后缀结尾(.mp3/.m4a/.flac/... 且 `?`、`#` 之后会被截断)。
-          汽水官方档位 URL 形如 `.../video/tos/cn/.../okFeBaTVaQtAQz5xEQD8?<query>`
-          **无任何后缀** → 两条都不满足 → 被当成视频起链 → **能播但没声音**;
-          而酷我 MP3 线路 URL 以 `.mp3` 结尾 → 一直有声。补上 format 后官方档位
-          同样走音频路径。extend 传 "audio_format":0 可关闭。
+        - ★**`format` 默认不回填**(`audio_format` 默认 0): `format` 含 "audio" 会命中
+          App 的 `AudioUtil.isAudio()` 判据①, 把这条流**分流到 AudioActivity**(专用音频
+          播放器); 但仅在**非沉浸式**下有效, 沉浸式(默认)下 `startIfAudio` 直接 false。
+          既然原版没这个字段, 就保持不填。传 "audio_format":1 才回填(仅供对照排查)。
         """
         url = str(url or "")
         if url and self._flag("proxy", False):
@@ -1227,7 +1315,7 @@ class Spider(BaseSpider):
         out = {"parse": 0, "jx": 0, "url": url, "header": self._play_headers()}
         if self._flag("music_player", True):
             out["music_player"] = 1
-        if self._flag("audio_format", True):
+        if self._flag("audio_format", False):
             out["format"] = _CTYPE.get(ext or _ext_of(url, ".m4a"), "audio/mp4")
         return out
 
