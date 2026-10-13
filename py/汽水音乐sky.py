@@ -30,19 +30,21 @@
 #
 # 播放地址格式 / 「能播没声音」结论(2026-10-13 实测 + 用户反馈校正):
 #   - 官方主源 = MP4/M4A 容器(ftyp="M4A ") + AAC-LC 44.1kHz 立体声, 三档 65k/129k/257k;
-#     第三方替代源 = MP3(酷我 kwyy, ~320k, audio/mpeg)。
+#     第三方源 = MP3(酷我 kwyy, ~320k, audio/mpeg) —— **现仅供「VIP替代」线路使用**
+#     (第三方 MP3 兼容线路已于第十轮整体移除, 见文末「第十轮」)。
 #   - 容器层完全正常(已逐字节核对): moov 在文件头(faststart) / hdlr=soun / stsd=mp4a /
 #     esds 完整(csd-0=1210 → AAC-LC 44.1k 立体声) / elst 正常 / Range 206 / ffmpeg
 #     volumedetect mean -16.6dB(有声音, 非静音非加密)。★即「源侧/流本身」无任何问题。
 #   - ★根因(关键证据: 用户确认「原版(蜜果版)有声音」):
-#     原版实际返回的是**第三方(酷我)yh520 的 MP3 直链**(它的 VIP 判定过宽, 几乎每首都走
+#     原版实际返回的是**第三方(酷我)的 MP3 直链**(它的 VIP 判定过宽, 几乎每首都走
 #     这条路), 直连 CDN、带 music_player:1 → 用户播放器有声。
 #     本 sky 版一度: ① 走汽水官方 audio-only M4A(无后缀 + Content-Type: video/mp4);
 #                    ② 又加了本地代理, 把 URL 改成 http://127.0.0.1:<port>/audio/xxx.m4a。
-#     ② 是致命的 —— 播放器不接受 loopback 地址, 整条线路(含 MP3 那条)全部无声, 这正好
-#     解释了「连 MP3源 也没声音」。
-#   - ★因此本版默认形态 = 原版验证可用的形态: 直连上游(不走代理) + music_player:1 +
-#     第三方 MP3 线路排最前。本地代理降级为实验特性, 默认关闭(见下方开关)。
+#     ② 是致命的 —— 播放器不接受 loopback 地址, 整条线路全部无声。
+#   - ★因此本版默认形态 = 直连上游(不走代理) + music_player:1。本地代理降级为实验特性,
+#     默认关闭(见下方开关)。
+#     ★(第十轮更新) 当年为兜底还额外插过一条第三方 MP3 线路并排在最前; 现官方档位在 App
+#     侧关掉「音频直通」后已能正常出声 → 该线路**已整体移除**, 线路列表回到纯官方档位。
 #
 # ★★「走 App(汽水官方流) 能不能出声」——已找到可落地的做法(2026-10-13 实测):
 #   - 官方音频是 audio-only 的 M4A(media_type=audio, vtype=m4a, AAC-LC), 在 /video/tos/...
@@ -59,7 +61,7 @@
 #   → 实现: `_app_audio_url()` 播放官方档位时逐个候选 HEAD 探测, 取第一个 audio/* 的;
 #     找不到则回落 main_url。开关见下 "app_probe"。
 #
-# ★★「MP3源」起播提速(2026-10-13 第五轮, 用户反馈「排在第一个的 mp3 源 起播太慢」):
+# ★★ 第三方完整音源(酷我直连)提速(2026-10-13 第五轮; 现服务「VIP替代」线路):
 #   - 旧实现走第三方聚合站 yx520(它再代理酷我), 实测冷启 2.4s / 热 1s, 再加一次 seo_track
 #     回查 → 起播要 1.5~3s。
 #   - 现改为**直连酷我官方接口**: ① search.kuwo.cn/r.s 搜歌 → rid; ② nmobi.kuwo.cn/mobi.s
@@ -71,6 +73,9 @@
 #     seo_track 回查; ② 打开详情时**后台线程预热**直链(_prefetch_alt), 用户按下播放前
 #     多已命中内存缓存 → 秒开。同曲 900s 内重播零网络等待。
 #   - 聚合站 yx520 保留为**兜底**(酷我直连失败时才用)。
+#   ★(第十轮) 依赖这套取流链的**「MP3 兼容线路」已整体移除** —— 官方档位在 App 侧关掉
+#     「音频直通」后能正常出声, 它失去了存在理由。现仍用它的只有「VIP替代」(会员/试听曲
+#     官方只放 ~60s 片段, 需要第三方完整版)。
 #
 # ★★「EXO 内核无声」根因与修复(2026-10-13 第六轮; 用户反馈「只有 EXO 播放无音, MPV/IJK 正常」):
 #   现象: 同一源下, 酷我 MP3 线路在 EXO 上有声, 而汽水官方档位无声; 换 MPV/IJK 则全部有声。
@@ -102,11 +107,12 @@
 #   ⚠️ 与本版 media3 无关: `MediaItem.Builder.setMimeType(format)` → `Util
 #      .inferContentTypeForUriAndMimeType()`, 只有 4 个清单 MIME(*.mpd/*.m3u8/*.ism/
 #      *.rtsp)会改变 MediaSource 类型, 其余一律 ProgressiveMediaSource + 嗅探。
-#   → 源侧保底策略: 把**实测有声**的酷我 MP3 直连排在第一位(`prefer_mp3` 默认 1)。
+#   → (第十轮更新) 官方档位在 App 侧关掉「音频直通」后已能出声, 源侧不再需要第三方兜底线路;
+#     当年那条「第三方 MP3 排最前」的策略与线路**已整体移除**。
 #
 # ★★★「EXO 能播但没声音」根因已定案(2026-10-13 第九轮) —— **不是源的问题, 源侧修不了**:
 #   症状: 官方档位(汽水 AAC/M4A)在 EXO 内核下**能播、进度在走、但完全没声音**;
-#         同源的「MP3源」在 EXO 下有声; 切 MPV/IJK 全都有声。
+#         同源的第三方 MP3 线路在 EXO 下有声; 切 MPV/IJK 全都有声。
 #   根因是 App 的**音频直通(encoded bypass)**, 链路(App 源码已逐条核对):
 #     1) `KernelPerformanceSetting.isAudioPassThrough(kernel)`
 #        = `Prefers.getBoolean("...audio_pass_through", true)` → **默认开启**(EXO/MPV 各一份)。
@@ -128,12 +134,24 @@
 #   → 确认手段: 打开调试日志(类别含 ALL), 看标签 `exo-audio-direct` 的
 #     `reason=vendor-direct`(即命中直通) / `standard-offload` / `no-direct-support`。
 #
+# ★★★ 第十轮(2026-10-13): **移除第三方 MP3 兼容线路**
+#   背景: 那条「MP3源」是第一/二轮为了「官方档位在 EXO 下不出声」而加的兜底线路, 当时把它
+#         排在最前以保证「至少有个能听的声音」。
+#   依据: 第九轮已把「EXO 无声」定案为 App 侧「音频直通」问题; 用户关掉该开关后反馈
+#         **「官方档位 能播」** → 兜底理由消失。而它每首曲子都多加一条冗余线路, 详情页
+#         还要多跑一次第三方取流预热, 属于纯粹的成本。
+#   改动: 1) `_track_detail` / `_playlist_card` 不再补 MP3 线路 → 线路列表 = 纯官方档位
+#            (+ 会员曲的「VIP替代」, 那是为官方 60s 试听片段准备的, 与本轮无关, **保留**);
+#         2) 删除 `_with_mp3()` 方法与 `prefer_mp3` 开关;
+#         3) `_third_party_play()` / `_alt_url()` / `_prefetch_alt()` **保留** ——
+#            「VIP替代」仍依赖它们;
+#         4) `playerContent` 里 `quality == "mp3"` 分支保留, 仅用于兼容**历史缓存列表**
+#            中的旧 id(新列表不再产生这种 id), 命中后回落官方最高档。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "proxy":1         启用本地音频代理(实验性! 输出 127.0.0.1 地址, 多数播放器不支持,
 #                     实测会导致整条线路无声; 仅在确认播放器能播 loopback 时才开)
 #   "music_player":0  去掉 music_player 标记(默认 1, 与原版一致)
-#   "prefer_mp3":0    官方档位排到最前(默认第三方 MP3 排最前, 那是实测确保有声的配置;
-#                     若官方档位也能出声, 设 0 可优先官方高清)
 #   "app_probe":1     打开官方流的地址探测(★默认 0=关闭)。关闭时直接给 seo 的 main_url,
 #                     **逐字节等同于原版行为**; 打开会按 Content-Type=audio/* 且真能取到
 #                     字节来挑候选, 但起播会多 0.6~1.1s。仅用于对照排查。
@@ -180,7 +198,7 @@ CHARTS = [("热歌榜", "7036274230471712007"), ("新歌榜", "70608125978848699
 _APP_PROBE_CACHE = {}
 
 # ---------------------------------------------------------------- 完整音源(酷我直连)
-# 「MP3源」/「VIP替代」线原本走第三方聚合站(yx520), 单次冷启 2.4s / 热 1s → 起播慢。
+# 「VIP替代」线原本走第三方聚合站(yx520), 单次冷启 2.4s / 热 1s → 起播慢。
 # 实测: 酷我官方接口「搜索 + 取流」合计只要 0.1~0.2s, 且拿到的 320k mp3 与聚合站是
 # **同一份文件**(字节数完全一致) → 直接打酷我, 起播快 10 倍以上。
 #   ① 搜索 https://search.kuwo.cn/r.s?client=kt&all=<歌名 歌手>&ft=music&rformat=json&mobi=1
@@ -196,7 +214,7 @@ _ALT_CACHE = {}
 _ALT_LOCK = threading.Lock()
 _ALT_FRESH = 900         # 900s 内直接复用(重解析只要 0.15s, 故无需更长的无校验窗口)
 _ALT_TTL = 6 * 3600      # 超过 6h 直接丢弃
-# 详情页后台预热: 打开详情时把「MP3源」的直链先解析好, 用户点播放即秒开。
+# 详情页后台预热: 打开详情时把「VIP替代」的直链先解析好, 用户点播放即秒开。
 _PREFETCH_LOCK = threading.Lock()
 _PREFETCH_DONE = set()
 _PREFETCH_MAX = 3        # 合集最多预热前 N 首(避免同时打太多请求)
@@ -1118,11 +1136,12 @@ class Spider(BaseSpider):
 
         ★**默认关闭**(`app_probe` 默认 0) —— 返回 '' 后 `playerContent` 用 `chosen["url"]`
         (seo 自带的 main_url), 即**逐字节等同于原版行为**。为什么默认关:
-          1) 实测在本机, 探测选出来的地址**就是原版本来会用的那个**(同为 seo main_url),
-             所以它不带来任何实际收益, 却给起播多加 0.6~1.1s;
-          2) 它是本版相对原版**唯一**会改变「交给播放器的地址」的改动 —— 用户报「这次不能
-             播放了」时它刚好在场, 在定位清楚前不该默认开启;
-          3) 用户明确要求「保持官方地址」(不做第三方回落), 保持原版最符合该预期。
+          1) ★实测(多采样): seo 的 main_url **每次随机落在两个 CDN 节点之一**, 其中一个是
+             `audio/mp4`、另一个是 `video/mp4`, 故探测会以约 **50% 概率把原版本要用的地址
+             换成另一个节点** —— 也就是说它**不是**无副作用的信息增益, 而是会改变结果;
+             用户报「这次不能播放了」时它刚好默认开启, 关闭后官方档位即恢复可播;
+          2) 起播要多花 0.6~1.1s;
+          3) 用户明确要求「保持官方地址」(不要第三方回落), 保持原版最符合该预期。
         需要对照排查时 extend 传 "app_probe":1 打开。
 
         打开后的判据两条, 缺一不可: ① Content-Type 是 audio/*; ② 本机真能取到字节。
@@ -1178,25 +1197,22 @@ class Spider(BaseSpider):
         album = track.get("album") if isinstance(track.get("album"), dict) else {}
         streams = self._streams(data)
         name = self._safe(track.get("name"))
-        raw_name = str(track.get("name") or name)
         if streams:
             sources = [s["label"] for s in streams]
             urls = ["%s$a:%s:%s" % (name, track_id, s["key"]) for s in streams]
         else:
             sources, urls = ["汽水音乐"], ["%s$a:%s:auto" % (name, track_id)]
-        # 完整音源线路的 id 直接把「歌名+歌手」编进去 → 播放时无需再回查 seo_track, 少一次请求
-        alt_id = self._pack("m", {"n": raw_name, "r": artists, "t": track_id})
-        alt_entry = "%s$%s" % (name, alt_id)
-        # 会员/试听曲: 官方只放片段(实测 60s) → 在最前插「VIP替代」, 播放时取第三方完整曲
+        # ★第三方 MP3 兼容线路已移除(第十轮): 它当年只是为了「官方档位不出声时仍有个能听的源」,
+        #   官方档位在 App 侧关掉「音频直通」后已能正常出声 → 该线路失去存在理由。
+        #   现只保留「VIP替代」, 它解决的是**另一个**问题: 会员/试听曲官方只放片段(实测 60s)。
         vip = self._is_vip(data, streams)
         clip = self._clip_seconds(streams)
         if vip:
+            # 线路 id 直接把「歌名+歌手」编进去 → 播放时无需再回查 seo_track, 少一次请求
+            alt_id = self._pack("m", {"n": str(track.get("name") or name), "r": artists, "t": track_id})
             sources = ["VIP替代"] + sources
-            urls = [alt_entry] + urls
-        else:
-            # 完整曲也补一条 MP3 兼容线路: 少数播放器/内核不放 audio-only M4A 的声音
-            sources, urls = self._with_mp3(sources, urls, alt_entry)
-        self._prefetch_alt([alt_id])          # 后台预热直链, 用户点播放即秒开
+            urls = ["%s$%s" % (name, alt_id)] + urls
+            self._prefetch_alt([alt_id])      # 后台预热直链, 用户点播放即秒开
         lyric = str(((data.get("lyric") or {}).get("content")) or "")
         if vip:
             mark = "（官方仅%d秒·已加替代源）" % int(clip) if clip else "（会员曲·已加替代源）"
@@ -1280,13 +1296,7 @@ class Spider(BaseSpider):
         else:
             sources = ["最高音质"]
             groups = ["#".join("%s$a:%s:auto" % (self._safe(t.get("name")), t["id"]) for t in valid)]
-        # 补一条 MP3 兼容线路(歌名+歌手 编进 id, 播放时才取直链; 详情页只起后台预热不阻塞)
-        alt_ids = [self._pack("m", {"n": str(t.get("name") or ""), "r": self._artists(t),
-                                    "t": str(t["id"])}) for t in valid]
-        alt_group = "#".join("%s$%s" % (self._safe(t.get("name")), aid)
-                             for t, aid in zip(valid, alt_ids))
-        sources, groups = self._with_mp3(sources, groups, alt_group)
-        self._prefetch_alt(alt_ids)
+        # ★不再补第三方 MP3 线路(第十轮已移除, 详见 _track_detail 与文件头注释)
         return {
             "vod_id": self._pack("c", info),
             "vod_name": name,
@@ -1324,8 +1334,8 @@ class Spider(BaseSpider):
 
         - 直连上游, **默认不走本地代理**: 实测「原版有声音 / 加代理后无声」——播放器
           不接受 127.0.0.1 地址(不少 TVBox 系播放器对 loopback 有限制), 一旦包成
-          http://127.0.0.1:10010/audio/... 就整条线路无声(连 MP3 也没声)。代理仅为
-          实验性功能, extend 传 "proxy":1 才启用。
+          http://127.0.0.1:10010/audio/... 就整条线路无声。代理仅为实验性功能,
+          extend 传 "proxy":1 才启用。
         - **默认带 music_player: 1**: 原版一直输出该标记且能正常出声, 它是手机端
           「音乐播放器分流」标记; 去掉它反而会让部分播放器走视频分支。传 "music_player":0 可关。
         - ★**`format` 默认不回填**(`audio_format` 默认 0): `format` 含 "audio" 会命中
@@ -1343,21 +1353,12 @@ class Spider(BaseSpider):
             out["format"] = _CTYPE.get(ext or _ext_of(url, ".m4a"), "audio/mp4")
         return out
 
-    def _with_mp3(self, sources, urls, mp3_group):
-        """在官方线路基础上补一条第三方 MP3 线路, 并**默认排到最前**。
-
-        ★为什么放最前: 实测「原版有声音」时, 原版实际返回的就是第三方(酷我)yh520 的
-        完整 MP3 直链(它的 VIP 判定过宽, 几乎每首都走这条路), 而汽水官方的 audio-only
-        M4A(无后缀 + Content-Type: video/mp4)在用户播放器上不出声。故把这条「实测可用」
-        的线路放在第一位, 播放器默认就选它, 保证出声。
-        需要优先官方档位时 extend 传 "prefer_mp3":0。
-        """
-        if self._flag("prefer_mp3", True):
-            return ["MP3源"] + list(sources), [mp3_group] + list(urls)
-        return list(sources) + ["MP3源"], list(urls) + [mp3_group]
-
     def _third_party_play(self, name, artist, track_id):
-        """「MP3源 / VIP替代」线路: 拿第三方完整音源(酷我直连优先); 失败回落官方最高档。"""
+        """「VIP替代」线路: 拿第三方完整音源(酷我直连优先); 失败回落官方最高档。
+
+        ★仍保留第三方取流的原因: 会员/试听曲官方只放 ~60s 片段, 这条线路要给完整版。
+        与已移除的「MP3 兼容线路」不同 —— 那条是为了「官方不出声」兜底, 现在官方能出声了。
+        """
         name = str(name or "").strip()
         if name:
             url, ext = self._alt_url(name, artist)
@@ -1392,7 +1393,8 @@ class Spider(BaseSpider):
                 track_id, quality = value, "auto"
             data = self._seo(track_id)
             if quality in ("vip", "mp3"):
-                # 旧形态(兼容旧缓存列表): 回查 seo_track 取歌名/歌手, 再走第三方完整音源
+                # "vip" = 当前「VIP替代」线路; "mp3" 仅为**历史缓存列表**的旧 id 兼容
+                # (新生成列表已不再产生 mp3 线路, 见文件头「第十轮」)。
                 track = self._track(data.get("seo_track") or {}) or {}
                 out = self._third_party_play(track.get("name"), self._artists(track), track_id)
                 if out:
@@ -1402,8 +1404,9 @@ class Spider(BaseSpider):
             chosen = next((s for s in streams if s["key"] == quality), streams[0] if streams else None)
             if not chosen:
                 return {"parse": 1, "jx": 0, "url": value, "header": {}}
-            # ★官方档位: 优先挑 CDN 返回 Content-Type: audio/mp4 的候选地址(否则播放器
-            #   会把 audio-only 的流当视频起链 → 能播没声音)。拿不到就回落 main_url。
+            # 官方档位默认直连 chosen["url"](= seo 的 main_url, 与原生行为逐字节一致)。
+            # extend 传 "app_probe":1 时才会去挑 CDN Content-Type=audio/mp4 的候选地址
+            # (★默认关闭: 探测会以约 50% 概率把地址换到另一个 CDN 节点, 反而更不稳)。
             url = self._app_audio_url(data, track_id, chosen["key"]) or chosen["url"]
             return self._play(url)
         except Exception:
