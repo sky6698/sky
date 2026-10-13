@@ -72,6 +72,70 @@ UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chr
 APP_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 MEDIA_UA = "com.phoenix.read/71332"
 
+# ---------------------------------------------------------------- 官网公开直链
+# 红果官网(www.hongguoduanju.com)播放页 /player/<series_id>/<vid> 的 SSR 里,
+# 给搜索引擎的 <video src="/video/public/<vid>/360p.mp4"> 是一条公开直链:
+#   无签名 / 无 DRM / 无需登录, video/mp4 + Accept-Ranges: bytes, 可拖动
+# 官网 player.js 中写死只有 360p 一档; 1080P/720P 走受保护流, 需真机签名+登录态,
+# 纯 Python 签名调 multi_video_model 会被上游拒(恒返 code=110001), 故以此为首选。
+PUBLIC_SITE = "https://hongguoduanju.com"
+PUBLIC_QUALITY = "360p"
+PLAY_LINE = "红果┃短剧"
+
+_HTTP = None
+
+
+def _http():
+    """模块级连接池: 复用 TLS 连接, 连续翻页/取流明显更快"""
+    global _HTTP
+    if _HTTP is None:
+        _HTTP = requests.Session()
+        try:
+            _HTTP.headers.update({"User-Agent": UA})
+            adapter = _HTTP.adapters.get("https://")
+            if adapter is not None:
+                adapter.pool_maxsize = 16
+        except Exception:
+            pass
+    return _HTTP
+
+
+def _public_media_url(video_id: str) -> str:
+    vid = _text(video_id).split("@")[0].strip()
+    return "%s/video/public/%s/%s.mp4" % (PUBLIC_SITE, vid, PUBLIC_QUALITY) if vid.isdigit() else ""
+
+
+def _public_ok(url: str) -> bool:
+    """轻量 HEAD 校验公开直链是否存在(个别 vid 可能没有公开文件)"""
+    if not url:
+        return False
+    try:
+        r = _http().head(url, headers={"User-Agent": UA, "Referer": PUBLIC_SITE + "/"},
+                         timeout=6, allow_redirects=False)
+        return r.status_code in (200, 206)
+    except Exception:
+        return False
+
+
+def _accessible_count(series_id: str, first_vid: str) -> int:
+    """官网播放页 SSR 里的 accessible_episode_cnt = 免费可看集数(其余为会员集)。
+    红果目前普遍只放 3 集免费, 之后的 vid 无公开直链, 提前标注避免点了播不了。"""
+    try:
+        html = _page("%s/player/%s/%s" % (PUBLIC_SITE, series_id, first_vid))
+        m = re.search(r"_ROUTER_DATA\s*=\s*", html)
+        if not m:
+            return 0
+        d = json.JSONDecoder().raw_decode(html[m.end():])[0]
+        for value in (d.get("loaderData") or {}).values():
+            if not isinstance(value, Mapping):
+                continue
+            detail = value.get("seriesDetail")
+            if isinstance(detail, Mapping) and detail.get("accessible_episode_cnt") is not None:
+                return int(detail.get("accessible_episode_cnt") or 0)
+    except Exception:
+        pass
+    return 0
+
 
 
 
@@ -425,7 +489,7 @@ def _range_get(url: str, start: int, end: int) -> tuple[bytes, int]:
         if attempt:
             time.sleep(_RANGE_FETCH_BACKOFF_SECONDS * attempt)
         try:
-            response = requests.get(url, headers=headers, timeout=60)
+            response = _http().get(url, headers=headers, timeout=45)
         except requests.RequestException as error:
             last_error = error
             continue
@@ -2924,11 +2988,11 @@ def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
         request_headers,
     )
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    response = requests.post(
+    response = _http().post(
         signed_url,
         headers=signed_headers,
         data=body,
-        timeout=30,
+        timeout=15,
     )
     response_data = _json_response(response)
     data = response_data.get("data") or {}
@@ -3107,7 +3171,7 @@ def _key_seed_from_model(model: Mapping[str, Any]) -> bytes:
                 return result
     return b""
 def _page(url):
-    r = requests.get(url, headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"}, timeout=30)
+    r = _http().get(url, headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"}, timeout=12)
     r.raise_for_status()
     return r.text
 
@@ -3165,7 +3229,7 @@ def _api_post(path, body, config):
     url = API_HOST + path
     signed_headers, signed_url = _core_sixgod(url, params, devices, body, request_headers)
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    response = requests.post(signed_url, headers=signed_headers, data=data, timeout=30)
+    response = _http().post(signed_url, headers=signed_headers, data=data, timeout=15)
     return _json_response(response)
 
 
@@ -3253,8 +3317,31 @@ class Spider(Spider):
         self.install_id = str(random.randint(10**17, 10**18 - 1))
 
     def init(self, extend=""):
-        # 每次源实例使用随机合法设备标识；不依赖用户私有配置。
+        # 默认随机合法设备标识; 也允许通过 ext 指定 (device_id/install_id/cookie/x_tt_dt),
+        # 若上游要求登录态, 可在站点 ext 里注入真机抓包的凭证后再试回退线路。
+        cfg = {}
+        if isinstance(extend, str) and extend:
+            try:
+                cfg = json.loads(extend)
+            except Exception:
+                cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        if _text(cfg.get("device_id")):
+            self.device_id = _text(cfg.get("device_id"))
+        if _text(cfg.get("install_id")):
+            self.install_id = _text(cfg.get("install_id"))
+        self._extra_config = cfg
         return None
+
+    def _cfg(self):
+        cfg = {"device_id": self.device_id, "install_id": self.install_id}
+        extra = getattr(self, "_extra_config", None)
+        if isinstance(extra, dict):
+            for key in ("cookie", "x_tt_dt", "sec_device_token", "device_sec_device_token"):
+                if _text(extra.get(key)):
+                    cfg[key] = _text(extra.get(key))
+        return cfg
 
     def homeContent(self, filter):
         class_list = [
@@ -3335,7 +3422,7 @@ class Spider(Spider):
         online = [extend["time"]] if str(extend.get("time") or "") not in ("", "0") else None
         # 全部短剧分类统一走 App 后端接口 (官网 SSR /category 对部分分类返回空列表, 已废弃)
         genre = {"comic": "comic_series", "ai": "ai_series"}.get(tid, "short_play")
-        config = {"device_id": self.device_id, "install_id": self.install_id}
+        config = self._cfg()
         sort = ["newest"] if tid == "latest" else ["hot_score"]
         if tid == "male":
             gender = ["1"]
@@ -3358,7 +3445,7 @@ class Spider(Spider):
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
         sid = sid.replace("hg-series-v1:", "")
-        config = {"device_id": self.device_id, "install_id": self.install_id}
+        config = self._cfg()
         # 优先走 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
         meta, eps = _app_episode_detail(sid, config)
         if eps:
@@ -3367,18 +3454,23 @@ class Spider(Spider):
             for e in eps:
                 title, _, ep = str(e).partition("$")
                 pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
-            # 五档清晰度各自一个源: 选集 id 编码 "vid@档位"，播放时就近降级
-            play_from = "$$$".join(name for name, _ in QUALITY_TIERS)
-            play_url = "$$$".join(
-                "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier)
-                         for title, vid in pairs)
-                for _, tier in QUALITY_TIERS
-            )
+            # 单线路: 选集 id 仍保留 "@档位" 以兼容旧记录, 播放时统一走官网公开直链
+            play_from = PLAY_LINE
+            accessible = _accessible_count(sid, pairs[0][1]) if pairs else 0
+            marked = []
+            for i, (title, vid) in enumerate(pairs, 1):
+                # 超出免费集数的 vid 没有公开直链, 提前标注免得点了播不了
+                mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
+                marked.append("%s%s$%s%s" % (title, mark, EPISODE_PREFIX, vid))
+            play_url = "#".join(marked)
+            remarks = meta.get("remarks") or ""
+            if accessible > 0:
+                remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
             return {"list": [{
                 "vod_id": sid, "vod_name": meta.get("title") or sid,
                 "vod_pic": meta.get("cover") or "", "vod_year": "", "vod_area": "",
                 "vod_director": "", "vod_actor": meta.get("actors") or "",
-                "vod_content": meta.get("intro") or "", "vod_remarks": meta.get("remarks") or "",
+                "vod_content": meta.get("intro") or "", "vod_remarks": remarks,
                 "vod_play_from": play_from, "vod_play_url": play_url
             }]}
         # 兜底: 官网详情
@@ -3387,17 +3479,28 @@ class Spider(Spider):
         vids = s.get("vid_list") or []
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
         pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
-        play_from = "$$$".join(name for name, _ in QUALITY_TIERS)
-        play_url = "$$$".join(
-            "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier) for title, vid in pairs)
-            for _, tier in QUALITY_TIERS
-        )
-        return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": str(s.get("episode_right_text") or ""), "vod_play_from": play_from, "vod_play_url": play_url}]}
+        play_from = PLAY_LINE
+        accessible = _int(s.get("accessible_episode_cnt"))
+        marked = []
+        for i, (title, vid) in enumerate(pairs, 1):
+            mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
+            marked.append("%s%s$%s%s" % (title, mark, EPISODE_PREFIX, vid))
+        play_url = "#".join(marked)
+        remarks = str(s.get("episode_right_text") or "")
+        if accessible > 0:
+            remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
+        return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
 
     def playerContent(self, flag, id, vipFlags=None):
         raw = str(id).replace(EPISODE_PREFIX, "")
-        # "vid@档位" 形式：vid 用于校验与取流，档位由本地流服务按 vid@档位 解析
-        vid = raw.split("@")[0]
+        # "vid@档位" 或纯 vid: 档位仅用于兼容旧记录, 取流统一走官网公开直链
+        vid = raw.split("@")[0].strip()
+        public_url = _public_media_url(vid)
+        header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
+        # 首选: 官网公开直链 (秒开/可拖动/无签名)
+        if public_url and _public_ok(public_url):
+            return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
+        # 回退: App 取流 + 本地 CENC 解密流服务 (上游需真机签名+登录态, 当前多返 110001)
         try:
             port = _start_stream_server()
         except Exception:
@@ -3410,9 +3513,11 @@ class Spider(Spider):
                     "iid": self.install_id or "",
                 }
             )
-            url = "http://127.0.0.1:%d/hg.mp4?%s" % (port, query)
-            return {"parse": 0, "jx": 0, "playUrl": "", "url": url,
+            return {"parse": 0, "jx": 0, "playUrl": "", "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
                     "header": {"User-Agent": UA}}
+        if public_url:
+            # 公开直链 HEAD 未确认也直接给, 让播放器自行决定
+            return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
         proxy = self.getProxyUrl() if hasattr(self, "getProxyUrl") else ""
         if proxy:
             sep = "&" if "?" in proxy else "?"
@@ -3432,7 +3537,7 @@ class Spider(Spider):
             if tier.isdigit():
                 wanted = tier
         try:
-            model = _video_model(vid, {"device_id": self.device_id, "install_id": self.install_id})
+            model = _video_model(vid, self._cfg())
             _, item = _select_quality(_video_list_from_model(model), wanted)
             url = _media_url(item)
             spade = _spade_value(item)
@@ -3444,7 +3549,7 @@ class Spider(Spider):
                     url = _decrypt_spade_url(url, key_seed)
             except Exception:
                 pass
-            r = requests.get(url, headers={"User-Agent": MEDIA_UA, "Referer": "https://novel.snssdk.com/"}, timeout=120)
+            r = _http().get(url, headers={"User-Agent": MEDIA_UA, "Referer": "https://novel.snssdk.com/"}, timeout=90)
             r.raise_for_status()
             plain = decrypt_mp4_cenc(r.content, derive_content_key(spade))
             return [200, "video/mp4", plain]
