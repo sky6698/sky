@@ -326,6 +326,42 @@
 #     · `error_code=2046` = 官方要求二次安全验证(需要签名页桥接, 纯 HTTP 做不了)→ 明确提示
 #       改用「网页登录」或 `#登录 <Cookie>`, 不再假装还在等扫码。
 #
+# ============================================ 登录后的「官方 App 模式内容」(第十七轮)
+# 需求原文: 「登录成功后 各个模式里 只有20数据 内容和汽水音乐app官方获取的内容不一样」
+#           + 补充「和没到登录前的前20 数据一样」。
+#
+# ① 根因(旧实现三处叠加, 全在 `_feed_official()` 里):
+#    (a) ★**漏传 `sub_queue_type`**。官方客户端切到某个听歌模式时, 会把 `POST /luna/pc/feed/mode`
+#        下发的 `feed_mode_block[].feed_mode[].entity.feed_scene_mode.{scene_mode_id,
+#        sub_queue_type}` **两样一起**回填进内容流请求(上游 libresoda
+#        `renderer/compositions/sceneMode.ts`)。`scene_mode_emo` 这类**字符串句柄**才是
+#        服务端认的场景标识, 旧的只传数字 id ⇒ 服务端当没传, 按默认池返回。
+#    (b) **`block_type` 写死成 `discovery_playlist`**。官方是按**场景名**分多次请求的:
+#        `scene_mode` / `discovery_playlist` / `discovery_radio` / `discovery_chart` /
+#        `discover_track_top_list`(上游 `DiscoverSceneNameEnum`; libresoda `docs/CLIENT-API.md`
+#        第 51 行给的官方调用式就是 `discover_mix("scene_mode", 0, "", 10)`)。
+#        ⚠️ `feed_mode[].type` 对 45 个模式**统统是 `scene_mode`** —— 那是「条目类型」,
+#        不能拿它当"每个模式各自的场景名"。
+#    (c) ★**只要非空就 `return`**。旧版展开 4 个歌单就收工, 且 `_feed_mode_tracks` 里写的是
+#        `if official: return official` ⇒ 官方只回 20 条, 整张列表就**只有 20 首**; 而
+#        那 20 条又是「匿名策略第一条(主题搜索第一页)」同源的内容 ⇒ 正是用户说的
+#        「只有20数据, 和没到登录前的前20 一样」。
+#        (另有一处: `_MODE_TRACK_CACHE` 的 key **不含登录标记**, 登录后会直接命中登录前的缓存。)
+#
+# ② 修法:
+#    · 新增 `SCENE_MODES`(45 个模式 → `(scene_mode_id, sub_queue_type)`, 接口实测),
+#      请求时**两样都回填**, 并补上官方 body 字段 `sub_channel_id` / `session_id` / `cursor`;
+#    · 逐场景名请求 `discover/mix`, 解析 `resources[].entity` 的**全部**类型
+#      (playlist / radio / chart / 内联 track), 保持官方 block 顺序;
+#    · **边收边展开**(`expand()`): 第一个场景名就把曲目堆起来, 后续场景名自动跳过 → 不白跑;
+#    · 歌单/电台**不再限量**展开; 仍不足再吃官方个性化 `song-tab` 队列;
+#    · `_feed_mode_tracks` 改为「**官方流打底 + 不足则匿名策略补齐**」, 不再截断;
+#    · 缓存 key 追加登录标记 `L`/`A`, 登录前后互不污染。
+#  ⚠️ 如实记录: `discover/mix` 对**匿名**请求仍是随机池(同一场景连采样 4 次歌单集合零交集、
+#     `cursor` 常为空 = 假翻页), 所以匿名路径**行为一个字没变**(仍走主题搜索+中文榜单);
+#     官方场景专属内容仍依赖登录态(与第十六轮结论一致)。
+#  开关: `"official_mode":0` 关掉官方流(登录后也走匿名策略, 用于对照 / 官方流不合口味时)。
+#
 # 开关(写在源配置的 extend 里, 均为可选):
 #   "login":0         隐藏「登录」分类(默认 1 = 显示)
 #   "login_server":0  不起本地二维码/登录页服务(默认 1)
@@ -347,6 +383,9 @@
 #                     (默认)下不生效。保留仅为对照排查。
 #   "mode_count":100  听歌模式/电台一次返回的曲目条数(★默认 50, 范围 20~200)。
 #                     TVBox 详情页不能翻页, 只能靠调大这个值来「加载更多」。
+#   "official_mode":0 登录后**不用**官方 App 模式流(默认 1=用)。关掉后登录态也走匿名
+#                     策略(主题搜索+中文榜单), 仅用于对照或官方流不合口味时。
+#   "official_debug":1 打印官方模式流每步结果(默认 0), 排查「内容与官方不符」时开。
 #
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
@@ -475,6 +514,47 @@ MODE_FOREIGN_KEYS = {re.sub(r"\s+", "", x).lower() for x in MODE_FOREIGN}
 # 主题搜索里常混进「串烧/合集/DJ版」这类**多曲连播的长音频** —— 它们不是"一首歌", 播起来
 # 是一个小时的长条。这里**只降序不删除**(有些模式本来就该是合集), 让真歌排在前面。
 MODE_JUNK = ("串烧", "连播", "合集", "合辑", "精选集", "伴奏", "铃声", "DJ版", "串烧版")
+
+# ---------------------------------------------- 听歌模式 → 官方场景参数(第十七轮, 实测 2026-10-14)
+# 官方客户端切到某个「听歌模式」时, 会把 `POST /luna/pc/feed/mode` 下发的
+# `feed_mode_block[].feed_mode[].entity.feed_scene_mode.{scene_mode_id, sub_queue_type}`
+# **原样回填**进内容流请求(libresoda `renderer/compositions/sceneMode.ts`)。
+# ★上一版只回填了 `scene_mode_id`, 漏了 `sub_queue_type` —— 而后者才是服务端认的
+#   场景句柄(字符串语义, 如 `scene_mode_emo`)。这张表把两者都固化下来。
+# 键 = `_mode_key(模式名)` 的归一结果, 与 MODE_KEYWORDS 用同一套键。
+SCENE_MODES = {
+    "深夜emo": (4, "scene_mode_emo"), "助眠模式": (8, "scene_mode_bedtime"),
+    "dj模式": (7, "scene_mode_dj"), "动感健身": (2, "scene_mode_sport"),
+    "抖音漫游": (9, "scene_mode_douyin_roam"), "洗澡": (41, "scene_mode_bath"),
+    "chill放松": (3, "scene_mode_chill"), "快乐时光": (5, "scene_mode_happy"),
+    "电音": (11, "scene_mode_electronic"), "好运": (45, "scene_mode_lucky"),
+    "图书馆": (48, "scene_mode_library"), "粤语": (10, "scene_mode_cantonese"),
+    "通勤必听": (1, "scene_mode_commute"), "失恋必听": (13, "scene_mode_breakup"),
+    "躺平": (44, "scene_mode_lying_flat"), "欧美": (15, "scene_mode_english"),
+    "打扫": (47, "scene_mode_clean_up"), "国风": (12, "scene_mode_chinese_style"),
+    "打游戏": (37, "scene_mode_game"), "驾车": (33, "scene_mode_car_mode"),
+    "专注模式": (6, "scene_mode_focus"), "说唱": (24, "scene_mode_rap"),
+    "沉浸0.8x": (14, "scene_mode_slow_motion"), "夜晚": (40, "scene_mode_night_time"),
+    "治愈": (21, "scene_mode_heal"), "轻音乐": (25, "scene_mode_non_vocal"),
+    "小酒馆": (18, "scene_mode_drunk"), "ktv必点": (31, "scene_mode_ktv"),
+    "起床": (38, "scene_mode_get_up"), "浪漫情歌": (19, "scene_mode_love_song"),
+    "摇滚": (28, "scene_mode_rock"), "r&b": (23, "scene_mode_rnb"),
+    "佛系时间": (20, "scene_mode_calm"), "怀旧老歌": (16, "scene_mode_nostalgic"),
+    "民谣": (29, "scene_mode_folk"), "甜美女声": (17, "scene_mode_sweet_girl"),
+    "k-pop": (22, "scene_mode_kpop"), "日语": (30, "scene_mode_jpop"),
+    "旅行": (36, "scene_mode_travel"), "摸鱼": (34, "scene_mode_fish"),
+    "儿歌": (26, "scene_mode_child"), "雨天": (35, "scene_mode_rain"),
+    "海边": (39, "scene_mode_beach"), "乡村": (27, "scene_mode_country"),
+    "古典": (32, "scene_mode_classic"),
+}
+# 官方客户端请求场景内容流时用的**场景名**(上游 `DiscoverSceneNameEnum`)。
+# libresoda `docs/CLIENT-API.md` 记的官方调用式: `discover_mix("scene_mode", 0, "", 10)`。
+# ⚠️ 注意: `feed_mode[].type` 对 45 个模式**统统是 `scene_mode`**, 所以这串必须写死,
+#    不能拿 `feed_mode[].type` 直接当 `block_type` 用(那只是"条目类型", 不是场景名)。
+OFFICIAL_MIX_BLOCKS = ("scene_mode", "discovery_playlist", "discovery_radio",
+                       "discovery_chart", "discover_track_top_list")
+OFFICIAL_MIX_PAGES = 2          # discover/mix 每场景名最多翻几页(实测 cursor 常为空 → 多为 1 页)
+OFFICIAL_MIX_ROUNDS = 4         # 官方个性化推荐队列(song-tab)最多补几轮
 
 
 def _mode_key(name):
@@ -3031,24 +3111,37 @@ class Spider(BaseSpider):
           零交集, 跨场景交集率与「完全不带场景」的基线相同 —— 官方场景专属流要登录态)。
           于是「模式里全是英文歌」。已弃用。
         """
-        key = "s:%s|m:%s|n:%s|%d" % (scene_id, mode, name, want)
+        # ★缓存 key 必须带登录标记: 登录前后是**两条完全不同的取数路径**, 不带标记会让
+        #   登录后直接命中「登录前」的缓存(用户反馈「和没登录前的前 20 条一样」的另一半原因)。
+        logged = bool(_login_cookie())
+        key = "s:%s|m:%s|n:%s|%d|%s" % (scene_id, mode, name, want, "L" if logged else "A")
         now = time.time()
         hit = _MODE_TRACK_CACHE.get(key)
         if hit and now - hit[1] < _MODE_TRACK_TTL:
             return hit[0]
 
-        # ★登录后 → 优先走**官方 App 模式流**(`scene_mode_id` / `mode` 这时服务端才认);
-        #   拿不到内容则原样回落到下面的匿名策略 —— 所以「没登录=现在模式」不受影响。
-        if _login_cookie():
-            official = self._feed_official(scene_id, mode, want)
-            if official:
-                _MODE_TRACK_CACHE[key] = (official, now)
-                return official
-
         mkey = _mode_key(name) or _mode_key(mode)
         kw = MODE_KEYWORDS.get(mkey, "")
         foreign = mkey in MODE_FOREIGN_KEYS
         tracks, seen = [], set()
+
+        # ★登录后 → 先吃**官方 App 模式内容流**(`scene_mode_id` + `sub_queue_type` 这时
+        #   服务端才认); 但它**可能不足 want**(官方一个场景流就那么点) —— 这时继续用下面的
+        #   匿名策略补齐, 而不是像旧版那样「有结果就直接 return」(那正是「只有 20 条」的根因)。
+        if logged and self._flag("official_mode", True):
+            try:
+                official = self._feed_official(scene_id, mode, name, want)
+            except Exception:
+                official = []
+            for t in official:
+                tid = str((t or {}).get("id") or "")
+                if tid and tid not in seen:
+                    seen.add(tid)
+                    tracks.append(t)
+            if len(tracks) >= want:
+                tracks = tracks[:want]
+                _MODE_TRACK_CACHE[key] = (tracks, now)
+                return tracks
 
         def add_many(objs, demote_junk=False):
             part = [self._track(x) for x in (objs or [])]
@@ -3110,6 +3203,21 @@ class Spider(BaseSpider):
                 break
             add_many(items)
 
+        # ④ 最后一道: 仍不足 → 把**主题搜索**继续往后翻(内容依旧贴合该模式)。
+        #   ★为什么需要: 真实场景里①只搜 1 页(20 首), 一旦榜单/推荐流某个接口抽风,
+        #     就会停在 40 首上下 —— 用户看到的还是「数据太少」。翻页是成本最低的补齐手段。
+        if kw and len(tracks) < want:
+            for page in range(3, 9):
+                if len(tracks) >= want:
+                    break
+                try:
+                    part = self._search_tracks(kw, page)
+                except Exception:
+                    part = []
+                if not part:
+                    break
+                add_many(part, demote_junk=True)
+
         tracks = tracks[:want]
         if tracks:
             _MODE_TRACK_CACHE[key] = (tracks, now)
@@ -3118,32 +3226,46 @@ class Spider(BaseSpider):
                     _MODE_TRACK_CACHE.pop(k, None)
         return tracks
 
-    def _feed_official(self, scene_id="", mode="", want=50):
-        """★登录后: 走**官方 App 的模式流**(第13轮)。拿不到就返回 [] → 调用方回落匿名策略。
+    def _feed_official(self, scene_id="", mode="", name="", want=50):
+        """★登录后: 走**官方 App 的模式内容流**。
 
-        为什么要分登录/匿名两条路: `scene_mode_id` / `mode` 这两个参数对**匿名请求零过滤**
-        (实测同一场景连采样 4 次歌单集合零交集, 跨场景交集率与不带场景的基线相同 —— 见文件头
-        第十一/十二轮), 服务端只对登录态下发真正的「场景/偏好」个性化流。
+        为什么要分登录/匿名两条路: `scene_mode_id` / `sub_queue_type` / `mode` 对**匿名请求
+        零过滤**(实测同一场景连采样 4 次歌单集合零交集 —— 见文件头第十一/十二轮), 服务端
+        只对登录态下发真正的「场景/偏好」个性化流。
 
-        取数顺序:
-          ① `POST /luna/pc/discover/mix`(block_type=discovery_playlist, 带 `scene_mode_id`
-             或 `mode`) → `inner_block[].resources[].entity.playlist` = 该模式的官方歌单
-             → `playlist/detail` 展开曲目(实测单歌单可达 121 首);
-          ② 仍不足 `want` → 官方个性化推荐队列 `POST /luna/pc/feed/song-tab`(登录态下它是
-             按**本账号听歌偏好**生成的)补足。
-        失败(空/异常)一律返回 [], 由 `_feed_mode_tracks` 回落到「主题搜索 + 中文榜单」。
+        ★第十七轮修正(用户反馈「登录成功后各个模式只有 20 条, 内容与官方 App 不一样」):
+          ① 旧实现只回填 `scene_mode_id`, **漏了 `sub_queue_type`** —— 而 `scene_mode_emo`
+             这类字符串句柄才是服务端认的场景标识(见 `SCENE_MODES` 上方注释);
+          ② 旧实现把 `block_type` 写死成 `discovery_playlist`; 官方客户端是按**场景名**
+             分多次请求的(`scene_mode` / `discovery_playlist` / `discovery_radio` /
+             `discovery_chart` / `discover_track_top_list`), 现在逐个都试;
+          ③ ★旧实现每轮只展开 4 个歌单、且**只要非空就 return** —— 于是「官方只回 20 条」
+             直接变成整张列表只有 20 首(且和匿名策略的前 20 条同源, 正是用户看到的
+             「和没登录前的前 20 条一样」)。现在展开**全部**歌单/电台, 不足的部分交给
+             `_feed_mode_tracks` 继续补足, 不再截断。
+
+        取数顺序(全部实测):
+          ① `POST /luna/pc/discover/mix`(逐个场景名 + 场景参数 + cursor 翻页)
+             → `inner_block[].resources[].entity` = {playlist | radio | chart | track};
+          ② 歌单 → `playlist/detail` 展开(单歌单可达 121 首); 电台 → `feed/radio/tracks`;
+             内联曲目 / 榜单直接收 —— 全部保持官方 block 顺序;
+          ③ 仍不足 `want` → 官方个性化推荐队列 `POST /luna/pc/feed/song-tab` 补足。
+
+        返回值长度**可能小于 want**(官方流就这么点), 调用方会继续用匿名策略补齐。
         """
         tracks, seen = [], set()
-        body = {"block_type": "discovery_playlist", "sub_channel_id": 0,
-                "exposure_radio_list": [], "cursor": "", "count": 20}
-        sid = str(scene_id or "").strip()
-        if sid:
-            try:
-                body["scene_mode_id"] = int(sid)
-            except Exception:
-                body["scene_mode_id"] = sid
-        elif mode:
-            body["mode"] = str(mode or "default")
+        playlist_ids, radio_ids = [], []
+        sid, queue = "", ""
+        raw = str(scene_id or "").strip()
+        if raw.isdigit():
+            sid = raw
+        elif raw.startswith("scene_mode_"):
+            queue = raw
+        mkey = _mode_key(name) or _mode_key(mode)
+        hit = SCENE_MODES.get(mkey)
+        if hit:
+            sid = sid or str(hit[0])
+            queue = queue or str(hit[1])
 
         def add(objs):
             for item in (self._track(x) for x in (objs or [])):
@@ -3154,40 +3276,91 @@ class Spider(BaseSpider):
                     seen.add(tid)
                     tracks.append(item)
 
-        for _round in range(3):
-            if len(tracks) >= want:
-                break
-            try:
-                data = self._req("/luna/pc/discover/mix", body)
-            except Exception:
-                data = {}
-            blocks = data.get("inner_block") or []
-            if not blocks:
-                break
-            ids = []
-            for block in blocks:
-                for res in (block.get("resources") or []):
-                    entity = res.get("entity") if isinstance(res.get("entity"), dict) else {}
-                    playlist = entity.get("playlist") if isinstance(entity.get("playlist"), dict) else {}
-                    pid = str(playlist.get("id") or res.get("resource_id") or "")
-                    if pid and pid not in ids:
-                        ids.append(pid)
-            for pid in ids[:4]:                         # 每轮最多展开 4 个歌单, 控时延
-                if len(tracks) >= want:
-                    break
+        def want_more():
+            return len(tracks) < want
+
+        def expand():
+            """把已收集但尚未展开的歌单/电台**就地**展开(消费 pending 列表)。
+
+            边收边展开的好处: `tracks` 在**第一个**场景名就会长起来, 后面 4 个场景名随即被
+            `want_more()` 跳过 —— 否则 5 个场景名要全请求一遍(白多 ~2s)。
+            """
+            while playlist_ids and want_more():
+                pid = playlist_ids.pop(0)
                 try:
                     add(self._playlist_tracks(pid))
                 except Exception:
                     pass
-            if len(tracks) >= want:
-                break
-            cursor = str(data.get("cursor") or data.get("next_cursor") or "")
-            if not cursor or cursor == str(body.get("cursor") or ""):
-                break
-            body["cursor"] = cursor
+            while radio_ids and want_more():
+                rid = radio_ids.pop(0)
+                try:
+                    add(self._radio_tracks(rid, max(6, want - len(tracks))))
+                except Exception:
+                    pass
 
+        # ① 官方场景内容流: 逐个场景名请求, 收集资源(歌单 / 电台 / 内联曲目 / 榜单)
+        for block_type in OFFICIAL_MIX_BLOCKS:
+            if not want_more():
+                break
+            body = {"block_type": block_type, "sub_channel_id": 0,
+                    "exposure_radio_list": [], "count": 20, "cursor": "", "session_id": ""}
+            if sid:
+                try:
+                    body["scene_mode_id"] = int(sid)
+                except Exception:
+                    body["scene_mode_id"] = sid
+            if queue:
+                body["sub_queue_type"] = queue
+            if mode:
+                body["mode"] = str(mode)
+            for _page in range(OFFICIAL_MIX_PAGES):
+                if not want_more():
+                    break
+                try:
+                    data = self._req("/luna/pc/discover/mix", body)
+                except Exception:
+                    data = {}
+                blocks = data.get("inner_block") or []
+                if not blocks:
+                    break
+                for block in blocks:
+                    for res in (block.get("resources") or []):
+                        entity = res.get("entity") if isinstance(res.get("entity"), dict) else {}
+                        wrapper = entity.get("track_wrapper") if isinstance(entity.get("track_wrapper"), dict) else {}
+                        inline = entity.get("track") or wrapper.get("track")
+                        if isinstance(inline, dict):
+                            add([inline])
+                        playlist = entity.get("playlist")
+                        if isinstance(playlist, dict):
+                            pid = str(playlist.get("id") or res.get("resource_id") or "")
+                            if pid and pid not in playlist_ids:
+                                playlist_ids.append(pid)
+                        radio = entity.get("radio")
+                        if isinstance(radio, dict):
+                            radio_id = str(radio.get("id") or "")
+                            if radio_id and radio_id not in radio_ids:
+                                radio_ids.append(radio_id)
+                        chart = entity.get("chart")
+                        if isinstance(chart, dict):
+                            cid = str(chart.get("id") or "")
+                            if cid:
+                                try:
+                                    add(self._chart_tracks(cid))
+                                except Exception:
+                                    pass
+                expand()                        # 边收边展开, 让 want_more() 能提前收工
+                cursor = str(data.get("cursor") or data.get("next_cursor") or "")
+                if not cursor or cursor == str(body.get("cursor") or ""):
+                    break
+                body["cursor"] = cursor
+
+        # ②③ 把剩下的官方歌单 / 电台全部展开(不再限量 —— 旧版每轮只展开 4 个,
+        #     正是「只有 20 条」的一半原因)
+        expand()
+
+        # ④ 官方个性化推荐队列(登录态下按**本账号**听歌偏好生成)兜底
         rounds = 0
-        while len(tracks) < want and rounds < 4:
+        while want_more() and rounds < OFFICIAL_MIX_ROUNDS:
             rounds += 1
             try:
                 data = self._req("/luna/pc/feed/song-tab", {
@@ -3201,6 +3374,9 @@ class Spider(BaseSpider):
                 break
             add(items)
 
+        if self._flag("official_debug", False):
+            print("[汽水] 官方模式流 scene=%s queue=%s name=%r -> %d/%d 首"
+                  % (sid or mode or "-", queue or "-", name, len(tracks), want))
         return tracks[:want]
 
     def _radio_tracks(self, radio_id, want=50):
