@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
-# 戏曲多多  TVBox / 影视仓 py 源
-# 逆向自 无意.jar 的 com.github.catvod.spider.AppLY (siteKey = 戏曲多多)
-#
+# 戏曲多多  TVBox / sky py 源
 # 接口(2026-10-13 实测全部可用):
 #   POST https://fly.daoran.tv/API_ROP/<path>
 #     Header: Content-Type: application/json;charset=utf-8
@@ -46,12 +44,95 @@ MD5_KEY = "SkvyrWqK9QHTdCT12Rhxunjx+WwMTe9y4KwgeASFDhbYabRSPskR0Q=="
 USER_ID = "92315ec6e58a45ba7f47fd143b3d7956"
 EMPTY_SECT = "__all__"
 
+# 分类(剧种)直接写死在源码里, 不再每次启动都请求 page/setinf/get。
+# 数据来源: 2026-10-13 实测 page/setinf/get 返回的 sects, 共 77 项, 顺序保持接口原序。
+# 若站点后续新增/下线剧种, 可临时把 _sects() 里的 REMOTE_FALLBACK 打开走接口。
+SECTS = [
+    ("yuju", "豫剧"),
+    ("quju", "曲剧"),
+    ("yued", "越调"),        
+    ("hnzz", "坠子"),
+    ("spd", "四平调"),
+    ("wb", "宛梆"),
+    ("tkdq", "太康道情"),
+    ("else", "曲艺晚会"),   
+    ("hnqs", "河南琴书"),
+    ("hndgs", "河南大鼓书"),
+    ("ejx", "二夹弦"),
+    ("hmx", "黄梅戏"),
+    ("jingju", "京剧"),
+    ("jydg", "京韵大鼓"),
+    ("pingju", "评剧"),
+    ("dpd", "大平调"),
+    ("xiang", "相声"),
+    ("pingshu", "评书"),   
+    ("pyx", "皮影戏"),   
+    ("hbbz", "河北梆子"),
+    ("gb", "山东梆子"),
+    ("SDBZ", "上党梆子"),
+    ("blbz", "北路梆子"),
+    ("zaobang", "枣梆"),
+    ("hb", "怀梆"), 
+    ("qinq", "秦腔"),
+    ("ERT", "二人台"),    
+    ("chaoju", "潮剧"),
+    ("gddx", "粤剧"),
+    ("huju", "沪剧"),   
+    ("kunqu", "昆曲"),
+    ("yueju", "越剧"),
+    ("caichaxi", "采茶戏"),
+    ("shaojv", "绍剧"),
+    ("huaiju", "淮剧"),
+    ("xhdg", "西河大鼓"),
+    ("xq", "戏曲"),
+    ("gdhj", "广东汉剧"),
+    ("wuju", "婺剧"),
+    ("sixian", "丝弦"),
+    ("lq", "乐腔"),
+    ("MZYY", "民族音乐"),
+    ("huagx", "花鼓戏"),
+    ("chuanju", "川剧"),
+    ("chuju", "楚剧"),
+    ("pujv", "蒲剧"),  
+    ("yangju", "扬剧"),
+    ("meihu", "眉户"),
+    ("zzx", "正字戏"),    
+    ("WK", "老年大学"),
+    ("dianju", "滇剧"),
+    ("UGC", "UGC视频"),
+    ("jddg", "京东大鼓"),
+    ("gaojiaxi", "高甲戏"),
+    ("danxian", "单弦"),
+    ("pxx", "莆仙戏"),
+    ("liuqx", "柳琴戏"),        
+    ("qiongju", "琼剧"),
+    ("caidiao", "彩调"),    
+    ("hj", "汉剧"),
+    ("xiju", "锡剧"),
+    ("lvjv", "吕剧"),
+    ("mhdg", "梅花大鼓"),    
+    ("luju", "庐剧"),
+    ("huaju", "话剧"),    
+    ("gj", "赣剧"),
+    ("mtxy", "麦田乡韾"),
+    ("xj", "湘剧"),   
+    ("hcx", "花朝戏"),
+    ("tjsd", "天津时调"),
+    ("xqx", "西秦戏"),
+    ("minju", "闽剧"),
+    ("jinju", "晋剧"),    
+    ("bzx", "白字戏"),
+    ("sgx", "四股弦"),
+    ("jiju", "吉剧"),  
+    ("bdld", "保定老调"),
+    (EMPTY_SECT, "全部"),
+]
+
 
 class Spider(BaseSpider):
     def __init__(self):
         self.name = "戏曲多多"
         self._sess = None
-        self._classes = None
 
     def init(self, extend=""):
         try:
@@ -61,7 +142,6 @@ class Spider(BaseSpider):
         if isinstance(cfg, dict) and cfg.get("host"):
             global HOST
             HOST = str(cfg["host"]).rstrip("/") + "/"
-        self._classes = None
 
     def getName(self):
         return self.name
@@ -98,14 +178,18 @@ class Spider(BaseSpider):
         return j.get("pb") if isinstance(j.get("pb"), dict) else {}
 
     # ------------------------------------------------------------------ 分类
+    # 分类已写死在源码 SECTS 常量里(见文件顶部), 不再请求接口。
+    # 如需从站点拉取(顺序/增减有变时), 把 _REMOTE_SECTS 改成 True 即可。
+    _REMOTE_SECTS = False
+
     def _sects(self):
-        if self._classes:
-            return self._classes
+        if not self._REMOTE_SECTS:
+            return [{"type_id": c, "type_name": n} for c, n in SECTS]
+        classes = [{"type_id": EMPTY_SECT, "type_name": "全部"}]
         j = self._post("page/setinf/get", {
             "leastNum": "0", "memberId": "yszyz",
             "project": "lyhxcx", "userId": "yszyz",
         })
-        classes = [{"type_id": EMPTY_SECT, "type_name": "全部"}]
         for it in (j.get("sects") or []):
             if not isinstance(it, dict):
                 continue
@@ -113,9 +197,8 @@ class Spider(BaseSpider):
             name = str(it.get("name") or "").strip()
             if code and name:
                 classes.append({"type_id": code, "type_name": name})
-        if len(classes) > 1:
-            self._classes = classes
-        return classes
+        return classes if len(classes) > 1 else \
+            [{"type_id": c, "type_name": n} for c, n in SECTS]
 
     def homeContent(self, filter):
         items, _, _, _ = self._album("1", EMPTY_SECT)
