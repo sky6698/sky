@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 汽水音乐  TVBox / 影视仓 py 源
+# 汽水音乐  TVBox / sky py 源
 # 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
 #
 # 端点(2026-10-13 全部实测可用, 无需登录):
@@ -28,11 +28,28 @@
 #   - 播放: aweme.snssdk.com/aweme/v1/play/?video_id=<vid>&ratio=1080p&line=0
 #     (HEAD 200 video/mp4; 注意用 vid(字符串) 不是 video_id(数字))。
 #
+# 播放地址格式 / Exo 无声问题(2026-10-13 实测):
+#   - 官方主源 = MP4/M4A 容器(ftyp="M4A ") + AAC-LC 44.1kHz 立体声, 三档 65k/129k/257k;
+#     VIP 替代源 = MP3 320kbps。
+#   - ★服务端把音频流标成 Content-Type: video/mp4, 且 URL 无扩展名(形如 /video/tos/cn/...)。
+#     Exo/TVBox 据此按「视频源」建链, 而该流只有音频轨 → 等不到首帧 → 音频渲染不启动
+#     → 现象「能播、进度条在走、但没声音」。
+#   - 流本身完全正常: moov 在文件头(faststart) / Range 支持 206 / ffmpeg volumedetect
+#     mean -16.6dB(有声音, 非静音非加密)。
+#   - 修复: 源内起本地 HTTP 代理(见 _proxy_url), 用 /audio/<token>.m4a(或 .mp3) 暴露,
+#     强制正确 Content-Type(audio/mp4 / audio/mpeg) + 正确后缀, 让播放器走音频渲染链路;
+#     Range 头原样转发, 拖动正常。可用 extend 里 "proxy":0 关掉, 回落直连上游。
+#
 # 格式约定: vod_play_from 用 $$$ 分隔线路; vod_play_url 同序;
 #           集内 # 分隔; 每集 title$id 用 $ 分隔。
 import base64
+import hashlib
 import json
+import threading
+import urllib.error
 import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     import requests
@@ -74,9 +91,173 @@ MODE_ORDER = [
 ]
 
 
+# ====================================================================== 本地音频代理
+# 目的: 把上游音频地址包装成本机地址, 修正 Content-Type 与文件后缀, 解决 Exo「能播没声音」。
+#   上游: Content-Type=video/mp4 + URL 无后缀  →  本地: audio/mp4 + /audio/<token>.m4a
+# 实现: 127.0.0.1 上起一个透传 HTTP 服务, 原样转发 Range, 返回时改写 Content-Type。
+# 端口: 10010 起顺序探测(避开红果短剧占用的 9990-9999)。
+_STREAM_LOCK = threading.Lock()
+_STREAM_STATE = {"port": 0, "server": None, "urls": {}}
+_STREAM_PORT_RANGE = (10010, 10110)
+_STREAM_TIMEOUT = 30
+_STREAM_CHUNK = 65536
+# 后缀 → Content-Type(音频)。未知后缀默认 audio/mp4(官方 M4A 容器)。
+_CTYPE = {
+    ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg",
+    ".aac": "audio/aac", ".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
+}
+_URL_EXTS = (".m4a", ".mp3", ".flac", ".aac", ".wav", ".ogg", ".mp4")
+
+
+def _ext_of(url, fallback=".m4a"):
+    """优先按 URL 后缀定后缀; 无后缀则用 fallback(.m4a=官方 M4A 容器)。"""
+    path = str(url or "").split("?")[0].lower()
+    for ext in _URL_EXTS:
+        if path.endswith(ext):
+            return ext
+    return fallback
+
+
+def _register(url):
+    """登记上游地址 → 返回稳定 token(同地址同 token, HEAD/GET 一致)。"""
+    token = hashlib.md5(str(url).encode("utf-8")).hexdigest()[:16]
+    with _STREAM_LOCK:
+        _STREAM_STATE["urls"][token] = str(url)
+    return token
+
+
+def _start_audio_server():
+    with _STREAM_LOCK:
+        if _STREAM_STATE["port"]:
+            return int(_STREAM_STATE["port"])
+        for port in range(_STREAM_PORT_RANGE[0], _STREAM_PORT_RANGE[1]):
+            try:
+                server = ThreadingHTTPServer(("127.0.0.1", port), _AudioHandler)
+            except OSError:
+                continue
+            server.daemon_threads = True
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            _STREAM_STATE["port"] = port
+            _STREAM_STATE["server"] = server
+            return port
+    return 0
+
+
+def _proxy_url(url, ext=None):
+    """把上游音频地址包装成本机代理地址; 起不来服务则原样返回(不阻断播放)。"""
+    url = str(url or "")
+    if not url:
+        return url
+    port = _start_audio_server()
+    if not port:
+        return url
+    return "http://127.0.0.1:%d/audio/%s%s" % (port, _register(url), ext or _ext_of(url))
+
+
+def _upstream_headers(range_value=""):
+    headers = {"User-Agent": UA, "Referer": "https://music.douyin.com/", "Accept": "*/*"}
+    if range_value:
+        headers["Range"] = range_value
+    return headers
+
+
+class _AudioHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "qishui-audio"
+
+    def log_message(self, *args):
+        return None
+
+    def do_HEAD(self):  # noqa: N802 - 标准库回调命名
+        self._serve(False)
+
+    def do_GET(self):  # noqa: N802 - 标准库回调命名
+        self._serve(True)
+
+    def _fail(self, code, message=b""):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(message)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if message:
+            try:
+                self.wfile.write(message)
+            except OSError:
+                pass
+
+    def _serve(self, body):
+        name = urllib.parse.urlparse(self.path).path.rsplit("/", 1)[-1]
+        token, _, ext = name.partition(".")
+        url = _STREAM_STATE["urls"].get(token) if token else None
+        if not url:
+            self._fail(404, b"not found")
+            return
+        ctype = _CTYPE.get("." + ext.lower(), "audio/mp4") if ext else "audio/mp4"
+        raw_range = self.headers.get("Range") or ""
+        try:
+            resp = urllib.request.urlopen(
+                urllib.request.Request(url, headers=_upstream_headers(raw_range)), timeout=_STREAM_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            # 上游 416(Range 越界)原样透传, 让播放器自己纠正; 其它错误给 502
+            code = int(getattr(exc, "code", 502) or 502)
+            if code == 416:
+                content_range = exc.headers.get("Content-Range") if getattr(exc, "headers", None) else None
+                self.send_response(416)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                if content_range:
+                    self.send_header("Content-Range", content_range)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                try:
+                    exc.close()
+                except Exception:
+                    pass
+                return
+            self._fail(502, b"upstream %d" % code)
+            return
+        except Exception:
+            self._fail(502, b"upstream failed")
+            return
+        try:
+            status = int(getattr(resp, "status", 200) or 200)
+            if status not in (200, 206):
+                status = 200
+            total = int(resp.headers.get("Content-Length") or 0)
+            content_range = resp.headers.get("Content-Range")
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)      # ★ 关键: 上游是 video/mp4, 这里纠正为音频
+            self.send_header("Accept-Ranges", "bytes")
+            if content_range:
+                self.send_header("Content-Range", content_range)
+            if total:
+                self.send_header("Content-Length", str(total))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if not body:
+                return
+            while True:
+                chunk = resp.read(_STREAM_CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception:
+            self.close_connection = True
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+
 class Spider(BaseSpider):
     def __init__(self):
         self._sess = None
+        self._cfg = {}
 
     def init(self, extend=""):
         try:
@@ -404,15 +585,19 @@ class Spider(BaseSpider):
         return bool(track.get("audition_info"))
 
     def _alt_url(self, name):
-        """VIP 替代: 酷我(kwyy) 优先 → 抖音(dyyy) 兜底; 取不到返回 ''"""
+        """VIP 替代: 酷我(kwyy) 优先 → 抖音(dyyy) 兜底; 取不到返回 ('', '')
+
+        返回 (url, ext): ext 是推断的后缀(kwyy→.mp3 / dyyy→.m4a), 供本地代理定 Content-Type。
+        """
         name = str(name or "").strip()
         if not name:
-            return ""
+            return "", ""
         q = urllib.parse.quote(name)
         try:
             j = self._req_url("http://www.yx520.ltd/API/kwyy/api.php?msg=%s&a=10&n=1" % q)
             if str(j.get("code")) == "200" and j.get("url"):
-                return str(j["url"])
+                url = str(j["url"])
+                return url, _ext_of(url, ".mp3")
         except Exception:
             pass
         try:
@@ -421,10 +606,11 @@ class Spider(BaseSpider):
             if items:
                 hit = next((x for x in items if name in str(x.get("title") or "")), items[0])
                 if hit.get("url"):
-                    return str(hit["url"])
+                    url = str(hit["url"])
+                    return url, _ext_of(url, ".m4a")
         except Exception:
             pass
-        return ""
+        return "", ""
 
     @staticmethod
     def _label(quality, bitrate, index):
@@ -596,6 +782,31 @@ class Spider(BaseSpider):
         }
 
     # ------------------------------------------------------------------ 播放
+    def _flag(self, key, default=True):
+        """读 extend 配置里的开关; 缺省按 default。"""
+        raw = (self._cfg or {}).get(key, None)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        if raw is None or raw == "":
+            return default
+        return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
+    def _play(self, url, ext=None):
+        """组装播放结果。
+
+        默认走本地音频代理: 上游是「无后缀 + Content-Type: video/mp4」, Exo 会当视频源建链
+        导致只有音频轨时永远不启动音频渲染(能播没声音)。代理改写为 /audio/<token>.m4a +
+        audio/mp4, 播放器即按音频处理。extend 传 "proxy":0 可关闭。
+        """
+        url = str(url or "")
+        if url and self._flag("proxy", True):
+            url = _proxy_url(url, ext) or url
+        out = {"parse": 0, "jx": 0, "url": url,
+               "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
+        if self._flag("music_player", True):
+            out["music_player"] = 1
+        return out
+
     def playerContent(self, flag, id, vipFlags=None):
         value = str(id or "")
         try:
@@ -610,17 +821,15 @@ class Spider(BaseSpider):
             data = self._seo(track_id)
             if quality == "vip":
                 track = self._track(data.get("seo_track") or {}) or {}
-                alt = self._alt_url(track.get("name"))
+                alt, alt_ext = self._alt_url(track.get("name"))
                 if alt:
-                    return {"parse": 0, "jx": 0, "url": alt, "music_player": 1,
-                            "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
+                    return self._play(alt, alt_ext)
                 quality = "auto"  # 替代源不可用 → 回落官方试听档
             streams = self._streams(data)
             chosen = next((s for s in streams if s["key"] == quality), streams[0] if streams else None)
             if not chosen:
                 return {"parse": 1, "jx": 0, "url": value, "header": {}}
-            return {"parse": 0, "jx": 0, "url": chosen["url"], "music_player": 1,
-                    "header": {"User-Agent": UA, "Referer": "https://music.douyin.com/"}}
+            return self._play(chosen["url"])
         except Exception:
             return {"parse": 1, "jx": 0, "url": value, "header": {}}
 
