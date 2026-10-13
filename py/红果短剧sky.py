@@ -67,7 +67,15 @@ EPISODE_PREFIX = "hg-episode-v1:"
 # 五档清晰度（显示名, 接口 definition 档位），按用户要求从高到低排列。
 # 选集 id 编码为 "第N集$hg-episode-v1:<vid>@<档位>"，播放时按档位就近降级。
 QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流畅", "480"), ("极速", "360"))
-VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
+# 取流端点(实测 2026-10-13, 游客设备/无 cookie 无 token 即可用):
+#   POST /novel/player/video_model/v1/  body={"video_id":"<vid>",
+#        "biz_param":{"need_all_video_definition":true}}
+#   -> code=0, data.video_model.video_list 返回 5 档:
+#      360p(360x640) / 480p / 540p / 720p / 1080p(1080x1920), HEVC + CENC(AES-CTR)
+#   全 76 集均可取, 不区分免费/会员集。
+# 关键点: need_all_video_definition 必须放进 biz_param, 放顶层只回单档(720p)。
+# 旧端点 multi_video_model/v1(带 mixed_video_id_map) 恒返 110001, 已弃用。
+VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/"
 API_HOST = "https://api5-normal-sinfonlineb.fqnovel.com"
 UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 APP_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
@@ -3223,7 +3231,9 @@ def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
         "player_so_load": "1",
         "is_android_pad_screen": "0",
     }
+    bare_id = _text(video_id).split("@")[0].strip()
     payload = {
+        "video_id": bare_id,
         "biz_param": {
             "detail_page_version": 0,
             "device_level": 3,
@@ -3234,7 +3244,6 @@ def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
             "use_server_dns": False,
             "video_platform": 1024,
         },
-        "mixed_video_id_map": {"1": [video_id]},
     }
     request_headers = {
         "User-Agent": APP_UA,
@@ -3269,20 +3278,20 @@ def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
     data = response_data.get("data") or {}
     if not isinstance(data, Mapping):
         raise HongguoPluginError("video_model 数据为空")
-    entry: Any = data.get(video_id)
-    if entry is None:
-        for value in data.values():
-            if isinstance(value, Mapping):
-                entry = value
-                break
-            if isinstance(value, list) and value and isinstance(value[0], Mapping):
-                entry = value[0]
-                break
-    if not isinstance(entry, Mapping):
-        entry = data
-    raw_model = entry.get("video_model") if isinstance(entry, Mapping) else None
+    # 新端点 data = {"video_model": "<json str>", "video_width": 720, "video_height": 1280, ...}
+    # 先按新结构取; 取不到再兼容旧的 map 结构。
+    raw_model = data.get("video_model")
     if raw_model is None:
-        raw_model = data.get("video_model")
+        entry: Any = data.get(_text(video_id).split("@")[0].strip())
+        if entry is None:
+            for value in data.values():
+                if isinstance(value, Mapping):
+                    entry = value
+                    break
+                if isinstance(value, list) and value and isinstance(value[0], Mapping):
+                    entry = value[0]
+                    break
+        raw_model = entry.get("video_model") if isinstance(entry, Mapping) else None
     if isinstance(raw_model, str):
         try:
             raw_model = json.loads(raw_model)
@@ -3343,9 +3352,10 @@ def _definition_of(item: Mapping[str, Any]) -> str:
 
 
 def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
-    """登录后探测该视频实际可用的清晰度档位(走 App 接口 multi_video_model)。
+    """探测该视频实际可用的清晰度档位(走 App video_model 接口, 无需登录)。
 
-    返回 [(显示名, 档位), ...]; 拿不到(签名/风控被拒)则返回 [] 并进入冷却,
+    实测游客设备即可拿到 360p/480p/540p/720p/1080p 全档;
+    返回 [(显示名, 档位), ...]; 拿不到则返回 [] 并进入冷却,
     调用方据此决定用多线路还是回退官网 360p 单线路。
     """
     now = time.time()
@@ -3925,18 +3935,12 @@ class Spider(Spider):
             for e in eps:
                 title, _, ep = str(e).partition("$")
                 pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
-            accessible = _accessible_count(sid, pairs[0][1]) if pairs else 0
-            marked = []
-            for i, (title, vid) in enumerate(pairs, 1):
-                # 超出免费集数的 vid 没有公开直链, 提前标注免得点了播不了
-                mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
-                marked.append((title + mark, vid))
-            # 已登录 -> 探测真实可用档位: 通 -> 多线路(1080P/720P/...), 不通 -> 官网 360p
-            tiers = _probe_tiers(pairs[0][1], config) if (_LOGIN.logged_in() and pairs) else []
+            # App 取流不区分免费/会员集, 不再标注(会员)
+            marked = [(title, vid) for title, vid in pairs]
+            # 探测真实可用档位: 通 -> 多线路(1080P/720P/...), 不通 -> 官网 360p
+            tiers = _probe_tiers(pairs[0][1], config) if pairs else []
             play_from, play_url = _build_play(marked, tiers)
             remarks = meta.get("remarks") or ""
-            if accessible > 0:
-                remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
             return {"list": [{
                 "vod_id": sid, "vod_name": meta.get("title") or sid,
                 "vod_pic": meta.get("cover") or "", "vod_year": "", "vod_area": "",
@@ -3950,16 +3954,10 @@ class Spider(Spider):
         vids = s.get("vid_list") or []
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
         pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
-        accessible = _int(s.get("accessible_episode_cnt"))
-        marked = []
-        for i, (title, vid) in enumerate(pairs, 1):
-            mark = "" if (accessible <= 0 or i <= accessible) else "(会员)"
-            marked.append((title + mark, vid))
-        tiers = _probe_tiers(pairs[0][1], config) if (_LOGIN.logged_in() and pairs) else []
+        marked = [(title, vid) for title, vid in pairs]
+        tiers = _probe_tiers(pairs[0][1], config) if pairs else []
         play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
-        if accessible > 0:
-            remarks = ("%s·可看%d集" % (remarks, accessible)) if remarks else "可看%d集" % accessible
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
 
     def playerContent(self, flag, id, vipFlags=None):
@@ -3974,8 +3972,8 @@ class Spider(Spider):
         tier = parts[-1].strip() if len(parts) > 1 else ""
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
-        # 已登录 + 指定档位(多线路模式): 走 App 流 + 本地解密串流, 拿 >360p
-        if _LOGIN.logged_in() and tier.isdigit():
+        # 指定档位(多线路模式): 走 App 流 + 本地解密串流, 拿 360p~1080p
+        if tier.isdigit():
             try:
                 port = _start_stream_server()
             except Exception:
