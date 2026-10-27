@@ -74,8 +74,10 @@ QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流
 #      360p(360x640) / 480p / 540p / 720p / 1080p(1080x1920), HEVC + CENC(AES-CTR)
 #   全 76 集均可取, 不区分免费/会员集。
 # 关键点: need_all_video_definition 必须放进 biz_param, 放顶层只回单档(720p)。
-# 旧端点 multi_video_model/v1(带 mixed_video_id_map) 恒返 110001, 已弃用。
-VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/"
+# 端点必须用 multi_video_model/v1: 旧的 /novel/player/video_model/v1/ 已下线,
+# 现在恒定返回 HTTP 200 + Content-Length: 0(空 body), 不要回退到它。
+# 另一条硬约束: query 里绝不能带 iid, 只要带了(哪怕 iid==device_id), 上游同样回空 body。
+VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
 API_HOST = "https://api5-normal-sinfonlineb.fqnovel.com"
 UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 APP_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
@@ -3203,14 +3205,15 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
         "ua": APP_UA,
     }
 
-# 取流端点(api5-normal-*.fqnovel.com/novel/player/video_model/v1/)现在会"间歇性空响应":
-# HTTP 200 + Content-Length: 0, 什么都不返回(实测 10~20 次里只有 1~2 次正常)。
-# 同一套签名调 multi_video_detail / category/landpage 都正常, 只这条被卡, 属于上游限流/灰度。
-# 重试能明显提高命中率(每次都是新的 x-ss-req-ticket 与签名), 所以把单次实现拆出来重试。
-_VIDEO_MODEL_ATTEMPTS = 5
+# 取流端点 multi_video_model/v1 的空 body 与"限流/灰度"无关, 是两个确定性原因:
+#   1) 路径写错: 旧的 /novel/player/video_model/v1/ 已下线, 恒定 200 + 空 body;
+#   2) 多带了 iid: 上游对"device_id + iid"这套组合直接判风控, 同样 200 + 空 body。
+# 只保留 device_id、走 multi_video_model 后实测连续 4/4 成功, 无需重试;
+# 仍留 2 次短重试兜住偶发网络抖动/502。
+_VIDEO_MODEL_ATTEMPTS = 2
 _VIDEO_MODEL_BACKOFF = 0.2
-# 取流模型缓存: 详情页探测成功后就存下来, 播放时直接复用。
-# 上游这条接口抽风很频繁, 少发一次请求就少一次失败机会, 也省掉重复的签名/握手耗时。
+# 取流模型缓存: 详情页探测成功后就存下来, 播放时直接复用,
+# 免掉切集/换线路时重复请求上游(还顺带省掉一次签名与握手的耗时)。
 _MODEL_CACHE: dict[str, tuple] = {}
 _MODEL_CACHE_TTL = 180
 _MODEL_CACHE_MAX = 16
@@ -3241,8 +3244,9 @@ def _video_model(video_id: str, config: Mapping[str, Any],
 
 def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
     devices = _device_config(config)
+    # 关键: 这里不带 iid。实测 query 里只要出现 iid(哪怕 iid==device_id),
+    # 上游就判风控并回 200 + 空 body; 只带 device_id 才正常返回。
     params = {
-        "iid": devices["install_id"],
         "device_id": devices["device_id"],
         "ac": "wifi",
         "channel": "update_64",
@@ -3299,20 +3303,29 @@ def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any
         request_headers["Cookie"] = devices["cookie"]
     if devices.get("x_tt_token"):
         request_headers["x-tt-token"] = devices["x_tt_token"]
-    signed_headers, signed_url = _core_sixgod(
-        VIDEO_URL,
-        params,
-        devices,
-        payload,
-        request_headers,
-    )
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    response = _http().post(
-        signed_url,
-        headers=signed_headers,
-        data=body,
-        timeout=15,
-    )
+    # 这条接口当前不校验签名: 直接裸 POST 即可。
+    # 先走无签名(与官方 H5 一致、最快), 万一上游重新收紧再用 x-gorgon/x-medusa 签名兜一次。
+    response = None
+    last_hint = ""
+    for signed in (False, True):
+        if signed:
+            headers, url = _core_sixgod(VIDEO_URL, params, devices, payload, request_headers)
+        else:
+            headers, url = dict(request_headers), VIDEO_URL + "?" + _url_encode(params)
+        try:
+            response = _http().post(url, headers=headers, data=body, timeout=15)
+        except Exception as exc:
+            last_hint = "网络异常: %s" % exc
+            response = None
+            continue
+        if response.status_code == 200 and response.content:
+            break
+        # 空 body / 非 200 都换签名方式再试一次
+        last_hint = "HTTP %s, %d 字节" % (response.status_code, len(response.content))
+        response = None
+    if response is None:
+        raise HongguoPluginError("取流接口空响应(%s): 检查 device_id 是否合法、query 是否误带 iid" % (last_hint or "unknown"))
     response_data = _json_response(response)
     data = response_data.get("data") or {}
     if not isinstance(data, Mapping):
@@ -3791,10 +3804,42 @@ def _app_episode_detail(sid, config):
     meta["actors"] = ",".join(actors)
     return meta, [s for _, s in eps]
 
+DEVICE_FILE = "hongguo_device.json"
+
+
+def _device_identity() -> tuple[str, str]:
+    """稳定的匿名设备标识: 首次随机生成后落盘, 后续复用。
+
+    上游把"设备身份短时间内跳变"当异常流量处理(取流接口直接回 200 + 空 body),
+    所以 device_id 必须跨进程稳定; 目录只读导致落盘失败时退化为进程内随机。
+    """
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    path = os.path.join(base, DEVICE_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        device_id = _text(data.get("device_id"))
+        install_id = _text(data.get("install_id"))
+        if device_id.isdigit() and len(device_id) >= 10:
+            return device_id, install_id if install_id.isdigit() else device_id
+    except Exception:
+        pass
+    device_id = str(random.randint(10**17, 10**18 - 1))
+    install_id = str(random.randint(10**17, 10**18 - 1))
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"device_id": device_id, "install_id": install_id}, handle)
+    except Exception:
+        pass
+    return device_id, install_id
+
+
 class Spider(Spider):
     def __init__(self):
-        self.device_id = str(random.randint(10**17, 10**18 - 1))
-        self.install_id = str(random.randint(10**17, 10**18 - 1))
+        self.device_id, self.install_id = _device_identity()
 
     def init(self, extend=""):
         # 默认随机合法设备标识; 也允许通过 ext 指定 (device_id/install_id/cookie/x_tt_dt),
