@@ -3539,87 +3539,6 @@ def _data(url):
     except (ValueError, TypeError):
         return {}
 
-# ---------------------------------------------------------------- 搜索
-# 官网 /search/<kw> 是纯前端渲染的 SPA: SSR 里只有壳, 没有 _ROUTER_DATA,
-# 所以老写法(_data(SITE+"/search/"+kw))必然拿到空列表 —— 这是搜索失效的根因。
-# 页面自身真正取数走的是一个免签名/免登录的 XHR 接口:
-#   GET /api/search/result/?query=<kw>&page=<n>
-# 返回: {"searchList":[...], "totalCount":107, "totalPages":11, "pageNum":1, "hasMore":true}
-# 实测: 每页固定 10 条, 参数名就是 query + page(offset/pageNum/cursor 都无效);
-#       query 超过 30 字直接 400; 页码越界/上游异常时返回 502 或退化空壳数据。
-SEARCH_API = "/api/search/result/"
-SEARCH_MAX_KEY = 30      # 上游对 query 长度的硬限制(超长 -> 400 invalid_query)
-SEARCH_PAGE_SIZE = 10    # 上游固定每页 10 条
-_SEARCH_PAGES: dict[str, int] = {}   # 关键词 -> 已见过的最大页数(上游 totalCount 会抖)
-
-
-def _search_pages_hint(kw, pages):
-    """同一关键词翻页时记住最大页数: 上游第 2 页的 totalCount 会莫名变小(107 -> 30),
-    不兜底的话壳会以为只有 3 页而提前停止加载。"""
-    old = _SEARCH_PAGES.get(kw) or 0
-    pages = max(old, pages)
-    if len(_SEARCH_PAGES) > 64:
-        _SEARCH_PAGES.clear()
-    _SEARCH_PAGES[kw] = pages
-    return pages
-
-
-def _search_api(keyword, page=1):
-    """调用官网搜索接口, 失败/非 200 都降级成 {}。
-
-    上游偶发 502 {"code":"upstream_unavailable"}, 实测重试一次就通, 故做 3 次尝试。
-    """
-    kw = _text(keyword)[:SEARCH_MAX_KEY]
-    if not kw:
-        return {}
-    try:
-        page = max(1, int(page))
-    except (TypeError, ValueError):
-        page = 1
-    url = "%s%s?%s" % (SITE, SEARCH_API, urlencode({"query": kw, "page": page}))
-    headers = {
-        "User-Agent": UA,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": SITE + "/search/" + quote(kw, safe=""),
-    }
-    for attempt in range(3):
-        try:
-            r = _http().get(url, headers=headers, timeout=12)
-        except Exception:
-            r = None
-        if r is not None and r.status_code == 200:
-            try:
-                data = r.json()
-            except ValueError:
-                return {}
-            return data if isinstance(data, dict) else {}
-        if r is not None and r.status_code not in (500, 502, 503, 504):
-            return {}
-        if attempt < 2:
-            time.sleep(0.5 * (attempt + 1))
-    return {}
-
-
-def _search_item(x):
-    """搜索结果卡片。正常项带完整 video_data; 越界页会返回 video_data 为空壳,
-    此时用 keyword(= series_id)兜底, 保证点进去仍能拿到详情。"""
-    x = x or {}
-    vd = x.get("video_data") if isinstance(x.get("video_data"), dict) else {}
-    sid = _text(vd.get("series_id")) or _text(x.get("keyword"))
-    if not sid.isdigit():
-        return None
-    cnt = vd.get("episode_cnt") or 0
-    remarks = _text(vd.get("episode_right_text")) or ("全%s集" % cnt if cnt else "")
-    return {
-        "vod_id": sid,
-        "vod_name": _text(vd.get("series_title")) or _text(x.get("name")) or "未命名",
-        "vod_pic": _text(vd.get("series_cover")) or _text(x.get("cover")) or _text(x.get("pic")),
-        "vod_remarks": remarks,
-        "vod_content": _text(vd.get("series_intro")),
-    }
-
-
 def _item(x):
     x = x or {}
     vd = x.get("video_data") if isinstance(x.get("video_data"), dict) else x
@@ -3792,6 +3711,7 @@ class Spider(Spider):
             {"type_id": "hot", "type_name": "最热"},
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
+            {"type_id": LOGIN_TID, "type_name": LOGIN_TITLE},
         ]
         groups = [
             {"key": "topic", "name": "主题", "value": [
@@ -3996,31 +3916,10 @@ class Spider(Spider):
     def searchContent(self, key, quick=False, pg="1"):
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
-        kw = _text(key)[:SEARCH_MAX_KEY]
-        if not kw:
-            return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
-        j = _search_api(kw, page)
-        rows = j.get("searchList") or []
-        try: total = int(j.get("totalCount") or 0)
-        except (TypeError, ValueError): total = 0
-        try: pages = int(j.get("totalPages") or 0)
-        except (TypeError, ValueError): pages = 0
-        # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
-        if total > 0:
-            pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
-        elif pages <= 0:
-            pages = page
-        # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
-        rows = rows[:SEARCH_PAGE_SIZE]
-        items = [it for it in (_search_item(x) for x in rows) if it]
-        if items:
-            pages = _search_pages_hint(kw, pages)
-            if page > pages:
-                items = []
-        else:
-            pages = max(1, min(page, _SEARCH_PAGES.get(kw) or page))
-        return {"page": page, "pagecount": pages, "limit": len(items),
-                "total": total or len(items), "list": items}
+        # 官网当前搜索结果固定 10 条，页码由 SSR 路由自身控制；保留 pg 参数兼容壳。
+        p = (_data(SITE + "/search/" + quote(str(key), safe="")).get("loaderData") or {}).get("search_(keyword)/page") or {}
+        rows = p.get("searchList") or []
+        return {"page": page, "pagecount": max(1, (int(p.get("totalCount") or 0) + 9) // 10), "limit": len(rows), "total": int(p.get("totalCount") or len(rows)), "list": [_item(x) for x in rows]}
 
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
