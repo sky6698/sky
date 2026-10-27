@@ -90,6 +90,9 @@ MEDIA_UA = "com.phoenix.read/71332"
 PUBLIC_SITE = "https://hongguoduanju.com"
 PUBLIC_QUALITY = "360p"
 PLAY_LINE = "红果┃短剧"
+# 取流接口探测不到档位时的兜底线: 官网 public 直链其实是 10 秒试看片段,
+# 线路名直接写清楚, 免得用户以为是正片却"点开就结束"。
+PLAY_LINE_PREVIEW = "红果┃试看360p"
 
 # ---------------------------------------------------------------- 账号登录
 # 红果官网自身挂着番茄小说 passport 网关(aid=2503), 扫码登录流程:
@@ -3200,7 +3203,43 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
         "ua": APP_UA,
     }
 
-def _video_model(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+# 取流端点(api5-normal-*.fqnovel.com/novel/player/video_model/v1/)现在会"间歇性空响应":
+# HTTP 200 + Content-Length: 0, 什么都不返回(实测 10~20 次里只有 1~2 次正常)。
+# 同一套签名调 multi_video_detail / category/landpage 都正常, 只这条被卡, 属于上游限流/灰度。
+# 重试能明显提高命中率(每次都是新的 x-ss-req-ticket 与签名), 所以把单次实现拆出来重试。
+_VIDEO_MODEL_ATTEMPTS = 5
+_VIDEO_MODEL_BACKOFF = 0.2
+# 取流模型缓存: 详情页探测成功后就存下来, 播放时直接复用。
+# 上游这条接口抽风很频繁, 少发一次请求就少一次失败机会, 也省掉重复的签名/握手耗时。
+_MODEL_CACHE: dict[str, tuple] = {}
+_MODEL_CACHE_TTL = 180
+_MODEL_CACHE_MAX = 16
+
+
+def _video_model(video_id: str, config: Mapping[str, Any],
+                 attempts: int = _VIDEO_MODEL_ATTEMPTS,
+                 backoff: float = _VIDEO_MODEL_BACKOFF) -> dict[str, Any]:
+    key = _text(video_id).split("@")[0].strip()
+    hit = _MODEL_CACHE.get(key)
+    if hit and time.time() - hit[0] < _MODEL_CACHE_TTL:
+        return dict(hit[1])
+    last: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            model = _video_model_once(video_id, config)
+        except Exception as exc:   # 空响应/网络抖动/JSON 异常都重试
+            last = exc
+            if attempt + 1 < attempts:
+                time.sleep(backoff * (attempt + 1))
+            continue
+        if len(_MODEL_CACHE) >= _MODEL_CACHE_MAX:
+            _MODEL_CACHE.clear()
+        _MODEL_CACHE[key] = (time.time(), dict(model))
+        return model
+    raise HongguoPluginError("video_model 取流失败: %s" % (last or "unknown")) from last
+
+
+def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
     devices = _device_config(config)
     params = {
         "iid": devices["install_id"],
@@ -3325,7 +3364,7 @@ _QUALITY_ORDER = ("2160", "1440", "1080", "720", "576", "540", "480", "360")
 
 _PROBE_LOCK = threading.RLock()
 _PROBE_STATE = {"until": 0.0, "tiers": []}
-_PROBE_COOLDOWN = 600           # 探测失败后的冷却(秒), 免得每次进详情都白等一次超时
+_PROBE_COOLDOWN = 90            # 探测失败后的冷却(秒); 上游取流接口常瞬时抽风, 冷太久会一直卡在 360p
 
 
 def _iter_tracks(value: Any):
@@ -3364,6 +3403,8 @@ def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
             return list(_PROBE_STATE["tiers"])
     found = set()
     try:
+        # 详情页只等这一下, 失败(空响应)单次约 0.1s, 5 次短重试最坏 ~2.5s;
+        # 成功则连带把取流模型写进缓存, 播放时不必再打一次上游。
         model = _video_model(str(video_id), config)
         for item in _iter_tracks(_video_list_from_model(model)):
             definition = _definition_of(item)
@@ -3391,7 +3432,7 @@ def _build_play(pairs: list, tiers: list) -> tuple:
                      for title, vid in pairs)
             for _, tier in tiers)
     else:
-        play_from = PLAY_LINE
+        play_from = PLAY_LINE_PREVIEW
         play_url = "#".join("%s$%s%s" % (title, EPISODE_PREFIX, vid)
                             for title, vid in pairs)
     return play_from, play_url
@@ -3538,6 +3579,87 @@ def _data(url):
         return json.JSONDecoder().raw_decode(html[m.end():])[0]
     except (ValueError, TypeError):
         return {}
+
+# ---------------------------------------------------------------- 搜索
+# 官网 /search/<kw> 是纯前端渲染的 SPA: SSR 里只有壳, 没有 _ROUTER_DATA,
+# 所以老写法(_data(SITE+"/search/"+kw))必然拿到空列表 —— 这是搜索失效的根因。
+# 页面自身真正取数走的是一个免签名/免登录的 XHR 接口:
+#   GET /api/search/result/?query=<kw>&page=<n>
+# 返回: {"searchList":[...], "totalCount":107, "totalPages":11, "pageNum":1, "hasMore":true}
+# 实测: 每页固定 10 条, 参数名就是 query + page(offset/pageNum/cursor 都无效);
+#       query 超过 30 字直接 400; 页码越界/上游异常时返回 502 或退化空壳数据。
+SEARCH_API = "/api/search/result/"
+SEARCH_MAX_KEY = 30      # 上游对 query 长度的硬限制(超长 -> 400 invalid_query)
+SEARCH_PAGE_SIZE = 10    # 上游固定每页 10 条
+_SEARCH_PAGES: dict[str, int] = {}   # 关键词 -> 已见过的最大页数(上游 totalCount 会抖)
+
+
+def _search_pages_hint(kw, pages):
+    """同一关键词翻页时记住最大页数: 上游第 2 页的 totalCount 会莫名变小(107 -> 30),
+    不兜底的话壳会以为只有 3 页而提前停止加载。"""
+    old = _SEARCH_PAGES.get(kw) or 0
+    pages = max(old, pages)
+    if len(_SEARCH_PAGES) > 64:
+        _SEARCH_PAGES.clear()
+    _SEARCH_PAGES[kw] = pages
+    return pages
+
+
+def _search_api(keyword, page=1):
+    """调用官网搜索接口, 失败/非 200 都降级成 {}。
+
+    上游偶发 502 {"code":"upstream_unavailable"}, 实测重试一次就通, 故做 3 次尝试。
+    """
+    kw = _text(keyword)[:SEARCH_MAX_KEY]
+    if not kw:
+        return {}
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    url = "%s%s?%s" % (SITE, SEARCH_API, urlencode({"query": kw, "page": page}))
+    headers = {
+        "User-Agent": UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": SITE + "/search/" + quote(kw, safe=""),
+    }
+    for attempt in range(3):
+        try:
+            r = _http().get(url, headers=headers, timeout=12)
+        except Exception:
+            r = None
+        if r is not None and r.status_code == 200:
+            try:
+                data = r.json()
+            except ValueError:
+                return {}
+            return data if isinstance(data, dict) else {}
+        if r is not None and r.status_code not in (500, 502, 503, 504):
+            return {}
+        if attempt < 2:
+            time.sleep(0.5 * (attempt + 1))
+    return {}
+
+
+def _search_item(x):
+    """搜索结果卡片。正常项带完整 video_data; 越界页会返回 video_data 为空壳,
+    此时用 keyword(= series_id)兜底, 保证点进去仍能拿到详情。"""
+    x = x or {}
+    vd = x.get("video_data") if isinstance(x.get("video_data"), dict) else {}
+    sid = _text(vd.get("series_id")) or _text(x.get("keyword"))
+    if not sid.isdigit():
+        return None
+    cnt = vd.get("episode_cnt") or 0
+    remarks = _text(vd.get("episode_right_text")) or ("全%s集" % cnt if cnt else "")
+    return {
+        "vod_id": sid,
+        "vod_name": _text(vd.get("series_title")) or _text(x.get("name")) or "未命名",
+        "vod_pic": _text(vd.get("series_cover")) or _text(x.get("cover")) or _text(x.get("pic")),
+        "vod_remarks": remarks,
+        "vod_content": _text(vd.get("series_intro")),
+    }
+
 
 def _item(x):
     x = x or {}
@@ -3711,7 +3833,6 @@ class Spider(Spider):
             {"type_id": "hot", "type_name": "最热"},
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
-            {"type_id": LOGIN_TID, "type_name": LOGIN_TITLE},
         ]
         groups = [
             {"key": "topic", "name": "主题", "value": [
@@ -3916,10 +4037,31 @@ class Spider(Spider):
     def searchContent(self, key, quick=False, pg="1"):
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
-        # 官网当前搜索结果固定 10 条，页码由 SSR 路由自身控制；保留 pg 参数兼容壳。
-        p = (_data(SITE + "/search/" + quote(str(key), safe="")).get("loaderData") or {}).get("search_(keyword)/page") or {}
-        rows = p.get("searchList") or []
-        return {"page": page, "pagecount": max(1, (int(p.get("totalCount") or 0) + 9) // 10), "limit": len(rows), "total": int(p.get("totalCount") or len(rows)), "list": [_item(x) for x in rows]}
+        kw = _text(key)[:SEARCH_MAX_KEY]
+        if not kw:
+            return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
+        j = _search_api(kw, page)
+        rows = j.get("searchList") or []
+        try: total = int(j.get("totalCount") or 0)
+        except (TypeError, ValueError): total = 0
+        try: pages = int(j.get("totalPages") or 0)
+        except (TypeError, ValueError): pages = 0
+        # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
+        if total > 0:
+            pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+        elif pages <= 0:
+            pages = page
+        # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
+        rows = rows[:SEARCH_PAGE_SIZE]
+        items = [it for it in (_search_item(x) for x in rows) if it]
+        if items:
+            pages = _search_pages_hint(kw, pages)
+            if page > pages:
+                items = []
+        else:
+            pages = max(1, min(page, _SEARCH_PAGES.get(kw) or page))
+        return {"page": page, "pagecount": pages, "limit": len(items),
+                "total": total or len(items), "list": items}
 
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
@@ -3966,46 +4108,38 @@ class Spider(Spider):
         if raw.startswith("hg_login"):
             return {"parse": 1, "jx": 0, "playUrl": "",
                     "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
-        # "vid@档位" 或纯 vid
+        # "vid@档位" 或纯 vid; 档位直接透传给本机流服务(_stream_session 会解析 @ 后缀)
         parts = raw.split("@")
         vid = parts[0].strip()
-        tier = parts[-1].strip() if len(parts) > 1 else ""
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
-        # 指定档位(多线路模式): 走 App 流 + 本地解密串流, 拿 360p~1080p
-        if tier.isdigit():
+        # 正片只有一条路: App 取流(CENC) + 本机解密串流, 这才是完整一集, 也才能给到
+        # 360p~1080p 多档。官网 /video/public/<vid>/360p.mp4 只是给搜索引擎看的
+        # 10 秒试看片段(实测 duration=10s), 一旦被当成首选, 播放器就是"点开即结束"。
+        # 所以顺序是: 先确认 App 流可用 -> 再退到 public 试看片段。
+        try:
+            port = _start_stream_server()
+        except Exception:
+            port = 0
+        public_url = _public_media_url(vid)
+        if port and vid.isdigit():
             try:
-                port = _start_stream_server()
+                # 先建一次会话: 拿不到媒体模型时直接走兜底, 别把必然 502 的地址丢给播放器
+                _stream_session(raw, {"device_id": self.device_id or "",
+                                      "install_id": self.install_id or ""})
             except Exception:
-                port = 0
-            if port and vid.isdigit():
+                pass
+            else:
                 query = urlencode({"vid": raw, "did": self.device_id or "",
                                    "iid": self.install_id or ""})
                 return {"parse": 0, "jx": 0, "playUrl": "",
                         "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
                         "header": {"User-Agent": UA}}
-
-        # 首选: 官网公开直链 (秒开/可拖动/无签名)
-        public_url = _public_media_url(vid)
+        # 兜底: 官网公开直链(仅 10 秒试看片段)
         if public_url and _public_ok(public_url):
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
-        # 回退: App 取流 + 本地 CENC 解密流服务 (上游需真机签名+登录态)
-        try:
-            port = _start_stream_server()
-        except Exception:
-            port = 0
-        if port and vid.isdigit():
-            query = urlencode(
-                {
-                    "vid": raw,
-                    "did": self.device_id or "",
-                    "iid": self.install_id or "",
-                }
-            )
-            return {"parse": 0, "jx": 0, "playUrl": "", "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
-                    "header": {"User-Agent": UA}}
         if public_url:
-            # 公开直链 HEAD 未确认也直接给, 让播放器自行决定
+            # HEAD 未确认也直接给, 让播放器自行决定
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
         proxy = self.getProxyUrl() if hasattr(self, "getProxyUrl") else ""
         if proxy:
