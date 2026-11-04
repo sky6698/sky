@@ -391,7 +391,7 @@ class Spider(Spider):
         year = self.extract_detail_field(data, 'pubTime')
         area = self.extract_detail_field(data, 'countryTag')
         bofang = self.build_play_url(data)
-        videos = [self.build_video_data(did, director, actor, remarks, year, area, content, bofang)]
+        videos = [self.build_video_data(did, director, actor, remarks, year, area, content, bofang, data)]
         return self.build_result(videos)
 
     def build_detail_params(self, fenge):
@@ -419,8 +419,13 @@ class Spider(Spider):
             bofang += name + '$' + id + '#'
         return bofang[:-1]
 
-    def build_video_data(self, did, director, actor, remarks, year, area, content, bofang):
-        return {"vod_id": did, "vod_director": director, "vod_actor": actor, "vod_remarks": remarks, "vod_year": year, "vod_area": area, "vod_content": content, "vod_play_from": "华数专线", "vod_play_url": bofang}
+    def build_video_data(self, did, director, actor, remarks, year, area, content, bofang, data=None):
+        data = (data or {}).get('data') or {}
+        return {"vod_id": did, "vod_name": data.get('title') or data.get('subTitle') or '',
+                "vod_pic": data.get('pPic') or data.get('hPic') or '',
+                "vod_director": director, "vod_actor": actor, "vod_remarks": remarks,
+                "vod_year": year, "vod_area": area, "vod_content": content,
+                "vod_play_from": "华数专线", "vod_play_url": bofang}
 
     def build_result(self, videos):
         result = {}
