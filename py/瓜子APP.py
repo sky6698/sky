@@ -1,574 +1,442 @@
-# coding = utf-8
-#!/usr/bin/python
-import re
-import sys
-import json
-import time
+# -*- coding: utf-8 -*-
 import base64
 import hashlib
-import random
-import string
+import json
+import math
+import re
+import ssl
+import time
 import urllib.parse
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_v1_5
-from base.spider import Spider
+import urllib.request
 
-sys.path.append('..')
+try:
+    from base.spider import Spider as _Spider
+except Exception:
+    class _Spider(object):
+        pass
 
-# 取流请求头：瓜子 CDN 按 User-Agent 判片——浏览器 UA 或空 UA 一律被 302 到一段
-# 19 秒推广片头（app.wanglaoshi），连分片也是；播放器自身的 UA 不受我们控制，
-# 所以统一改由本机代理带播放器 UA 取流，彻底规避。
-PLAY_HEADERS = {'User-Agent': 'Lavf/57.83.100', 'Referer': 'http://WJiZxLXA2.com/'}
+# ---------------------------------------------------------------- 站点参数
+HOST = 'https://api.8utdtcq.com'
+UA = 'okhttp/3.12.0'
+APP_TOKEN = ('1be86e8e18a9fa18b2b8d5432699dad0.ac008ed650fd087bfbecf2fda9d82e9835253ef24843e6b18'
+             'fcd128b10763497bcf9d53e959f5377cde038c20ccf9d17f604c9b8bb6e61041def86729b2fc7408bd24'
+             '1e23c213ac57f0226ee656e2bb0a583ae0e4f3bf6c6ab6c490c9a6f0d8cdfd366aacf5d83193671a8f77'
+             'cd1af1ff2e9145de92ec43ec87cf4bdc563f6e919fe32861b0e93b118ec37d8035fbb3c'
+             '.59dd05c5d9a8ae726528783128218f15fe6f2c0c8145eddab112b374fcfe3d79')
+BODY_KEY = 'MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGAe6hKrWLi1zQmjTT1ozbE4QdFeJGNxubxld6GrFGximxfMsMB6BpJhpcTouAqywAFppiKetUBBbXwYsYU1wNr648XVmPmCMCy4rY8vdliFnbMUj086DU6Z+/oXBdWU3/b1G0DN3E9wULRSwcKZT3wj/cCI1vsCm3gj2R5SqkA9Y0CAwEAAQKBgAJH+4CxV0/zBVcLiBCHvSANm0l7HetybTh/j2p0Y1sTXro4ALwAaCTUeqdBjWiLSo9lNwDHFyq8zX90+gNxa7c5EqcWV9FmlVXr8VhfBzcZo1nXeNdXFT7tQ2yah/odtdcx+vRMSGJd1t/5k5bDd9wAvYdIDblMAg+wiKKZ5KcdAkEA1cCakEN4NexkF5tHPRrR6XOY/XHfkqXxEhMqmNbB9U34saTJnLWIHC8IXys6Qmzz30TtzCjuOqKRRy+FMM4TdwJBAJQZFPjsGC+RqcG5UvVMiMPhnwe/bXEehShK86yJK/g/UiKrO87h3aEu5gcJqBygTq3BBBoH2md3pr/W+hUMWBsCQQChfhTIrdDinKi6lRxrdBnn0Ohjg2cwuqK5zzU9p/N+S9x7Ck8wUI53DKm8jUJE8WAG7WLj/oCOWEh+ic6NIwTdAkEAj0X8nhx6AXsgCYRql1klbqtVmL8+95KZK7PnLWG/IfjQUy3pPGoSaZ7fdquG8bq8oyf5+dzjE/oTXcByS+6XRQJAP/5ciy1bL3NhUhsaOVy55MHXnPjdcTX0FaLi+ybXZIfIQ2P4rb19mVq1feMbCXhz+L1rG8oat5lYKfpe8k83ZA=='
+AES_KEY = b'mvXBSW7ekreItNsT'
+AES_IV = b'2U3IrJL8szAKp0Fj'
+SIGN_TAIL = '*&zvdvdvddbfikkkumtmdwqppp?|4Y!s!2br'
 
-# True：播放地址经本机代理（推荐）。若你的播放器不支持 do=py 本机代理导致
-# 无法播放，改成 False 可退回直链。
-USE_LOCAL_PROXY = True
+# 每个接口的 keys 不一样，服务端会校验
+KEYS = {
+    'list': ('qDpotE2bedimK3QGqlyV5ieXXC3EhaPLQ+IOJyHnHflCj5w/7ESK7FgywMvrgjxbx0GklEFLI4+JshgySe633OIR'
+             'stuktwdiCy3CT+fLSpuxBJDIlfXQDaeH3ig1wiB0JsZ601XHiFweGMu4tZfnSpHg3OnoL6nz/uurUif2OK4='),
+    'detail': ('Qmxi5ciWXbQzkr7o+SUNiUuQxQEf8/AVyUWY4T/BGhcXBIUz4nOyHBGf9A4KbM0iKF3yp9M7WAY0rrs5PzdTAOB4'
+               '5plcS2zZ0wUibcXuGJ29VVGRWKGwE9zu2vLwhfgjTaaDpXo4rby+7GxXTktzJmxvneOUdYeHi+PZsThlvPI='),
+    'play': ('ZH8gpdp9bxjuG2NK97sol3o7Uiz+9eVEaVMlE2Fk3j7EResM3YHnECZUH7BONNTjpy7RVNi/YimGuNYriC7Cmswv4P'
+             'NYiFYzw9QhlqZKwNfCM6IUpFZ0T4rZx8G78zkv2tNVbfYC4qNQedGi07nWZ33dlSuVxROVfY5JxOWHMI0='),
+}
 
-PROXY_BASE = 'http://127.0.0.1:9978/proxy?do=py'
+HEADERS = {
+    'Cache-Control': 'no-cache',
+    'Version': '2406025',
+    'PackageName': 'com.uf076bf0c246.qe439f0d5e.m8aaf56b725a.ifeb647346f',
+    'Ver': '1.9.2',
+    'Referer': HOST,
+    'X-Customer-Client-Ip': '127.0.0.1',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Connection': 'Keep-Alive',
+    'User-Agent': UA,
+}
+
+CATES = [('电影', '1'), ('电视剧', '2'), ('综艺', '3'), ('动漫', '4'), ('短剧', '64')]
+
+# 分类默认二级子类（服务端 sub 参数）
+DEFAULT_SUB = {'1': '5', '2': '12', '4': '30', '3': '22', '64': ''}
+
+FILTERS = {
+    'area': [('全部', '0'), ('大陆', '大陆'), ('香港', '香港'), ('台湾', '台湾'),
+             ('欧美', '俄罗斯,加拿大,德国,意大利,法国,欧美,美国,英国,西班牙'),
+             ('日本', '日本'), ('韩国', '韩国'), ('东南亚', '印度,新加坡,泰国,马来西亚'), ('其他', '其他')],
+    'year': [('全部', '0'), ('2026', '2026'), ('2025', '2025'), ('2024', '2024'), ('2023', '2023'),
+             ('2022', '2022'), ('2021', '2021'), ('2020', '2020'), ('2019', '2019'),
+             ('10-15年', '2015,2014,2013,2012,2011,2010'), ('00年代', '2000,2001,2002,2003,2004,2005'),
+             ('90年代', '1990,1991,1992,1993,1994,1995'), ('更早', '2')],
+}
+
+# ---------------------------------------------------------------- AES-128-CBC（纯 Python）
+def _xt(a):
+    a <<= 1
+    return (a ^ 0x1b) & 0xff if a & 0x100 else a
 
 
-class Spider(Spider):
-    def __init__(self):
-        self.name = "瓜子"
-        self.hosts = [
-            'https://apinew.uozvr.com',
-            'https://api.w32z7vtd.com',
-            'https://api.6a7nnf7.com',
-            'https://api.umygrx3.com',
-            'https://api.rmedphk.com'
-        ]
-        self.host_index = 0
-        self.host = self.hosts[self.host_index]
+def _gmul(a, b):
+    r = 0
+    while b:
+        if b & 1:
+            r ^= a
+        a = _xt(a)
+        b >>= 1
+    return r & 0xff
 
-        # AES 固定密钥（与Java版一致）
-        self.AES_KEY = 'OITxa5OqAYjhswxx'
-        self.AES_IV = 'rCMNwZASNBKZ8mXV'
 
-        # RSA 公钥/私钥
-        self.RSA_PUBLIC_KEY = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDUM5+/y8sPsWkd1/RQS64X259EUwxFXFE5HlA65MqrxnPs0JqoSRojSDy5QhwvROlaD6TwRQHKMY2OAZ6SnQeUJsChTEFIR9qUkwrs3/MVUMxjsv6JS6Oe/juclyJGTgVmDhB55EafXsD0SQYVj/QXXsxR6ewR5E2kL52yAAD4yQIDAQAB"
-        self.RSA_PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
-MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGAe6hKrWLi1zQmjTT1
-ozbE4QdFeJGNxubxld6GrFGximxfMsMB6BpJhpcTouAqywAFppiKetUBBbXwYsYU
-1wNr648XVmPmCMCy4rY8vdliFnbMUj086DU6Z+/oXBdWU3/b1G0DN3E9wULRSwcK
-ZT3wj/cCI1vsCm3gj2R5SqkA9Y0CAwEAAQKBgAJH+4CxV0/zBVcLiBCHvSANm0l7
-HetybTh/j2p0Y1sTXro4ALwAaCTUeqdBjWiLSo9lNwDHFyq8zX90+gNxa7c5EqcW
-V9FmlVXr8VhfBzcZo1nXeNdXFT7tQ2yah/odtdcx+vRMSGJd1t/5k5bDd9wAvYdI
-DblMAg+wiKKZ5KcdAkEA1cCakEN4NexkF5tHPRrR6XOY/XHfkqXxEhMqmNbB9U34
-saTJnLWIHC8IXys6Qmzz30TtzCjuOqKRRy+FMM4TdwJBAJQZFPjsGC+RqcG5UvVM
-iMPhnwe/bXEehShK86yJK/g/UiKrO87h3aEu5gcJqBygTq3BBBoH2md3pr/W+hUM
-WBsCQQChfhTIrdDinKi6lRxrdBnn0Ohjg2cwuqK5zzU9p/N+S9x7Ck8wUI53DKm8
-jUJE8WAG7WLj/oCOWEh+ic6NIwTdAkEAj0X8nhx6AXsgCYRql1klbqtVmL8+95KZ
-K7PnLWG/IfjQUy3pPGoSaZ7fdquG8bq8oyf5+dzjE/oTXcByS+6XRQJAP/5ciy1b
-L3NhUhsaOVy55MHXnPjdcTX0FaLi+ybXZIfIQ2P4rb19mVq1feMbCXhz+L1rG8oa
-t5lYKfpe8k83ZA==
------END RSA PRIVATE KEY-----"""
+def _rotl8(x, n):
+    return ((x << n) | (x >> (8 - n))) & 0xff
 
-        self.DEVICE_OLD_KEY = "aLFBMWpxBrIDAD1Si/KVvm41"
 
-        # 设备信息（随机生成）
-        self.deviceId = str(864150060000000 + random.randint(0, 9999))
-        self.deviceKey = ''.join(random.choices('0123456789ABCDEF', k=40))  # 20字节hex大写
-        self.token = ""
-        self.token_id = ""
-        self.registered = False
+def _build_sbox():
+    box = [0] * 256
+    p = q = 1
+    while True:
+        p = (p ^ ((p << 1) & 0xff) ^ (0x1b if p & 0x80 else 0)) & 0xff
+        q ^= (q << 1) & 0xff
+        q ^= (q << 2) & 0xff
+        q ^= (q << 4) & 0xff
+        q &= 0xff
+        if q & 0x80:
+            q ^= 0x09
+        x = q ^ _rotl8(q, 1) ^ _rotl8(q, 2) ^ _rotl8(q, 3) ^ _rotl8(q, 4)
+        box[p] = x ^ 0x63
+        if p == 1:
+            break
+    box[0] = 0x63
+    return box
 
-        self.header = {
-            'User-Agent': 'Lavf/57.83.100',
-            'code': 'GZ0369',
-            'deviceId': self.deviceId,
-            'lang': 'zh_cn',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Version': '2604028',
-            'PackageName': 'com.ae06aebdbb.y286327f5a.ofe849883320260517',
-            'Ver': '3.0.3.2',
-            'api-ver': '3.0.3.2',
-            'Referer': self.host
-        }
 
-        self.cache = {}
-        self.cache_timeout = 300
+_SBOX = _build_sbox()
+_INV = [0] * 256
+for _i, _v in enumerate(_SBOX):
+    _INV[_v] = _i
 
-        # 初始化token
-        self.init_token()
+
+class AES128(object):
+    """AES-128，ECB 块操作 + CBC 封装（与 CryptoJS.AES/CBC/Pkcs7 一致）"""
+
+    def __init__(self, key, iv=None):
+        if len(key) != 16:
+            raise ValueError('key must be 16 bytes')
+        self.iv = iv
+        self.rk = self._expand(key)
+
+    @staticmethod
+    def _expand(key):
+        w = [list(key[i:i + 4]) for i in range(0, 16, 4)]
+        rcon = 1
+        for i in range(4, 44):
+            t = list(w[i - 1])
+            if i % 4 == 0:
+                t = t[1:] + t[:1]
+                t = [_SBOX[x] for x in t]
+                t[0] ^= rcon
+                rcon = _xt(rcon)
+            w.append([w[i - 4][j] ^ t[j] for j in range(4)])
+        return [sum(w[4 * r:4 * r + 4], []) for r in range(11)]
+
+    def enc_block(self, b):
+        sb = _SBOX
+        s = [b[i] ^ self.rk[0][i] for i in range(16)]
+        for r in range(1, 10):
+            t = [sb[x] for x in s]
+            s = [t[4 * ((c + row) % 4) + row] for c in range(4) for row in range(4)]
+            k = self.rk[r]
+            for c in range(4):
+                i = 4 * c
+                a0, a1, a2, a3 = s[i], s[i + 1], s[i + 2], s[i + 3]
+                s[i] = _xt(a0) ^ (_xt(a1) ^ a1) ^ a2 ^ a3 ^ k[i]
+                s[i + 1] = a0 ^ _xt(a1) ^ (_xt(a2) ^ a2) ^ a3 ^ k[i + 1]
+                s[i + 2] = a0 ^ a1 ^ _xt(a2) ^ (_xt(a3) ^ a3) ^ k[i + 2]
+                s[i + 3] = (_xt(a0) ^ a0) ^ a1 ^ a2 ^ _xt(a3) ^ k[i + 3]
+        t = [sb[x] for x in s]
+        s = [t[4 * ((c + row) % 4) + row] for c in range(4) for row in range(4)]
+        k = self.rk[10]
+        return bytes([s[i] ^ k[i] for i in range(16)])
+
+    def dec_block(self, b):
+        ib = _INV
+        k = self.rk[10]
+        s = [b[i] ^ k[i] for i in range(16)]
+        for r in range(9, 0, -1):
+            t = [s[4 * ((c - row) % 4) + row] for c in range(4) for row in range(4)]
+            t = [ib[x] for x in t]
+            k = self.rk[r]
+            t = [t[i] ^ k[i] for i in range(16)]
+            for c in range(4):
+                i = 4 * c
+                a0, a1, a2, a3 = t[i], t[i + 1], t[i + 2], t[i + 3]
+                s[i] = _gmul(a0, 14) ^ _gmul(a1, 11) ^ _gmul(a2, 13) ^ _gmul(a3, 9)
+                s[i + 1] = _gmul(a0, 9) ^ _gmul(a1, 14) ^ _gmul(a2, 11) ^ _gmul(a3, 13)
+                s[i + 2] = _gmul(a0, 13) ^ _gmul(a1, 9) ^ _gmul(a2, 14) ^ _gmul(a3, 11)
+                s[i + 3] = _gmul(a0, 11) ^ _gmul(a1, 13) ^ _gmul(a2, 9) ^ _gmul(a3, 14)
+        t = [s[4 * ((c - row) % 4) + row] for c in range(4) for row in range(4)]
+        t = [ib[x] for x in t]
+        k = self.rk[0]
+        return bytes([t[i] ^ k[i] for i in range(16)])
+
+    def cbc_encrypt(self, data):
+        p = 16 - len(data) % 16
+        data = data + bytes([p]) * p
+        out, prev = [], self.iv
+        for i in range(0, len(data), 16):
+            blk = bytes([data[i + j] ^ prev[j] for j in range(16)])
+            prev = self.enc_block(blk)
+            out.append(prev)
+        return b''.join(out)
+
+    def cbc_decrypt(self, data):
+        out, prev = [], self.iv
+        for i in range(0, len(data), 16):
+            blk = data[i:i + 16]
+            dec = self.dec_block(blk)
+            out.append(bytes([dec[j] ^ prev[j] for j in range(16)]))
+            prev = blk
+        raw = b''.join(out)
+        if raw:
+            p = raw[-1]
+            if 1 <= p <= 16 and raw[-p:] == bytes([p]) * p:
+                raw = raw[:-p]
+        return raw
+
+
+# ---------------------------------------------------------------- RSA 私钥解密（PKCS#1 v1.5）
+def _tlv(buf, i):
+    tag = buf[i]
+    i += 1
+    ln = buf[i]
+    i += 1
+    if ln & 0x80:
+        n = ln & 0x7f
+        ln = int.from_bytes(buf[i:i + n], 'big')
+        i += n
+    return tag, buf[i:i + ln], i + ln
+
+
+def _rsa_priv(der):
+    """从 PKCS#8 / PKCS#1 私钥 DER 里取 (n, d)"""
+    def walk(buf, depth=0):
+        if depth > 4:
+            return None
+        items, i = [], 0
+        try:
+            while i < len(buf):
+                tag, val, i = _tlv(buf, i)
+                items.append((tag, val))
+        except Exception:
+            return None
+        ints = [v for t, v in items if t == 0x02]
+        if len(ints) >= 9:                       # PKCS#1 RSAPrivateKey
+            return (int.from_bytes(ints[1], 'big'), int.from_bytes(ints[3], 'big'))
+        for t, v in items:
+            if t == 0x30:
+                r = walk(v, depth + 1)
+            elif t == 0x04:
+                r = walk(v, depth + 1)
+            else:
+                r = None
+            if r:
+                return r
+        return None
+    return walk(der)
+
+
+_PRIV = _rsa_priv(base64.b64decode(BODY_KEY))
+
+
+def rsa_decrypt_b64(cipher_b64):
+    """用内置私钥做 PKCS#1 v1.5 解密，返回明文字节"""
+    if not _PRIV:
+        return b''
+    n, d = _PRIV
+    k = (n.bit_length() + 7) // 8
+    c = int.from_bytes(base64.b64decode(cipher_b64), 'big')
+    em = pow(c, d, n).to_bytes(k, 'big')
+    if not em or em[0] != 0 or em[1] != 2:
+        return b''
+    idx = em.find(b'\x00', 2)
+    return em[idx + 1:] if idx > 0 else b''
+
+
+# ---------------------------------------------------------------- Spider
+class Spider(_Spider):
+    HOST_NAME = '瓜子影视'
 
     def getName(self):
-        return self.name
+        return '瓜子影视'
 
     def init(self, extend=''):
-        pass
+        self.extend = extend or ''
+        self._cache = {}
 
-    # ---------- 设备注册与认证 ----------
-    def init_token(self):
-        """初始化token：注册设备 -> 刷新"""
-        print("===== 初始化设备认证 =====")
-        try:
-            if not self.registered:
-                self.sign_up()
-            # 刷新获取最终token
-            self.refresh_token()
-        except Exception as e:
-            print(f"初始化token失败: {e}")
-            # 兜底使用原有硬编码（几乎没用）
-            self.token = '024212ef0975c5306a1434e113a46463.bc77313e11a248558a6ca244ca980944ec3421fa480c50e0229ad91f1cb15aea582603202cd71796885c9e5163e500f1b72f737059aff1ddb8beea47c5a331d6760540345b7f88b2302a0e6e09589f9dcf3ff9175d8c905f990203f5fc04748008ea7a366571cbf5b09509a873dcfba3cf1d5590385f5f7ef6e01d1850974aa220eb5178c89e61c24411af9b9a19435e.06fde789ece48d9b33c5dc857e04e9b5838f08264d928b87237d3476c4484b46'
+    # ------------------------------------------------------------ 网络
+    def _http(self, url, body):
+        req = urllib.request.Request(url, data=body.encode('utf-8'), method='POST')
+        # 直接赋值绕过 urllib 的 header capitalize（服务端按原样校验）
+        req.headers = dict(HEADERS)
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+            return r.read().decode('utf-8', 'replace')
 
-    def sign_up(self):
-        """注册设备"""
-        print("注册新设备...")
-        params = {
-            "new_key": self.deviceKey,
-            "old_key": self.DEVICE_OLD_KEY,
-            "phone_type": 1,
-            "code": ""
-        }
-        result = self._auth_request('/App/Authentication/Device/signUp', params)
-        self._apply_auth(result)
-        self.registered = True
+    def _sign(self, request_key_hex, t, keys, upper):
+        raw = ('token_id=,token=%s,phone_type=1,request_key=%s,app_id=1,time=%s,keys=%s%s'
+               % (APP_TOKEN, request_key_hex, t, keys, SIGN_TAIL))
+        sig = hashlib.md5(raw.encode('utf-8')).hexdigest()
+        return sig.upper() if upper else sig
 
-    def sign_in(self):
-        """登录设备"""
-        print("设备登录...")
-        params = {
-            "new_key": self.deviceKey,
-            "old_key": self.DEVICE_OLD_KEY
-        }
-        result = self._auth_request('/App/Authentication/Device/signIn', params)
-        self._apply_auth(result)
+    def _post(self, path, payload, keyname='list', upper=True, tries=2):
+        last = None
+        for _ in range(tries):
+            try:
+                t = str(int(time.time()))
+                enc = AES128(AES_KEY, AES_IV).cbc_encrypt(
+                    json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hex().upper()
+                keys = KEYS[keyname]
+                body = ('token=%s&token_id=&phone_type=1&time=%s&phone_model=xiaomi-22021211rc'
+                        '&keys=%s&request_key=%s&signature=%s&app_id=1&ad_version=1'
+                        % (APP_TOKEN, t, urllib.parse.quote(keys, safe=''), enc,
+                           self._sign(enc, t, keys, upper)))
+                txt = self._http(HOST + path, body)
+                js = json.loads(txt)
+                if str(js.get('code')) != '200':
+                    last = 'code=%s msg=%s' % (js.get('code'), str(js.get('msg'))[:80])
+                    time.sleep(0.6)
+                    continue
+                data = js.get('data') or {}
+                rk = data.get('response_key')
+                if not rk:
+                    return data
+                kv = json.loads(rsa_decrypt_b64(data.get('keys') or '').decode('utf-8'))
+                aes = AES128(kv['key'].encode('utf-8'), kv['iv'].encode('utf-8'))
+                return json.loads(aes.cbc_decrypt(bytes.fromhex(rk)).decode('utf-8', 'replace'))
+            except Exception as e:
+                last = '%s: %s' % (type(e).__name__, e)
+                time.sleep(0.6)
+        if last:
+            self.log('瓜子 %s 失败 %s' % (path, last))
+        return {}
 
-    def _apply_auth(self, result):
-        """从认证响应中提取token"""
-        new_token = result.get('token', '')
-        if not new_token:
-            raise Exception("认证失败，无token返回: {}".format(result))
-        self.token = new_token
-        new_token_id = result.get('app_user_id', '')
-        if new_token_id:
-            self.token_id = new_token_id
-        print(f"获取token成功, token前缀: {self.token[:30]}...")
+    # ------------------------------------------------------------ 数据转换
+    @staticmethod
+    def _videos(lst):
+        out = []
+        for v in lst or []:
+            cont = str(v.get('vod_continu') or '0')
+            out.append({
+                'vod_id': str(v.get('vod_id')),
+                'vod_name': v.get('vod_name') or '',
+                'vod_pic': v.get('vod_pic') or '',
+                'vod_remarks': ('更新至%s集' % cont) if cont not in ('0', '') else '电影',
+                'vod_year': str(v.get('vod_year') or ''),
+                'vod_area': v.get('vod_area') or '',
+            })
+        return out
 
-    def refresh_token(self):
-        """刷新token"""
-        print("刷新token...")
-        result = self._auth_request('/App/Authentication/Authenticator/refresh', {})
-        self._apply_auth(result)
+    def _filters(self):
+        return [{'key': k, 'name': {'area': '地区', 'year': '年份'}[k],
+                 'value': [{'n': n, 'v': v} for n, v in vals]} for k, vals in
+                (('area', FILTERS['area']), ('year', FILTERS['year']))]
 
-    def _auth_request(self, path, params):
-        """认证类请求（不需要ensure_token）"""
-        return self._send_encrypted_request(params, path, is_auth=True)
-
-    # ---------- 业务请求核心（修复加密与签名） ----------
-    def ensure_token(self):
-        """确保token有效，如未就绪则重新获取"""
-        if not self.token or not self.token_id:
-            if self.registered:
-                self.sign_in()
-            else:
-                self.sign_up()
-            self.refresh_token()
-
-    def _send_encrypted_request(self, data, path, is_auth=False):
-        """
-        发送加密请求，返回解密后的字典
-        :param data: 业务参数字典
-        :param path: 请求路径
-        :param is_auth: 是否为认证类请求（signUp/signIn/refresh），此时不使用ensure_token
-        """
-        try:
-            if not is_auth:
-                self.ensure_token()
-
-            # 1. 将参数转为JSON并AES加密
-            json_params = json.dumps(data)
-            encrypted = self.aes_encrypt(json_params, self.AES_KEY, self.AES_IV)
-            request_key = encrypted.upper()  # Java中是bytesToHex(encrypted).toUpperCase()
-
-            # 2. 生成keys (RSA加密 iv/key JSON)
-            key_json = json.dumps({"iv": self.AES_IV, "key": self.AES_KEY})
-            keys = self.rsa_encrypt(key_json, self.RSA_PUBLIC_KEY)
-
-            # 3. 生成签名
-            t = str(int(time.time()))
-            sign_str = f"token_id=,token={self.token},phone_type=1,request_key={request_key},app_id=1,time={t},keys={keys}*&zvdvdvddbfikkkumtmdwqppp?|4Y!s!2br"
-            signature = self.get_md5(sign_str)  # 已改为大写
-
-            # 4. 构建请求体
-            body = {
-                'token': self.token,
-                'token_id': '',
-                'phone_type': '1',
-                'time': t,
-                'phone_model': 'xiaomi-25031',  # 与Java版保持一致
-                'keys': keys,
-                'request_key': request_key,
-                'signature': signature,
-                'app_id': '1',
-                'ad_version': '1'
-            }
-
-            # 5. 发送请求
-            url = f"{self.host}{path}"
-            response = self.post(url, headers=self.header, data=body, timeout=10)
-
-            if response.status_code != 200:
-                raise Exception(f"HTTP {response.status_code}")
-
-            resp_json = response.json()
-            # 检查业务code（若不为200可能token过期）
-            if 'code' in resp_json and resp_json['code'] != 200:
-                print(f"业务错误码: {resp_json['code']}, 信息: {resp_json}")
-                # 如果不是认证请求，尝试重新获取token后重试一次（这里简单处理，外层get_data已有重试）
-                raise Exception("业务错误")
-
-            data_section = resp_json.get('data')
-            if not data_section:
-                raise Exception("响应缺少data字段")
-
-            encrypted_response = data_section.get('response_key', '')
-            encrypted_keys = data_section.get('keys', '')
-
-            # 6. 解密响应
-            decrypted_keys_json = self.rsa_decrypt(encrypted_keys, self.RSA_PRIVATE_KEY)
-            key_info = json.loads(decrypted_keys_json)
-            resp_key = key_info['key']
-            resp_iv = key_info['iv']
-            decrypted_data = self.aes_decrypt(encrypted_response, resp_key, resp_iv)
-            return json.loads(decrypted_data)
-
-        except Exception as e:
-            print(f"请求失败 [{path}]: {e}")
-            return None
-
-    def get_data(self, data, path, use_cache=True):
-        """带重试和域名轮询的数据获取（保持原框架）"""
-        try:
-            cache_key = f"{path}_{hash(str(data))}" if use_cache else None
-            if use_cache and cache_key in self.cache:
-                cached_data, timestamp = self.cache[cache_key]
-                if time.time() - timestamp < self.cache_timeout:
-                    return cached_data
-
-            for attempt in range(3):
-                tried = 0
-                while tried < len(self.hosts):
-                    self.host = self.hosts[self.host_index]
-                    self.header['Referer'] = self.host
-                    result = self._send_encrypted_request(data, path)
-                    if result is not None:
-                        print(f"请求成功: {path}, 域名: {self.host}")
-                        if use_cache and cache_key:
-                            self.cache[cache_key] = (result, time.time())
-                        return result
-
-                    # 切换到下一个域名
-                    self.host_index = (self.host_index + 1) % len(self.hosts)
-                    tried += 1
-
-                # 所有域名失败，尝试重新认证并重试
-                if attempt < 2:
-                    print("所有域名失败，尝试重新认证...")
-                    try:
-                        self.ensure_token()
-                    except:
-                        pass
-                    self.host_index = 0
-                else:
-                    break
-            return None
-        except Exception as e:
-            print(f"get_data异常: {e}")
-            return None
-
-    # ---------- 加解密工具 ----------
-    def aes_encrypt(self, text, key, iv):
-        try:
-            key_bytes = key.encode('utf-8')
-            iv_bytes = iv.encode('utf-8')
-            cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
-            encrypted = cipher.encrypt(pad(text.encode('utf-8'), AES.block_size))
-            return encrypted.hex().upper()
-        except Exception as e:
-            print(f"AES加密失败: {e}")
-            return ""
-
-    def aes_decrypt(self, text, key, iv):
-        try:
-            key_bytes = key.encode('utf-8')
-            iv_bytes = iv.encode('utf-8')
-            cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
-            encrypted_bytes = bytes.fromhex(text)
-            decrypted = unpad(cipher.decrypt(encrypted_bytes), AES.block_size)
-            return decrypted.decode('utf-8')
-        except Exception as e:
-            print(f"AES解密失败: {e}")
-            return ""
-
-    def rsa_encrypt(self, text, public_key_str):
-        """RSA公钥加密（PKCS1v1.5）"""
-        try:
-            key = RSA.import_key("-----BEGIN PUBLIC KEY-----\n" + public_key_str + "\n-----END PUBLIC KEY-----")
-            cipher = PKCS1_v1_5.new(key)
-            encrypted = cipher.encrypt(text.encode('utf-8'))
-            return base64.b64encode(encrypted).decode('utf-8')
-        except Exception as e:
-            print(f"RSA加密失败: {e}")
-            return ""
-
-    def rsa_decrypt(self, encrypted_data, private_key_str):
-        """RSA私钥解密"""
-        try:
-            encrypted_bytes = base64.b64decode(encrypted_data)
-            rsa_key = RSA.import_key(private_key_str)
-            cipher = PKCS1_v1_5.new(rsa_key)
-            decrypted = cipher.decrypt(encrypted_bytes, None)
-            return decrypted.decode('utf-8') if decrypted else ""
-        except Exception as e:
-            print(f"RSA解密失败: {e}")
-            return ""
-
-    def get_md5(self, text):
-        return hashlib.md5(text.encode()).hexdigest().upper()  # 与Java一致大写
-
-    # ---------- 业务方法（不变） ----------
+    # ------------------------------------------------------------ 首页 / 分类
     def homeContent(self, filter):
-        result = {}
-        classes = [
-            {"type_name": "电影", "type_id": "1"},
-            {"type_name": "电视剧", "type_id": "2"},
-            {"type_name": "动漫", "type_id": "4"},
-            {"type_name": "综艺", "type_id": "3"},
-            {"type_name": "短剧", "type_id": "64"}
-        ]
-        result['class'] = classes
-        filters = {}
-        for cate in classes:
-            tid = cate['type_id']
-            filters[tid] = [
-                {"key": "area", "name": "地区", "value": [
-                    {"n": "全部", "v": "0"}, {"n": "大陆", "v": "大陆"}, {"n": "香港", "v": "香港"},
-                    {"n": "台湾", "v": "台湾"}, {"n": "美国", "v": "美国"}, {"n": "韩国", "v": "韩国"},
-                    {"n": "日本", "v": "日本"}, {"n": "英国", "v": "英国"}, {"n": "法国", "v": "法国"},
-                    {"n": "泰国", "v": "泰国"}, {"n": "印度", "v": "印度"}, {"n": "其他", "v": "其他"}
-                ]},
-                {"key": "year", "name": "年份", "value": [
-                    {"n": "全部", "v": "0"}, {"n": "2025", "v": "2025"}, {"n": "2024", "v": "2024"},
-                    {"n": "2023", "v": "2023"}, {"n": "2022", "v": "2022"}, {"n": "2021", "v": "2021"},
-                    {"n": "2020", "v": "2020"}, {"n": "2019", "v": "2019"}, {"n": "2018", "v": "2018"},
-                    {"n": "2017", "v": "2017"}, {"n": "2016", "v": "2016"}, {"n": "2015", "v": "2015"},
-                    {"n": "2014", "v": "2014"}, {"n": "2013", "v": "2013"}, {"n": "2012", "v": "2012"},
-                    {"n": "2011", "v": "2011"}, {"n": "2010", "v": "2010"}, {"n": "2009", "v": "2009"},
-                    {"n": "2008", "v": "2008"}, {"n": "2007", "v": "2007"}, {"n": "2006", "v": "2006"},
-                    {"n": "2005", "v": "2005"}, {"n": "更早", "v": "2004"}
-                ]},
-                {"key": "sort", "name": "排序", "value": [
-                    {"n": "最新", "v": "d_id"}, {"n": "最热", "v": "d_hits"}, {"n": "推荐", "v": "d_score"}
-                ]}
-            ]
-        result['filters'] = filters
-        return result
+        classes = [{'type_name': n, 'type_id': i} for n, i in CATES]
+        return {'class': classes, 'filters': {i: self._filters() for _, i in CATES},
+                'list': self.homeVideoContent().get('list', [])}
 
     def homeVideoContent(self):
-        return {'list': []}
+        data = self._post('/App/IndexList/indexList',
+                          {'area': '0', 'sub': '5', 'year': '0', 'pageSize': '30',
+                           'sort': 'd_id', 'page': 1, 'tid': '1'})
+        return {'list': self._videos(data.get('list'))}
 
     def categoryContent(self, tid, pg, filter, extend):
-        videos = []
+        tid = str(tid)
+        ext = extend or {}
         try:
-            body = {
-                "area": extend.get('area', '0'),
-                "year": extend.get('year', '0'),
-                "pageSize": "30",
-                "sort": extend.get('sort', 'd_id'),
-                "page": str(pg),
-                "tid": tid
-            }
-            cache_key = f"category_{tid}_{pg}_{hash(str(body))}"
-            data = self.get_cached_data(cache_key, body, '/App/IndexList/indexList')
-            if data and 'list' in data:
-                for item in data['list']:
-                    vod_continu = item.get('vod_continu', 0)
-                    remarks = '电影' if vod_continu == 0 else f'更新至{vod_continu}集'
-                    video = {
-                        "vod_id": f"{item.get('vod_id', '')}/{vod_continu}",
-                        "vod_name": item.get('vod_name', ''),
-                        "vod_pic": item.get('vod_pic', ''),
-                        "vod_remarks": remarks
-                    }
-                    videos.append(video)
-        except Exception as e:
-            print(f"获取分类内容失败: {e}")
-        return {'list': videos, 'page': int(pg), 'pagecount': 9999, 'limit': 30, 'total': 999999}
-
-    def detailContent(self, ids):
-        try:
-            vod_id = ids[0].split('/')[0]
-            t = str(int(time.time()))
-            body1 = {"token_id": self.token_id, "vod_id": vod_id, "mobile_time": t, "token": self.token}
-            qdata = self.get_data(body1, '/App/IndexPlay/playInfo')
-            body2 = {"vurl_cloud_id": "2", "vod_d_id": vod_id}
-            jdata = self.get_data(body2, '/App/Resource/Vurl/show')
-            if not qdata or 'vodInfo' not in qdata:
-                return {'list': []}
-            vod = qdata['vodInfo']
-            video_detail = {
-                "vod_id": vod_id,
-                "vod_name": vod.get('vod_name', ''),
-                "vod_pic": vod.get('vod_pic', ''),
-                "vod_year": vod.get('vod_year', ''),
-                "vod_area": vod.get('vod_area', ''),
-                "vod_actor": vod.get('vod_actor', ''),
-                "vod_director": vod.get('vod_director', ''),
-                "vod_content": vod.get('vod_use_content', '').strip(),
-                "vod_play_from": "瓜子影视"
-            }
-            play_list = []
-            if jdata and 'list' in jdata:
-                for index, item in enumerate(jdata['list']):
-                    if 'play' in item:
-                        n, p = [], []
-                        for key, value in item['play'].items():
-                            if 'param' in value and value['param']:
-                                n.append(key)
-                                p.append(value['param'])
-                        if p:
-                            play_name = str(index + 1) if len(jdata['list']) != 1 else vod.get('vod_name', '')
-                            play_url = f"{p[-1]}||{'@'.join(n)}"
-                            play_list.append(f"{play_name}${play_url}")
-            video_detail["vod_play_url"] = "#".join(play_list)
-            return {'list': [video_detail]}
-        except Exception as e:
-            print(f"获取详情失败: {e}")
-            return {'list': []}
+            page = int(pg)
+        except Exception:
+            page = 1
+        sub = str(ext.get('sub') or DEFAULT_SUB.get(tid, ''))
+        data = self._post('/App/IndexList/indexList', {
+            'area': str(ext.get('area') or '0'),
+            'sub': sub,
+            'year': str(ext.get('year') or '0'),
+            'pageSize': '30',
+            'sort': str(ext.get('sort') or 'd_id'),
+            'page': page,
+            'tid': tid,
+        })
+        lst = data.get('list') or []
+        total = int(data.get('total') or 0)
+        return {'list': self._videos(lst), 'page': page,
+                'pagecount': max(1, int(math.ceil(total / 30.0))) if total else page + 1,
+                'limit': 30, 'total': total}
 
     def searchContent(self, key, quick, pg=1):
-        videos = []
-        try:
-            body = {"keywords": key, "order_val": "1", "page": str(pg)}
-            data = self.get_data(body, '/App/Index/findMoreVod', use_cache=False)
-            if data and 'list' in data:
-                for item in data['list']:
-                    vod_continu = item.get('vod_continu', 0)
-                    remarks = '电影' if vod_continu == 0 else f'更新至{vod_continu}集'
-                    videos.append({
-                        "vod_id": f"{item.get('vod_id', '')}/{vod_continu}",
-                        "vod_name": item.get('vod_name', ''),
-                        "vod_pic": item.get('vod_pic', ''),
-                        "vod_remarks": remarks
-                    })
-        except Exception as e:
-            print(f"搜索失败: {e}")
-        return {'list': videos, 'page': int(pg), 'pagecount': 9999, 'limit': 30, 'total': 999999}
+        data = self._post('/App/Index/findMoreVod', {'keywords': key, 'order_val': '1'}, upper=False)
+        return {'list': self._videos(data.get('list')), 'page': 1, 'pagecount': 1}
 
+    # ------------------------------------------------------------ 详情
+    def detailContent(self, ids):
+        did = str(ids[0]).split('/')[0].split('@')[0]
+        info = (self._post('/App/IndexPlay/playInfo',
+                           {'token_id': '393668', 'vod_id': did,
+                            'mobile_time': str(int(time.time())), 'token': APP_TOKEN},
+                           keyname='detail', upper=False) or {}).get('vodInfo') or {}
+        vurl = self._post('/App/Resource/Vurl/show',
+                          {'vurl_cloud_id': '2', 'vod_d_id': did},
+                          keyname='detail', upper=False) or {}
+        items = vurl.get('list') or []
+
+        # 按清晰度聚合：同一清晰度 -> 一条线路，内含全部集
+        lines = {}
+        for it in items:
+            title = str(it.get('title') or '').strip() or '正片'
+            for res, p in (it.get('play') or {}).items():
+                param = (p or {}).get('param') or ''
+                m = re.search(r'vurl_id=(\d+)', param)
+                if not m:
+                    continue
+                lines.setdefault(str(res), []).append(
+                    '%s$%s/%s?%s' % (title, did, m.group(1), res))
+
+        order = sorted(lines.keys(), key=lambda x: -int(x) if str(x).isdigit() else 0)
+        remarks = str(info.get('vod_use_content') or info.get('vod_blurb') or '')
+        return {'list': [{
+            'vod_id': did,
+            'vod_name': info.get('vod_name') or '',
+            'vod_pic': info.get('vod_pic') or '',
+            'vod_year': str(info.get('vod_year') or ''),
+            'vod_area': info.get('vod_area') or '',
+            'vod_director': info.get('vod_director') or '',
+            'vod_actor': info.get('vod_actor') or '',
+            'vod_remarks': ('更新至%s集' % info.get('vod_continu')) if str(info.get('vod_continu') or '0') != '0' else '电影',
+            'vod_content': re.sub(r'<[^>]+>', '', remarks),
+            'vod_play_from': '$$$'.join(['%sP' % r for r in order]) or '瓜子',
+            'vod_play_url': '$$$'.join(['#'.join(lines[r]) for r in order]) or '',
+        }]}
+
+    # ------------------------------------------------------------ 播放
     def playerContent(self, flag, id, vipFlags):
+        url = ''
         try:
-            parts = id.split('||')
-            if len(parts) < 2:
-                return {"parse": 0, "playUrl": "", "url": ""}
-            param_str = parts[0]
-            resolutions = parts[1].split('@') if len(parts) > 1 else []
-            params = {}
-            for pair in param_str.split('&'):
-                if '=' in pair:
-                    key, value = pair.split('=', 1)
-                    params[key] = value
-            if resolutions:
-                resolutions.sort(key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
-                params['resolution'] = resolutions[0]
-                data = self.get_data(params, '/App/Resource/VurlDetail/showOne', use_cache=False)
-                if data and 'url' in data:
-                    return {"parse": 0, "playUrl": "", "url": self.play_address(data['url']),
-                            "header": json.dumps(PLAY_HEADERS), 'danmaku': 'http://127.0.0.1:9978/proxy?do=diydanmu'}
-            return {"parse": 0, "playUrl": "", "url": ""}
+            did, rest = str(id).split('/', 1)
+            vurl_id, res = rest.split('?', 1)
+            data = self._post('/App/Resource/VurlDetail/showOne', {
+                'domain_type': '8', 'vod_id': did, 'type': 'play',
+                'resolution': res, 'vurl_id': vurl_id,
+            }, keyname='play', upper=False) or {}
+            url = data.get('url') or ''
+            if not url:
+                self.log('瓜子 无直链 state=%s' % data.get('state'))
         except Exception as e:
-            print(f"播放解析失败: {e}")
-            return {"parse": 0, "playUrl": "", "url": ""}
+            self.log('瓜子 播放异常 %s' % e)
+        return {'parse': 0, 'playUrl': '', 'url': url,
+                'header': {'User-Agent': UA, 'Referer': HOST + '/'}}
 
     def isVideoFormat(self, url):
-        video_formats = ['.m3u8', '.mp4', '.avi', '.mkv', '.flv', '.ts']
-        return any(url.lower().endswith(fmt) for fmt in video_formats)
+        return any(x in (url or '').lower() for x in ('.m3u8', '.mp4', '.flv', '.mkv'))
 
     def manualVideoCheck(self):
-        pass
-
-    # ---------- 播放取流：本机代理 ----------
-    def play_address(self, address):
-        """把正片地址换成经本机代理取流的地址。
-
-        瓜子 CDN 按 User-Agent 判别是否放行正片：浏览器 UA 或空 UA 会被 302 到
-        一段 19 秒的推广片头。播放器的 UA 我们改不了，但可以让所有取流都先经过
-        本机代理，由这里统一带上播放器 UA，播放器用什么 UA 就都无所谓了。
-        """
-        if not USE_LOCAL_PROXY or not address:
-            return address
-        return '%s&type=m3u8&url=%s' % (PROXY_BASE, urllib.parse.quote(address, safe=''))
-
-    def rewrite_key_uri(self, line, base_address):
-        """重写 #EXT-X-KEY 等标签里的 URI，保证密钥也走代理。"""
-        def swap(match):
-            target = match.group(1)
-            full = target if target.startswith('http') else urllib.parse.urljoin(base_address, target)
-            return 'URI="%s"' % self.play_address(full)
-        return re.sub(r'URI="([^"]+)"', swap, line)
-
-    def rewrite_playlist(self, text, base_address):
-        """把播放列表里的分片地址全部改成本机代理地址。
-
-        分片同样受 UA 限制，只代理列表不代理分片的话照样会播到广告。
-        """
-        lines = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                lines.append(line)
-            elif stripped.startswith('#'):
-                lines.append(self.rewrite_key_uri(line, base_address))
-            else:
-                full = stripped if stripped.startswith('http') else urllib.parse.urljoin(base_address, stripped)
-                lines.append(self.play_address(full))
-        return '\n'.join(lines)
-
-    def fetch_for_proxy(self, address):
-        """带播放器 UA 取流，返回 response。"""
-        return self.get(address, headers=PLAY_HEADERS, timeout=20)
+        return False
 
     def localProxy(self, param):
-        param = param or {}
-        address = urllib.parse.unquote(param.get('url') or '')
-        if not address:
-            return [404, 'text/plain', {}, '']
-        try:
-            response = self.fetch_for_proxy(address)
-            if response.status_code != 200:
-                # 取流异常时退回直链，至少还能播
-                return [302, 'text/plain', '', {'Location': address}]
-            body = response.content or b''
-            is_playlist = body[:7] == b'#EXTM3U' or address.lower().split('?')[0].endswith('.m3u8')
-            if is_playlist:
-                text = body.decode('utf-8', 'ignore')
-                return [200, 'application/vnd.apple.mpegurl',
-                        self.rewrite_playlist(text, address),
-                        {'Content-Type': 'application/vnd.apple.mpegurl'}]
-            try:
-                content_type = response.headers.get('Content-Type') or ''
-            except Exception:
-                content_type = ''
-            if (not content_type) or ('octet-stream' in content_type.lower()):
-                content_type = 'video/mp2t'
-            return [200, content_type, body, {'Content-Type': content_type}]
-        except Exception as e:
-            print(f"本机代理取流失败: {e}")
-            return [302, 'text/plain', '', {'Location': address}]
-
-    def get_cached_data(self, cache_key, data, path):
-        current_time = time.time()
-        if cache_key in self.cache:
-            cached_data, timestamp = self.cache[cache_key]
-            if current_time - timestamp < self.cache_timeout:
-                return cached_data
-        result = self.get_data(data, path)
-        if result:
-            self.cache[cache_key] = (result, current_time)
-        return result
-
-if __name__ == '__main__':
-    pass
+        return [200, 'text/plain', '']
