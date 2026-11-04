@@ -1,10 +1,39 @@
 # -*- coding: utf-8 -*-
+"""
+瓜子影视（py 源，秒播版 v3 协议，2026-11 实测可用）
+
+协议要点：
+  1) 设备注册换免费 token：/App/Authentication/Device/signIn（已注册）→ signUp（首次），
+     new_key 为本机固定设备号，token 有效期约 30 分钟，过期自动重登
+  2) 每次请求随机 16 位 key/iv：
+     request_key = AES-128-CBC(body) 的大写 HEX
+     keys        = RSA 公钥(PKCS#1 v1.5) 加密 {"iv":...,"key":...} 的 base64
+     signature   = md5("token_id=,token=...,phone_type=1,request_key=...,app_id=1,time=...,keys=..."
+                       + "*&zvdvdvddbfikkkumtmdwqppp?|4Y!s!2br") 的大写 HEX
+  3) 响应 data.response_key 是密文，data.keys 用内置 RSA 私钥解开得 {key, iv}，再 AES 解出 JSON
+  4) 播放直链必须带 Referer = playRef（/App/UserInfo/getUserInfo 下发）+ UA Lavf
+
+接口：
+     /App/IndexList/indexList         分类列表（area/sub/year/sort/page/pageSize/tid）
+     /App/Index/findMoreVod           搜索（keywords/order_val）
+     /App/IndexPlay/playInfo          详情（vod_id）
+     /App/Resource/Vurl/show          分集+清晰度（vurl_cloud_id=2 / vod_d_id）
+     /App/Resource/VurlDetail/showOne 播放直链（domain_type=8/vod_id/type=play/resolution/vurl_id）
+
+每个 vurl 的 play 对象里带 480/720/1080 三档，show_type=2 为不可用档位，
+所以按「清晰度」分线路，同一清晰度下按集号排序。
+
+AES / RSA 均为纯 Python 实现，不依赖 pycryptodome，任何 py 内核可直接跑。
+"""
+
 import base64
 import hashlib
 import json
 import math
+import random
 import re
 import ssl
+import string
 import time
 import urllib.parse
 import urllib.request
@@ -16,41 +45,56 @@ except Exception:
         pass
 
 # ---------------------------------------------------------------- 站点参数
-HOST = 'https://api.8utdtcq.com'
+# 2026-11 起改用「秒播」版 App 的 v3 协议（旧 api.8utdtcq.com 只有固定游客 token，
+# showOne 对任何片都回同一段 44 秒贴片，已废弃）：
+#   1) 设备注册 /App/Authentication/Device/signUp（免费、不要短信）换 token
+#   2) 每次请求随机 16 位 key/iv，AES-128-CBC 加密 body -> request_key（大写 HEX）
+#      keys = RSA 公钥（PKCS#1 v1.5）加密 {"iv":..,"key":..} 后的 base64
+#      signature = md5("token_id=,token=…,phone_type=1,request_key=…,app_id=1,time=…,keys=…"+尾巴) 大写
+#   3) 响应 data.keys 用内置 RSA 私钥解开得 {key,iv}，再 AES 解 data.response_key
+#   4) 播放地址要带 playRef 作 Referer（/App/UserInfo/getUserInfo 下发）
+
+HOSTS = [
+    'https://apinew.uozvr.com',
+    'https://sdapi.e2wu4ht.com',
+    'https://api.w32z7vtd.com',
+    'https://api.6a7nnf7.com',
+    'https://api.umygrx3.com',
+    'https://api.rmedphk.com',
+]
 UA = 'okhttp/3.12.0'
-APP_TOKEN = ('1be86e8e18a9fa18b2b8d5432699dad0.ac008ed650fd087bfbecf2fda9d82e9835253ef24843e6b18'
-             'fcd128b10763497bcf9d53e959f5377cde038c20ccf9d17f604c9b8bb6e61041def86729b2fc7408bd24'
-             '1e23c213ac57f0226ee656e2bb0a583ae0e4f3bf6c6ab6c490c9a6f0d8cdfd366aacf5d83193671a8f77'
-             'cd1af1ff2e9145de92ec43ec87cf4bdc563f6e919fe32861b0e93b118ec37d8035fbb3c'
-             '.59dd05c5d9a8ae726528783128218f15fe6f2c0c8145eddab112b374fcfe3d79')
-BODY_KEY = 'MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGAe6hKrWLi1zQmjTT1ozbE4QdFeJGNxubxld6GrFGximxfMsMB6BpJhpcTouAqywAFppiKetUBBbXwYsYU1wNr648XVmPmCMCy4rY8vdliFnbMUj086DU6Z+/oXBdWU3/b1G0DN3E9wULRSwcKZT3wj/cCI1vsCm3gj2R5SqkA9Y0CAwEAAQKBgAJH+4CxV0/zBVcLiBCHvSANm0l7HetybTh/j2p0Y1sTXro4ALwAaCTUeqdBjWiLSo9lNwDHFyq8zX90+gNxa7c5EqcWV9FmlVXr8VhfBzcZo1nXeNdXFT7tQ2yah/odtdcx+vRMSGJd1t/5k5bDd9wAvYdIDblMAg+wiKKZ5KcdAkEA1cCakEN4NexkF5tHPRrR6XOY/XHfkqXxEhMqmNbB9U34saTJnLWIHC8IXys6Qmzz30TtzCjuOqKRRy+FMM4TdwJBAJQZFPjsGC+RqcG5UvVMiMPhnwe/bXEehShK86yJK/g/UiKrO87h3aEu5gcJqBygTq3BBBoH2md3pr/W+hUMWBsCQQChfhTIrdDinKi6lRxrdBnn0Ohjg2cwuqK5zzU9p/N+S9x7Ck8wUI53DKm8jUJE8WAG7WLj/oCOWEh+ic6NIwTdAkEAj0X8nhx6AXsgCYRql1klbqtVmL8+95KZK7PnLWG/IfjQUy3pPGoSaZ7fdquG8bq8oyf5+dzjE/oTXcByS+6XRQJAP/5ciy1bL3NhUhsaOVy55MHXnPjdcTX0FaLi+ybXZIfIQ2P4rb19mVq1feMbCXhz+L1rG8oat5lYKfpe8k83ZA=='
-AES_KEY = b'mvXBSW7ekreItNsT'
-AES_IV = b'2U3IrJL8szAKp0Fj'
+PLAY_UA = 'Lavf/57.83.100'
+DEVICE_KEY = 'Xk7Qm2Zr9TpW4nJc8VbY'      # 固定设备号：重启后 signIn 能拿回同一个免费账号
+OLD_KEY = 'aLFBMWpxBrIDAD1Si/KVvm41'
+VER = '3.0.4.8'
+VERSION = '2606029'
+PKG = 'com.v54f07a912.t4ee50f184.dbb1e7669f20260721'
+CODE = 'GZ0313'
 SIGN_TAIL = '*&zvdvdvddbfikkkumtmdwqppp?|4Y!s!2br'
+DEFAULT_PLAY_REF = 'http://WJiZxLXA2.com/'
+PUB_KEY = ('MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDUM5+/y8sPsWkd1/RQS64X259EUwxFXFE5'
+           'HlA65MqrxnPs0JqoSRojSDy5QhwvROlaD6TwRQHKMY2OAZ6SnQeUJsChTEFIR9qUkwrs3/MVU'
+           'Mxjsv6JS6Oe/juclyJGTgVmDhB55EafXsD0SQYVj/QXXsxR6ewR5E2kL52yAAD4yQIDAQAB')
+BODY_KEY = 'MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGAe6hKrWLi1zQmjTT1ozbE4QdFeJGNxubxld6GrFGximxfMsMB6BpJhpcTouAqywAFppiKetUBBbXwYsYU1wNr648XVmPmCMCy4rY8vdliFnbMUj086DU6Z+/oXBdWU3/b1G0DN3E9wULRSwcKZT3wj/cCI1vsCm3gj2R5SqkA9Y0CAwEAAQKBgAJH+4CxV0/zBVcLiBCHvSANm0l7HetybTh/j2p0Y1sTXro4ALwAaCTUeqdBjWiLSo9lNwDHFyq8zX90+gNxa7c5EqcWV9FmlVXr8VhfBzcZo1nXeNdXFT7tQ2yah/odtdcx+vRMSGJd1t/5k5bDd9wAvYdIDblMAg+wiKKZ5KcdAkEA1cCakEN4NexkF5tHPRrR6XOY/XHfkqXxEhMqmNbB9U34saTJnLWIHC8IXys6Qmzz30TtzCjuOqKRRy+FMM4TdwJBAJQZFPjsGC+RqcG5UvVMiMPhnwe/bXEehShK86yJK/g/UiKrO87h3aEu5gcJqBygTq3BBBoH2md3pr/W+hUMWBsCQQChfhTIrdDinKi6lRxrdBnn0Ohjg2cwuqK5zzU9p/N+S9x7Ck8wUI53DKm8jUJE8WAG7WLj/oCOWEh+ic6NIwTdAkEAj0X8nhx6AXsgCYRql1klbqtVmL8+95KZK7PnLWG/IfjQUy3pPGoSaZ7fdquG8bq8oyf5+dzjE/oTXcByS+6XRQJAP/5ciy1bL3NhUhsaOVy55MHXnPjdcTX0FaLi+ybXZIfIQ2P4rb19mVq1feMbCXhz+L1rG8oat5lYKFpe8k83ZA=='
 
-# 每个接口的 keys 不一样，服务端会校验
-KEYS = {
-    'list': ('qDpotE2bedimK3QGqlyV5ieXXC3EhaPLQ+IOJyHnHflCj5w/7ESK7FgywMvrgjxbx0GklEFLI4+JshgySe633OIR'
-             'stuktwdiCy3CT+fLSpuxBJDIlfXQDaeH3ig1wiB0JsZ601XHiFweGMu4tZfnSpHg3OnoL6nz/uurUif2OK4='),
-    'detail': ('Qmxi5ciWXbQzkr7o+SUNiUuQxQEf8/AVyUWY4T/BGhcXBIUz4nOyHBGf9A4KbM0iKF3yp9M7WAY0rrs5PzdTAOB4'
-               '5plcS2zZ0wUibcXuGJ29VVGRWKGwE9zu2vLwhfgjTaaDpXo4rby+7GxXTktzJmxvneOUdYeHi+PZsThlvPI='),
-    'play': ('ZH8gpdp9bxjuG2NK97sol3o7Uiz+9eVEaVMlE2Fk3j7EResM3YHnECZUH7BONNTjpy7RVNi/YimGuNYriC7Cmswv4P'
-             'NYiFYzw9QhlqZKwNfCM6IUpFZ0T4rZx8G78zkv2tNVbfYC4qNQedGi07nWZ33dlSuVxROVfY5JxOWHMI0='),
-}
 
-HEADERS = {
-    'Cache-Control': 'no-cache',
-    'Version': '2406025',
-    'PackageName': 'com.uf076bf0c246.qe439f0d5e.m8aaf56b725a.ifeb647346f',
-    'Ver': '1.9.2',
-    'Referer': HOST,
-    'X-Customer-Client-Ip': '127.0.0.1',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'Connection': 'Keep-Alive',
-    'User-Agent': UA,
-}
+def headers(host, device_id):
+    return {
+        'User-Agent': UA,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Ver': VER, 'Version': VERSION, 'api-ver': VER,
+        'PackageName': PKG, 'code': CODE, 'deviceId': device_id,
+        'lang': 'zh_cn', 'Cache-Control': 'no-cache', 'Referer': host,
+    }
+
+
+def rnd16(n=16):
+    pool = string.ascii_uppercase + string.ascii_lowercase + '0123456789'
+    return ''.join(random.choice(pool) for _ in range(n))
+
 
 CATES = [('电影', '1'), ('电视剧', '2'), ('综艺', '3'), ('动漫', '4'), ('短剧', '64')]
+
 
 # 分类默认二级子类（服务端 sub 参数）
 DEFAULT_SUB = {'1': '5', '2': '12', '4': '30', '3': '22', '64': ''}
@@ -256,6 +300,37 @@ def rsa_decrypt_b64(cipher_b64):
     return em[idx + 1:] if idx > 0 else b''
 
 
+def _rsa_pub(der_b64):
+    """SPKI 公钥 -> (n, e)"""
+    der = base64.b64decode(der_b64)
+    _, outer, _ = _tlv(der, 0)              # SEQUENCE
+    _, _, j = _tlv(outer, 0)                # AlgorithmIdentifier
+    _, bits, j = _tlv(outer, j)             # BIT STRING
+    if bits and bits[0] == 0:
+        bits = bits[1:]
+    _, seq, _ = _tlv(bits, 0)               # RSAPublicKey
+    _, nb, m = _tlv(seq, 0)
+    _, eb, m = _tlv(seq, m)
+    return int.from_bytes(nb, 'big'), int.from_bytes(eb, 'big')
+
+
+_PUB = _rsa_pub(PUB_KEY)
+
+
+def rsa_encrypt_b64(msg):
+    """PKCS#1 v1.5 公钥加密"""
+    if isinstance(msg, str):
+        msg = msg.encode('utf-8')
+    n, e = _PUB
+    k = (n.bit_length() + 7) // 8
+    ps = bytearray()
+    while len(ps) < k - 3 - len(msg):
+        b = random.randint(1, 255)
+        ps.append(b)
+    em = b'\x00\x02' + bytes(ps) + b'\x00' + msg
+    return base64.b64encode(pow(int.from_bytes(em, 'big'), e, n).to_bytes(k, 'big')).decode()
+
+
 # ---------------------------------------------------------------- Spider
 class Spider(_Spider):
     HOST_NAME = '瓜子影视'
@@ -263,56 +338,116 @@ class Spider(_Spider):
     def getName(self):
         return '瓜子影视'
 
+    # 类级默认值：内核不调 init 时也不会 AttributeError
+    _host_idx = 0
+    _host = HOSTS[0]
+    _device_id = '864150601234'
+    _token = ''
+    _token_id = ''
+    _token_ts = 0
+    _play_ref = DEFAULT_PLAY_REF
+
     def init(self, extend=''):
         self.extend = extend or ''
         self._cache = {}
+        self._host_idx = 0
+        self._host = HOSTS[0]
+        self._device_id = str(864150060000 + random.randint(0, 9999))
+        self._token = ''
+        self._token_id = ''
+        self._token_ts = 0
+        self._play_ref = DEFAULT_PLAY_REF
+        try:
+            self._ensure()
+        except Exception:
+            pass
+
+    def log(self, msg):
+        try:
+            print('[瓜子]', msg)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 网络
     def _http(self, url, body):
         req = urllib.request.Request(url, data=body.encode('utf-8'), method='POST')
         # 直接赋值绕过 urllib 的 header capitalize（服务端按原样校验）
-        req.headers = dict(HEADERS)
+        req.headers = headers(self._host, self._device_id)
         ctx = ssl._create_unverified_context()
         with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
             return r.read().decode('utf-8', 'replace')
 
-    def _sign(self, request_key_hex, t, keys, upper):
+    def _sign(self, req_key, t, keys, token):
         raw = ('token_id=,token=%s,phone_type=1,request_key=%s,app_id=1,time=%s,keys=%s%s'
-               % (APP_TOKEN, request_key_hex, t, keys, SIGN_TAIL))
-        sig = hashlib.md5(raw.encode('utf-8')).hexdigest()
-        return sig.upper() if upper else sig
+               % (token, req_key, t, keys, SIGN_TAIL))
+        return hashlib.md5(raw.encode('utf-8')).hexdigest().upper()
 
-    def _post(self, path, payload, keyname='list', upper=True, tries=2):
-        last = None
+    def _raw(self, path, payload, token='', tries=None):
+        """按域名轮询发一次请求，返回解密后的 dict"""
+        last = ''
+        tries = tries or len(HOSTS)
         for _ in range(tries):
+            host = HOSTS[self._host_idx % len(HOSTS)]
+            self._host = host
             try:
+                k, iv = rnd16(), rnd16()
+                body_json = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+                req_key = AES128(k.encode(), iv.encode()).cbc_encrypt(
+                    body_json.encode('utf-8')).hex().upper()
+                keys = rsa_encrypt_b64(json.dumps({'iv': iv, 'key': k}, separators=(',', ':')))
                 t = str(int(time.time()))
-                enc = AES128(AES_KEY, AES_IV).cbc_encrypt(
-                    json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hex().upper()
-                keys = KEYS[keyname]
-                body = ('token=%s&token_id=&phone_type=1&time=%s&phone_model=xiaomi-22021211rc'
-                        '&keys=%s&request_key=%s&signature=%s&app_id=1&ad_version=1'
-                        % (APP_TOKEN, t, urllib.parse.quote(keys, safe=''), enc,
-                           self._sign(enc, t, keys, upper)))
-                txt = self._http(HOST + path, body)
+                form = {'token_id': '', 'token': token, 'phone_type': '1',
+                        'request_key': req_key, 'app_id': '1', 'time': t, 'keys': keys,
+                        'phone_model': 'xiaomi-22081212c', 'ad_version': '1'}
+                form['signature'] = self._sign(req_key, t, keys, token)
+                txt = self._http(host + path, urllib.parse.urlencode(form))
                 js = json.loads(txt)
-                if str(js.get('code')) != '200':
-                    last = 'code=%s msg=%s' % (js.get('code'), str(js.get('msg'))[:80])
-                    time.sleep(0.6)
+                if 'code' in js and str(js.get('code')) != '200':
+                    last = 'code=%s %s' % (js.get('code'), str(js.get('msg'))[:60])
+                    self._host_idx += 1
                     continue
                 data = js.get('data') or {}
-                rk = data.get('response_key')
-                if not rk:
+                if not data.get('response_key'):
                     return data
                 kv = json.loads(rsa_decrypt_b64(data.get('keys') or '').decode('utf-8'))
-                aes = AES128(kv['key'].encode('utf-8'), kv['iv'].encode('utf-8'))
-                return json.loads(aes.cbc_decrypt(bytes.fromhex(rk)).decode('utf-8', 'replace'))
+                return json.loads(AES128(kv['key'].encode(), kv['iv'].encode())
+                                  .cbc_decrypt(bytes.fromhex(data['response_key']))
+                                  .decode('utf-8', 'replace'))
             except Exception as e:
-                last = '%s: %s' % (type(e).__name__, e)
-                time.sleep(0.6)
+                last = '%s: %s' % (type(e).__name__, str(e)[:60])
+                self._host_idx += 1
+                time.sleep(0.4)
         if last:
             self.log('瓜子 %s 失败 %s' % (path, last))
         return {}
+
+    def _ensure(self):
+        """设备注册/登录，拿免费 token（30 分钟有效）"""
+        if self._token and time.time() - self._token_ts < 1500:
+            return self._token
+        # 先 signIn（设备号固定，通常已注册）；失败再 signUp 注册
+        for name, payload in (
+                ('signIn', {'new_key': DEVICE_KEY, 'old_key': OLD_KEY}),
+                ('signUp', {'new_key': DEVICE_KEY, 'old_key': OLD_KEY,
+                            'phone_type': 1, 'code': ''})):
+            d = self._raw('/App/Authentication/Device/%s' % name, payload, '')
+            tok = str(d.get('token') or '')
+            if tok:
+                self._token = tok
+                self._token_id = str(d.get('app_user_id') or '')
+                self._token_ts = time.time()
+                return tok
+        self.log('瓜子 设备登录失败')
+        return ''
+
+    def _post(self, path, payload):
+        self._ensure()
+        d = self._raw(path, payload, self._token)
+        if not d:
+            self._token = ''
+            self._ensure()
+            d = self._raw(path, payload, self._token)
+        return d or {}
 
     # ------------------------------------------------------------ 数据转换
     @staticmethod
@@ -371,19 +506,21 @@ class Spider(_Spider):
                 'limit': 30, 'total': total}
 
     def searchContent(self, key, quick, pg=1):
-        data = self._post('/App/Index/findMoreVod', {'keywords': key, 'order_val': '1'}, upper=False)
+        data = self._post('/App/Index/findMoreVod',
+                          {'keywords': key, 'ns': '', 'nt': str(int(time.time())),
+                           'order_val': '1'})
         return {'list': self._videos(data.get('list')), 'page': 1, 'pagecount': 1}
 
     # ------------------------------------------------------------ 详情
     def detailContent(self, ids):
         did = str(ids[0]).split('/')[0].split('@')[0]
+        self._ensure()
         info = (self._post('/App/IndexPlay/playInfo',
-                           {'token_id': '393668', 'vod_id': did,
-                            'mobile_time': str(int(time.time())), 'token': APP_TOKEN},
-                           keyname='detail', upper=False) or {}).get('vodInfo') or {}
+                           {'token_id': self._token_id, 'vod_id': did,
+                            'mobile_time': str(int(time.time())),
+                            'token': self._token}) or {}).get('vodInfo') or {}
         vurl = self._post('/App/Resource/Vurl/show',
-                          {'vurl_cloud_id': '2', 'vod_d_id': did},
-                          keyname='detail', upper=False) or {}
+                          {'vurl_cloud_id': '2', 'vod_d_id': did}) or {}
         items = vurl.get('list') or []
 
         # 按清晰度聚合：同一清晰度 -> 一条线路，内含全部集
@@ -391,15 +528,23 @@ class Spider(_Spider):
         for it in items:
             title = str(it.get('title') or '').strip() or '正片'
             for res, p in (it.get('play') or {}).items():
-                param = (p or {}).get('param') or ''
+                p = p or {}
+                if str(p.get('show_type') or '') == '2':   # 该档位不可用（需会员/下架）
+                    continue
+                param = str(p.get('param') or '')
                 m = re.search(r'vurl_id=(\d+)', param)
                 if not m:
                     continue
                 lines.setdefault(str(res), []).append(
-                    '%s$%s/%s?%s' % (title, did, m.group(1), res))
+                    '%s$%s|%s|%s' % (title, m.group(1), res, did))
 
         order = sorted(lines.keys(), key=lambda x: -int(x) if str(x).isdigit() else 0)
         remarks = str(info.get('vod_use_content') or info.get('vod_blurb') or '')
+        tag = ''
+        first = (items[0].get('pay_type') if items else '') or ''
+        if str(first) == '1':
+            tag = '·VIP' if str(items[0].get('pay_unlocked') or '0') != '1' else ''
+        base_remark = ('更新至%s集' % info.get('vod_continu')) if str(info.get('vod_continu') or '0') != '0' else '电影'
         return {'list': [{
             'vod_id': did,
             'vod_name': info.get('vod_name') or '',
@@ -408,29 +553,47 @@ class Spider(_Spider):
             'vod_area': info.get('vod_area') or '',
             'vod_director': info.get('vod_director') or '',
             'vod_actor': info.get('vod_actor') or '',
-            'vod_remarks': ('更新至%s集' % info.get('vod_continu')) if str(info.get('vod_continu') or '0') != '0' else '电影',
+            'vod_remarks': base_remark + tag,
             'vod_content': re.sub(r'<[^>]+>', '', remarks),
             'vod_play_from': '$$$'.join(['%sP' % r for r in order]) or '瓜子',
             'vod_play_url': '$$$'.join(['#'.join(lines[r]) for r in order]) or '',
         }]}
 
     # ------------------------------------------------------------ 播放
+    def _get_play_ref(self):
+        """播放直链要带 playRef 作 Referer，否则 403"""
+        if self._play_ref and self._play_ref != DEFAULT_PLAY_REF:
+            return self._play_ref
+        try:
+            d = self._post('/App/UserInfo/getUserInfo', {})
+            ref = str(d.get('playRef') or '')
+            if ref.startswith('http'):
+                self._play_ref = ref
+        except Exception:
+            pass
+        return self._play_ref or DEFAULT_PLAY_REF
+
     def playerContent(self, flag, id, vipFlags):
         url = ''
         try:
-            did, rest = str(id).split('/', 1)
-            vurl_id, res = rest.split('?', 1)
-            data = self._post('/App/Resource/VurlDetail/showOne', {
-                'domain_type': '8', 'vod_id': did, 'type': 'play',
-                'resolution': res, 'vurl_id': vurl_id,
-            }, keyname='play', upper=False) or {}
-            url = data.get('url') or ''
+            parts = str(id).split('|')
+            vurl_id = parts[0]
+            res = parts[1] if len(parts) > 1 else '1080'
+            did = parts[2] if len(parts) > 2 else ''
+            self._ensure()
+            d = self._post('/App/Resource/VurlDetail/showOne', {
+                'vod_id': did, 'vurl_id': vurl_id, 'domain_type': '8',
+                'resolution': res, 'type': 'play',
+                '_client_ts': str(int(time.time() * 1e9)),
+                'mobile_time': str(int(time.time())),
+            }) or {}
+            url = str(d.get('url') or '')
             if not url:
-                self.log('瓜子 无直链 state=%s' % data.get('state'))
+                self.log('瓜子 无直链 state=%s vip=%s' % (d.get('state'), d.get('vip')))
         except Exception as e:
             self.log('瓜子 播放异常 %s' % e)
         return {'parse': 0, 'playUrl': '', 'url': url,
-                'header': {'User-Agent': UA, 'Referer': HOST + '/'}}
+                'header': {'User-Agent': PLAY_UA, 'Referer': self._get_play_ref()}}
 
     def isVideoFormat(self, url):
         return any(x in (url or '').lower() for x in ('.m3u8', '.mp4', '.flv', '.mkv'))
