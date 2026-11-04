@@ -204,40 +204,51 @@ class Spider(Spider):
             "token": "202509271001001446030204698626"
                  }
 
-        detail = requests.get(url=url, headers=headerx, params=params)
+        detail = requests.get(url=url, headers=headerx, params=params, timeout=15)
         detail.encoding = "utf-8"
         data = detail.json()
 
-        url = 'https://fs-im-kefu.7moor-fs1.com/ly/4d2c3f00-7d4c-11e5-af15-41bf63ae4ea0/1732697392729/didiu.txt'
-        response = requests.get(url)
-        response.encoding = 'utf-8'
-        code = response.text
-        name = self.extract_middle_text(code, "s1='", "'", 0)
-        Jumps = self.extract_middle_text(code, "s2='", "'", 0)
+        # 远端线路开关文件（fs-im-kefu.7moor-fs1.com 已失效），失败时直接走官方分集
+        name, Jumps = '', ''
+        try:
+            url = 'https://fs-im-kefu.7moor-fs1.com/ly/4d2c3f00-7d4c-11e5-af15-41bf63ae4ea0/1732697392729/didiu.txt'
+            response = requests.get(url, timeout=6)
+            response.encoding = 'utf-8'
+            code = response.text
+            name = self.extract_middle_text(code, "s1='", "'", 0)
+            Jumps = self.extract_middle_text(code, "s2='", "'", 0)
+        except Exception:
+            pass
 
+        book = data['data']
         content = f"剧情介绍📢{fenge[1]}"
 
-        if name not in content:
-            bofang = Jumps
-            xianlu = '1'
-        else:
-            data = data['data']
+        # 官方分集为主线（bookName/iconUrl 用于详情页展示）
+        book_name = ''
+        book_pic = ''
+        first = book[0] if isinstance(book, list) and book else {}
+        book_name = first.get('bookName') or ''
+        book_pic = first.get('iconUrl') or ''
 
-            for vod in data:
-
-                name = vod['chapterName']
-
-                id = vod['shortPlayList'][0]['chapterShortPlayVoList'][0]['shortPlayUrl']
-
-                bofang = bofang + name + '$' + id + '#'
-
-            bofang = bofang[:-1]
-
-            xianlu = '短剧专线'
+        lines, urls = [], []
+        if isinstance(book, list) and book:
+            play = '#'.join(
+                f"{vod.get('chapterName', '')}${vod['shortPlayList'][0]['chapterShortPlayVoList'][0]['shortPlayUrl']}"
+                for vod in book if vod.get('shortPlayList'))
+            if play:
+                lines.append('短剧专线')
+                urls.append(play)
+        # 远端备用线路（原开关文件指向的线路），可用时作为第二线路追加
+        if Jumps and Jumps.startswith('http'):
+            lines.append('备用线路')
+            urls.append(Jumps)
+        bofang = '$$$'.join(urls)
+        xianlu = '$$$'.join(lines)
 
         videos.append({
             "vod_id": did,
-            "vod_content": content,
+            "vod_name": book_name,
+            "vod_pic": book_pic,
             "vod_play_from": xianlu,
             "vod_play_url": bofang
                      })
