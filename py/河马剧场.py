@@ -250,11 +250,13 @@ class Spider(Spider):
             # 基本信息
             categories = [c.get("name", "") for c in book_info.get("categoryList", [])]
             performers = [p.get("name", "") for p in book_info.get("performerList", [])]
-            
+            if not performers:
+                performers = [x for x in [book_info.get("actor"), book_info.get("actress")] if x]
+
             vod = {
                 "vod_id": vod_id,
-                "vod_name": book_info.get("title", ""),
-                "vod_pic": book_info.get("coverWap", ""),
+                "vod_name": book_info.get("bookName") or book_info.get("title") or book_info.get("name") or "",
+                "vod_pic": book_info.get("coverWap") or book_info.get("cover") or "",
                 "type_name": ",".join(categories),
                 "vod_year": "",
                 "vod_area": book_info.get("countryName", ""),
