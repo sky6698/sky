@@ -259,7 +259,16 @@ class Spider(Spider):
         
         result["parse"] = 0
         result["playUrl"] = ""
-        result["url"] = urls
+        # 标准 TVBox 只认字符串 url；多音质列表（sky 系内核写法）另存 qualities 备用
+        pick = ''
+        for quality_name, quality_url in qualities:
+            if quality_name == '高品质320K':
+                pick = quality_url
+                break
+        if not pick:
+            pick = qualities[0][1] if qualities else ''
+        result["url"] = pick
+        result["qualities"] = [{'name': n, 'url': u} for n, u in qualities]
         result["header"] = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://www.kuwo.cn/"
