@@ -4,7 +4,15 @@
 
 const HOST = "https://4k01.pianku.online";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const parseAPiUrl = "https://svip.qlplayer.cyou/?url=";
+// 第 245 批：解析换成 jx.lxyy.club 的 public.php。
+// 注意：index.php 只是那站的播放器网页（返回 HTML，里面没有 apiToken），
+// 拼在旧的「两步换 token」协议上永远是空地址 —— 协议本身必须一起换。
+// 老的 svip.qlplayer.cyou 对平台网页一律回 {"code":404,"msg":"无法解析视频…"}。
+const PARSE_ENDPOINT = "https://jx.lxyy.club/public.php";
+// public.php 的 interfaces 清单里能直接出流的两条：
+// CJ-1080 回 chanyin-hls.php 的 m3u8 中转（实测清单 306KB、分片可拉），
+// QB-1080 偶尔回原生直链，留作兜底。
+const PARSE_IFACES = ["b12333abbdc7a45b", "f91b41f7258a3b5a"];
 
 const HEADERS = {
     "User-Agent": UA,
@@ -250,11 +258,15 @@ function formatUrl(url) {
     return url.replace(/\\/g, "").replace(/^(https?:\/)((?!\/))/i, "$1/");
 }
 
-function extractConfig(html) {
-    const apiTokenMatch = html.match(/apiToken\s*:\s*["']([^"']+)["']/);
-    return {
-        apiToken: apiTokenMatch ? apiTokenMatch[1] : null
-    };
+// 平台网页 → public.php 要的 code。
+function platformCodeOf(url) {
+    const u = String(url || "");
+    if (/v\.qq\.com/i.test(u)) return "qq";
+    if (/youku\.com/i.test(u)) return "youku";
+    if (/bilibili\.com|b23\.tv/i.test(u)) return "bilibili";
+    if (/mgtv\.com/i.test(u)) return "mgtv";
+    if (/iqiyi\.com/i.test(u)) return "iqiyi";
+    return "";
 }
 
 // 修复判定逻辑 Bug
@@ -262,30 +274,47 @@ function isDirectVideoUrl(url) {
     return DIRECT_URL_REG.test(url);
 }
 
+// 第 245 批：改调 public.php，按接口 id 逐个试。
+// 只收 format=hls（chanyin-hls.php 中转）与直链；format=web 是另一层解析
+// 网页，喂给播放器只能得到一页 HTML。
 async function parseVideoUrl(url) {
-    try {
-        const resoleUrl = parseAPiUrl + url;
-        mylog("解析地址", resoleUrl);
-
-        const html1 = (await req(resoleUrl)).content || "";
-        const { apiToken } = extractConfig(html1);
-
-        if (!apiToken) return "";
-
-        const parseTokenUrl = `https://svip.qlplayer.cyou/api/resolve.php?token=${encodeURIComponent(apiToken)}`;
-        mylog("parseTokenUrl", parseTokenUrl);
-
-        const res = await req(parseTokenUrl);
-        const data = JSON.parse(res.content);
-
-        mylog("data", data);
-        const finalUrl = formatUrl(data.url);
-        mylog("finalUrl", finalUrl);
-        return finalUrl;
-    } catch (e) {
-        mylog("视频解析失败:", e.message);
+    const code = platformCodeOf(url);
+    if (!code) {
+        mylog("认不出平台，跳过解析:", url);
         return "";
     }
+    for (let i = 0; i < PARSE_IFACES.length; i++) {
+        const iface = PARSE_IFACES[i];
+        try {
+            const res = await req(PARSE_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Referer": HOST + "/",
+                    "User-Agent": UA
+                },
+                body: {
+                    url: url,
+                    code: code,
+                    browser: UA,
+                    excluded: [],
+                    caller: HOST + "/",
+                    interface: iface
+                },
+                timeout: 30000
+            });
+            const data = JSON.parse(res.content || "{}");
+            const finalUrl = formatUrl(String(data.url || ""));
+            mylog("解析", iface, data.success, data.format, finalUrl);
+            if (!data.success || !finalUrl) continue;
+            if (data.format === "hls" || isDirectVideoUrl(finalUrl)) {
+                return finalUrl;
+            }
+        } catch (e) {
+            mylog("视频解析失败:", iface, e.message);
+        }
+    }
+    return "";
 }
 
 async function play(flag, id, flags) {
