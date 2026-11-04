@@ -121,26 +121,39 @@ class Spider(Spider):
         return result
 
     def detailContent(self, ids):
-        def parse_ids():
-            did = ids[0]
-            parts = did.split("@")
-            return parts[0], int(parts[1])
-        def generate_play_items(base_id, total_count):
-            return [f"{i}${base_id}@{i}" for i in range(1, total_count + 1)]
-        def build_play_url(items):
-            return "#".join(items)
-        def create_video_info(did, play_url):
+        def fetch_detail(album_id):
+            url = f'{xurl}/web/v1/drama/detail?albumId={album_id}'
+            response = requests.get(url=url, headers=headerx)
+            response.encoding = "utf-8"
+            return response.json().get('data') or {}
+        def create_video_info(did, info, play_url):
+            serial = info.get('serialData') or {}
             return {
                 "vod_id": did,
+                "vod_name": serial.get('title') or '',
+                "vod_pic": serial.get('coverUrl') or '',
+                "type_name": '、'.join(serial.get('categories') or []),
+                "vod_remarks": f"🌷共{len(info.get('episodeList') or [])}集",
                 "vod_play_from": "喜福专线",
                 "vod_play_url": play_url
                    }
         def build_result(video_info):
             return {'list': [video_info]}
-        base_id, total_count = parse_ids()
-        play_items = generate_play_items(base_id, total_count)
-        play_url = build_play_url(play_items)
-        video_info = create_video_info(ids[0], play_url)
+        album_id = str(ids[0]).split('@')[0]
+        try:
+            info = fetch_detail(album_id)
+        except Exception:
+            info = {}
+        episodes = info.get('episodeList') or []
+        if episodes:
+            play_url = '#'.join(
+                f"第{ep.get('sequence', i + 1)}集${album_id}@{ep.get('sequence', i + 1)}"
+                for i, ep in enumerate(episodes))
+        else:
+            # 接口失败时退回旧逻辑：用 id 里的集数生成
+            total = int(str(ids[0]).split('@')[1] or 0) if '@' in str(ids[0]) else 1
+            play_url = '#'.join(f"{i}${album_id}@{i}" for i in range(1, total + 1))
+        video_info = create_video_info(ids[0], info, play_url)
         result = build_result(video_info)
         return result
 
