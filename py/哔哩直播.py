@@ -233,8 +233,24 @@ class Spider(Spider):
 
         xianlu = '哔哩专线'
 
+        # 补房间标题与封面（详情页展示用）
+        vname, vpic = '', ''
+        try:
+            info = requests.get(
+                f'https://api.live.bilibili.com/room/v1/Room/get_info?room_id={did}',
+                headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://live.bilibili.com/'},
+                timeout=8)
+            idata = (info.json().get('data') or {})
+            vname = idata.get('title') or ''
+            vpic = idata.get('user_cover') or idata.get('keyframe') or ''
+        except Exception:
+            pass
+
         videos.append({
             "vod_id": did,
+            "vod_name": vname,
+            "vod_pic": vpic,
+            "vod_remarks": "直播中",
             "vod_content": content,
             "vod_play_from": xianlu,
             "vod_play_url": bofang
