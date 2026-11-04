@@ -125,7 +125,10 @@ class Spider(Spider):
             h['Referer'] = ids['r']
         if ids.get('u'):
             h['User-Agent'] = ids['u']
-        return  {'parse': 0, 'url': url, 'header': h}
+        # 标准 TVBox 只认字符串 url；sky 系内核支持 ["解析1", url1, ...] 多解析器写法
+        if isinstance(url, list):
+            url = url[1] if len(url) > 1 else (url[0] if url else '')
+        return  {'parse': 0, 'playUrl': '', 'url': url, 'header': h}
 
     def localProxy(self, param):
         data=json.loads(self.d64(param['data']))
