@@ -62,7 +62,8 @@
 # 入口
 # ============================================================================
 #   · 首页「听歌模式」→ 48 个模式，点进去是一整列歌
-#   · 首页「登录」→「扫码登录」→ 打开 /qr 极简二维码页（详情页海报也是二维码）
+#   · 首页「登录」→「扫码登录」卡片封面本身就是二维码；点开尝试弹 App 内小窗
+#     （宿主支持 openInternalWebview 时），登录成功小窗自动关闭
 #   · 搜索框 `#登录 <Cookie>` 手工粘会话；`#退出` 清登录态
 #   · 直接 python 汽水音乐sky.py 会跑一遍自检并打印结果
 import base64
@@ -1681,17 +1682,17 @@ QR_HTML = r"""<!DOCTYPE html>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;margin:0}
 body{
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
   background:radial-gradient(120% 80% at 50% 0%,#1d2130 0%,#0b0d12 60%,#07080b 100%);
   color:#eef1f7;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-  padding:24px;text-align:center;
+  padding:16px;text-align:center;overflow:auto;
 }
-h1{margin:0;font-size:19px;font-weight:600;letter-spacing:.4px}
-.sub{margin:0;font-size:13px;color:#8e96a8;line-height:1.6}
+h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.4px}
+.sub{margin:0;font-size:12px;color:#8e96a8;line-height:1.5}
 .card{
-  width:min(78vw,320px);aspect-ratio:1;border-radius:20px;background:#fff;
-  display:flex;align-items:center;justify-content:center;padding:12px;
-  box-shadow:0 18px 48px rgba(0,0,0,.55);
+  width:min(66vw,300px);max-height:56vh;aspect-ratio:1;border-radius:16px;background:#fff;
+  display:flex;align-items:center;justify-content:center;padding:10px;
+  box-shadow:0 16px 40px rgba(0,0,0,.55);
 }
 .card img{width:100%;height:100%;object-fit:contain;border-radius:10px;display:block}
 .card.dim{opacity:.25;filter:blur(4px)}
@@ -1733,8 +1734,15 @@ async function refresh(force){
 function success(d){
   done=true; clearInterval(timer);
   $('#card').classList.add('dim');
-  paint('✓ 登录成功'+(d.nick?' · '+d.nick:''),'ok');
+  paint('✓ 登录成功'+(d.nick?' · '+d.nick:'')+'，窗口即将关闭','ok');
   $('#rf').textContent='可以返回了';
+  // 内嵌小窗一般支持 window.close()；不支持就退化成「后退」。
+  setTimeout(function(){
+    try{ window.close(); }catch(e){}
+    setTimeout(function(){
+      try{ history.length>1 ? history.back() : null; }catch(e){}
+    },300);
+  },1200);
 }
 $('#rf').onclick=()=>{ if(done) return; done=false; refresh(1); };
 refresh(0);
@@ -1957,7 +1965,7 @@ def page_urls():
 # 宿主内嵌窗口（点卡片直接弹页面）
 # ============================================================================
 
-APP_PORTS = (9978, 9999)                # 宿主 Server.start() 的端口区间
+APP_PORTS = (9988, 9978, 10000)          # 宿主本地服务端口（9988 优先，其次 9978，再往后扫）
 APP_DEVICE = "/device"                  # 判别用：回 Device JSON
 APP_MSG = "/msg"                        # openInternalWebview
 APP_STATE = {"port": 0, "at": 0.0}
@@ -1979,6 +1987,21 @@ def _app_port():
     def probe(p):
         if hit["port"]:
             return
+        # 1) /msg 存在（405/400 说明路由在，只是方法不对）→ 就是宿主
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d%s" % (p, APP_MSG), timeout=0.35) as r:
+                if getattr(r, "status", 0) in (200, 400, 405):
+                    with hit_lock:
+                        hit["port"] = hit["port"] or p
+                    return
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 405):
+                with hit_lock:
+                    hit["port"] = hit["port"] or p
+                return
+        except Exception:
+            pass
+        # 2) 台式 TVBox 的 /device
         try:
             with urllib.request.urlopen("http://127.0.0.1:%d%s" % (p, APP_DEVICE), timeout=0.35) as r:
                 text = r.read(600).decode("utf-8", "replace")
@@ -1988,40 +2011,264 @@ def _app_port():
         except Exception:
             pass
 
-    probe(APP_PORTS[0])
+    order = [APP_PORTS[0], APP_PORTS[1]] + list(range(APP_PORTS[1] + 1, APP_PORTS[2]))
+    probe(order[0])
+    if not hit["port"]:
+        probe(order[1])
     if not hit["port"]:
         threads = [threading.Thread(target=probe, args=(p,), daemon=True)
-                   for p in range(APP_PORTS[0] + 1, APP_PORTS[1])]
+                   for p in order[2:]]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(0.6)
+            t.join(0.5)
     with APP_LOCK:
         APP_STATE["port"], APP_STATE["at"] = int(hit["port"] or 0), time.time()
     return int(hit["port"] or 0)
 
 
-def _app_call(path, payload, timeout=3.0):
+def _app_call(path, payload, timeout=2.5):
+    """给宿主发一条 action，返回 (ok, status, body)。"""
     port = _app_port()
     if not port:
-        return None
+        return False, 0, ""
     try:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data,
                                      headers={"Content-Type": "application/json; charset=utf-8"},
                                      method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return int(r.status)
+            status = getattr(r, "status", 200)
+            body = r.read(300).decode("utf-8", "replace")
+        return status == 200, status, body
+    except Exception:
+        return False, 0, ""
+
+
+OPEN = {"ok": False, "at": 0.0, "url": "", "mode": ""}
+
+
+# ---------------------------------------------------------------------------
+# 宿主 UI（无名影视 bridge 的 /hook/ui 协议）。
+# 摸鱼网盘登录那个「原生小窗」就是走这里：POST dialog 事件（images=纯 base64
+# PNG，不带 data: 前缀），关窗用 dismiss + 同一 dialog id，提示用 toast。
+# py 源被 bridge.py 进程内加载，base.spider.PROXY_PORT 就是 bridge 端口。
+# ---------------------------------------------------------------------------
+
+QR_DIALOG_ID = "qs_qr"
+
+
+def _bridge_port():
+    try:
+        import base.spider as _bs
+        return int(getattr(_bs, "PROXY_PORT", 0) or 0)
+    except Exception:
+        return 0
+
+
+def ui_send(event, timeout=3.0):
+    port = _bridge_port()
+    if not port:
+        return False
+    try:
+        data = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request("http://127.0.0.1:%d/hook/ui" % port, data=data,
+                                     headers={"Content-Type": "application/json; charset=utf-8"},
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return getattr(r, "status", 200) == 200
+    except Exception:
+        return False
+
+
+def ui_toast(msg):
+    try:
+        return ui_send({"kind": "toast", "msg": str(msg)})
+    except Exception:
+        return False
+
+
+def ui_qr_window(png_b64, texts):
+    """弹原生扫码小窗（与网盘登录同一通道），登录成功自动关窗 + Toast。"""
+    if not png_b64:
+        return False
+    did = QR_DIALOG_ID
+    ok = ui_send({"kind": "dialog", "id": did, "dialog": did,
+                  "title": "扫码登录汽水音乐",
+                  "texts": [str(t) for t in (texts or [])],
+                  "images": [png_b64], "buttons": []})
+    if not ok:
+        return False
+
+    def waiter():
+        t0 = time.time()
+        while time.time() - t0 < 300:
+            time.sleep(1.2)
+            try:
+                if logged_in():
+                    ui_send({"kind": "dismiss", "dialog": did})
+                    nick = nick_now()
+                    ui_toast("汽水音乐登录成功" + ((" · " + nick) if nick else ""))
+                    return
+            except Exception:
+                pass
+    threading.Thread(target=waiter, name="qishui-qr-watch", daemon=True).start()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Android 原生小窗：AlertDialog + WebView，登录成功自动消失
+# （Windows 版没有 java 桥，会直接跳过走下面的 HTTP 通道）
+# ---------------------------------------------------------------------------
+
+def _android_activity():
+    """从 ActivityThread 里捞出当前没 paused 的 Activity。"""
+    try:
+        from java import jclass
     except Exception:
         return None
+    try:
+        AT = jclass("java.lang.Class").forName("android.app.ActivityThread")
+        cur = AT.getMethod("currentActivityThread").invoke(None)
+        f = AT.getDeclaredField("mActivities")
+        f.setAccessible(True)
+        map_obj = f.get(cur)
+        values = map_obj.values().toArray() if hasattr(map_obj, "values") else map_obj.toArray()
+        for rec in values:
+            rc = rec.getClass()
+            pf = rc.getDeclaredField("paused")
+            pf.setAccessible(True)
+            if not pf.getBoolean(rec):
+                af = rc.getDeclaredField("activity")
+                af.setAccessible(True)
+                act = af.get(rec)
+                if act:
+                    return act
+    except Exception:
+        pass
+    return None
+
+
+def _android_run(act, fn):
+    """把 fn 扔到 UI 线程执行。"""
+    try:
+        from java import jclass, dynamic_proxy
+    except Exception:
+        return False
+    try:
+        base = dynamic_proxy(jclass("java.lang.Runnable"))
+
+        class _Run(base):
+            def run(self):
+                try:
+                    self._fn()
+                except Exception:
+                    pass
+        r = _Run()
+        r._fn = fn
+        act.getWindow().getDecorView().post(r)
+        return True
+    except Exception:
+        return False
+
+
+def _android_qr_window(url, timeout=240):
+    """弹一个原生小窗显示二维码；登录成功后台线程负责关掉它。
+
+    返回 True 表示小窗真的弹出来了。
+    """
+    act = _android_activity()
+    if not act:
+        return False
+    state = {"dialog": None, "closed": False}
+
+    def build():
+        try:
+            from java import jclass
+        except Exception:
+            return
+        try:
+            WebView = jclass("android.webkit.WebView")
+            LinearLayout = jclass("android.widget.LinearLayout")
+            Builder = jclass("android.app.AlertDialog$Builder")
+            TypedValue = jclass("android.util.TypedValue")
+            lp = jclass("android.view.ViewGroup$LayoutParams")
+            dp = int(TypedValue.applyDimension(
+                1, 6.0, act.getResources().getDisplayMetrics()))
+            wv = WebView(act)
+            st = wv.getSettings()
+            st.setJavaScriptEnabled(True)
+            st.setDomStorageEnabled(True)
+            try:
+                st.setMediaPlaybackRequiresUserGesture(False)
+            except Exception:
+                pass
+            wv.loadUrl(url)
+            box = LinearLayout(act)
+            box.setOrientation(1)
+            box.setPadding(dp, dp, dp, dp)
+            box.addView(wv)
+            b = Builder(act)
+            b.setTitle("扫码登录汽水音乐")
+            b.setView(box)
+            dlg = b.create()
+            dlg.setCanceledOnTouchOutside(False)
+            dlg.show()
+            state["dialog"] = dlg
+            try:                     # 宽 82% 屏宽，高自适应
+                dm = act.getResources().getDisplayMetrics()
+                dlg.getWindow().setLayout(int(dm.widthPixels * 0.82),
+                                          int(dm.heightPixels * 0.72))
+            except Exception:
+                pass
+        except Exception:
+            state["closed"] = True
+
+    if not _android_run(act, build):
+        return False
+    time.sleep(0.6)                  # 等 dialog 真正起来
+    if state["dialog"] is None:
+        return False
+
+    def waiter():
+        t0 = time.time()
+        while time.time() - t0 < timeout and not state["closed"]:
+            time.sleep(1.2)
+            if logged_in():
+                dlg = state["dialog"]
+                state["closed"] = True
+
+                def close():
+                    try:
+                        dlg.dismiss()
+                    except Exception:
+                        pass
+                _android_run(act, close)
+                break
+    threading.Thread(target=waiter, name="qishui-qr-close", daemon=True).start()
+    return True
 
 
 def open_window(url):
-    """让宿主弹内嵌 WebView。只接受 http(s)。"""
-    if not url or not str(url).startswith(("http://", "https://")):
+    """打开 App 内小窗（优先原生 Dialog，其次宿主 action）。"""
+    url = str(url or "")
+    if not url.startswith(("http://", "https://")):
         return False
-    return _app_call(APP_MSG, {"action": "openInternalWebview",
-                               "opt": {"url": str(url)}}) is not None
+    # 1) Android 原生小窗：最像「摸鱼网盘登录」那种弹窗，且能自己关
+    try:
+        if _android_qr_window(url):
+            OPEN.update({"ok": True, "at": time.time(), "url": url, "mode": "android"})
+            return True
+    except Exception:
+        pass
+    # 2) 宿主提供的 openInternalWebview（CatPaw / 桌面版）
+    payload = {"action": "openInternalWebview", "opt": {"url": url}}
+    ok, status, body = _app_call(APP_MSG, payload)
+    if ok and ("error" not in body.lower()):
+        OPEN.update({"ok": True, "at": time.time(), "url": url, "mode": "app"})
+        return True
+    OPEN.update({"ok": False, "at": time.time(), "url": url, "mode": ""})
+    return False
 
 
 # ============================================================================
@@ -2142,9 +2389,13 @@ class Spider(BaseSpider):
                               "vod_name": "退出登录", "vod_pic": ICON,
                               "vod_remarks": "清掉本机登录态，回到匿名推荐"}]
                 else:
+                    # 卡片封面直接给二维码：列表里就能扫，不必先点进详情页
+                    local, _lan = page_urls()
+                    qr_png_bytes()
+                    pic = (local + "/qr.png?t=%d" % int(time.time())) if local else ICON
                     cards = [{"vod_id": _pack("l", {"k": "qr"}),
-                              "vod_name": "扫码登录", "vod_pic": ICON,
-                              "vod_remarks": "点开就是二维码，手机扫一下确认"}]
+                              "vod_name": "扫码登录", "vod_pic": pic,
+                              "vod_remarks": "封面就是二维码，手机扫一下确认"}]
                 return _result(cards, page)
             # 其余 tid 视为「听歌模式名」→ 直接出歌
             feed = build_feed(tid, CFG["mode_count"])
@@ -2302,21 +2553,28 @@ def _login_detail(info):
     local, lan = page_urls()
     url = (lan or local or "")
     if kind == "qr":
-        base = local or lan or ""            # 本机地址最稳（宿主 WebView 就在本机）
-        qr_png_bytes()                       # 预热，详情页海报就是二维码
+        base = local or lan or ""
+        png = qr_png_bytes()                 # 官方二维码 PNG（data uri 已转字节）
+        b64 = base64.b64encode(png).decode("utf-8") if png else ""
         target = (base + "/qr") if base else ""
-        popped = open_window(target) if target else False
+        # 1) 宿主 bridge 的原生小窗（摸鱼网盘登录同款通道，登录成功自动关）
+        popped = ui_qr_window(b64, ["用手机「汽水音乐 / 抖音」扫一扫",
+                                    "登录成功后这个窗口会自动关闭"])
+        # 2) 实在不在 bridge 里（安卓 java 桥 / 桌面 /msg）再试内嵌 WebView
+        if not popped and target:
+            popped = open_window(target)
+        pic = (base + "/qr.png?t=%d" % int(time.time())) if (base and png) else ICON
         if popped:
-            body = ("已弹出二维码，用手机「汽水音乐 / 抖音」扫码后点「确认」。\n\n"
-                    "这页只放二维码，不会再跟播放器混在一起。登录成功后窗口里的状态会变绿，"
-                    "直接返回列表即可，推荐会按你的账号画像走。\n\n"
-                    "扫不出来？浏览器打开：%s" % (lan or target))
+            body = ("已弹出扫码小窗，用手机「汽水音乐 / 抖音」扫里面的二维码并点「确认」。\n\n"
+                    "登录成功后小窗会自己关掉并提示昵称；返回「听歌模式」重新进一次就是登录态。")
+        elif base and png:
+            body = ("**用手机扫上面这张二维码**（这张图就是实时二维码，不是海报）。\n\n"
+                    "扫完在手机上点「确认」，然后返回列表再进一次「登录」就是已登录状态。\n\n"
+                    "也可以让手机浏览器打开：%s" % (lan or target))
         else:
-            body = ("用手机浏览器打开下面这条，页面里就是二维码：\n\n%s\n\n"
-                    "同一 WiFi 下手机可直接访问；也可以直接扫上面的二维码。"
-                    % ((lan or target) or "（页面服务未启动）"))
+            body = "页面服务没起来（端口被占用），重启一下源再试。"
         return {"vod_id": _pack("l", {"k": "qr"}), "vod_name": "扫码登录",
-                "vod_pic": (base + "/qr.png") if base else ICON, "vod_content": body,
+                "vod_pic": pic, "vod_content": body,
                 "vod_play_from": "汽水音乐", "vod_play_url": ""}
     if kind == "info":
         nick = nick_now()
