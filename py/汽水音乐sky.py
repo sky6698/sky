@@ -127,26 +127,68 @@ CACHE_LOCK = threading.RLock()          # 取流缓存
 # 偏好三件套固定在最前（不依赖官方返回，永远可用）
 MODES_ORDER = ["默认模式", "熟悉模式", "新鲜模式"]
 
-# 匿名时把「模式名」翻译成主题词：官方对未登录请求不认 scene_mode_id，
-# 只有主题搜索才能让「粤语 / 国风 / 助眠」真的对味。
-MODE_KEYWORDS = {
-    "默认模式": "抖音热歌", "熟悉模式": "经典老歌 中文", "新鲜模式": "新歌 中文",
-    "深夜emo": "伤感 中文 情歌", "助眠模式": "助眠 轻音乐 舒缓", "洗澡": "民谣 中文 轻松",
-    "dj模式": "中文 DJ 舞曲", "动感健身": "运动 燃脂 中文", "抖音漫游": "抖音热歌",
-    "chill放松": "chill 中文 放松", "快乐时光": "欢快 中文 流行", "电音": "中文 电音",
-    "好运": "好运 中文 喜庆", "图书馆": "轻音乐 钢琴 纯音乐", "粤语": "粤语",
-    "通勤必听": "通勤 中文 流行", "失恋必听": "失恋 中文 伤感", "躺平": "慵懒 中文",
-    "欧美": "欧美 流行", "打扫": "轻快 中文", "国风": "国风 古风",
-    "打游戏": "游戏 战歌 中文", "驾车": "车载 中文 经典老歌", "专注模式": "轻音乐 纯音乐 学习",
-    "说唱": "中文说唱", "沉浸0.8x": "抒情 慢歌 中文", "夜晚": "夜晚 中文 抒情",
-    "治愈": "治愈 中文", "轻音乐": "轻音乐 纯音乐", "小酒馆": "民谣 小酒馆",
-    "ktv必点": "KTV 必点 中文", "起床": "清晨 中文 轻快", "浪漫情歌": "浪漫 中文 情歌",
-    "摇滚": "中国摇滚", "r&b": "中文 R&B", "佛系时间": "佛系 安静 中文",
-    "怀旧老歌": "怀旧 经典老歌", "民谣": "中文民谣", "甜美女声": "甜美女声 中文",
-    "k-pop": "k-pop", "日语": "日语", "旅行": "旅行 中文 轻快",
-    "摸鱼": "轻松 中文 摸鱼", "儿歌": "儿歌", "雨天": "雨天 中文 抒情",
-    "海边": "海边 中文", "乡村": "乡村 中文", "古典": "古典 钢琴",
+# 场景 → 官方「歌单」搜索词。
+#
+# 关键修正：之前每个场景配的是「单曲」搜索词（粤语→搜 "粤语"），拿到的只是
+# 标题里带这个词的歌，一堆翻唱合集，跟官方听歌模式差得远。
+#
+# 实测：官方对匿名请求不认 scene_mode_id（song-tab / discover-mix 一律忽略），
+# 但按场景名搜「歌单」，返回的是官方运营人工编好的场景队列——粤语经典金曲里
+# 就是《光辉岁月》《海阔天空》《笑看风云》，助眠里就是纯音和雨声。那才是
+# 听歌模式的内容来源。取数改为：场景词搜歌单 → 展开曲目 → 轮转打散成池。
+MODE_PLAYLIST = {
+    "默认模式": ["抖音热歌", "热门 中文 流行"],
+    "熟悉模式": ["经典老歌", "怀旧金曲"],
+    "新鲜模式": ["华语新歌", "新歌 推荐"],
+    "深夜emo": ["emo", "emo 说唱", "伤感 歌单"],
+    "助眠模式": ["助眠", "深度睡眠", "ASMR 助眠", "下雨声 助眠"],
+    "洗澡": ["洗澡 歌单", "浴室 唱歌", "轻松 流行"],
+    "dj模式": ["DJ 舞曲", "夜店 电音", "蹦迪"],
+    "动感健身": ["跑步 燃脂", "健身 电音", "运动 节奏"],
+    "抖音漫游": ["抖音热歌", "抖音 爆款"],
+    "chill放松": ["chill", "慵懒 放松", "lo-fi"],
+    "快乐时光": ["快乐 欢快", "元气 歌单", "开心 流行"],
+    "电音": ["电音", "EDM", "电子 舞曲"],
+    "好运": ["好运 喜庆", "新年 歌单", "喜庆 中文"],
+    "图书馆": ["学习 专注", "轻音乐 钢琴", "白噪音 学习"],
+    "粤语": ["粤语经典", "粤语老歌", "香港 金曲"],
+    "通勤必听": ["通勤", "路上 听", "流行 中文"],
+    "失恋必听": ["失恋", "分手 情歌", "伤心 中文"],
+    "躺平": ["慵懒", "躺平 歌单", "慢节奏"],
+    "欧美": ["欧美流行", "英文歌", "欧美 经典"],
+    "打扫": ["打扫 歌单", "轻快 流行", "家务 音乐"],
+    "国风": ["国风", "古风", "中国风"],
+    "打游戏": ["游戏 战歌", "电竞 燃", "游戏 BGM"],
+    "驾车": ["车载 音乐", "驾驶 歌单", "开车 音乐"],
+    "专注模式": ["专注 学习", "纯音乐 专注", "白噪音"],
+    "说唱": ["中文说唱", "rap", "嘻哈"],
+    "沉浸0.8x": ["慢歌 抒情", "沉浸 女声", "夜景 慢歌"],
+    "夜晚": ["夜晚 歌单", "晚安", "夜色 抒情"],
+    "治愈": ["治愈系", "温柔 疗愈", "治愈 女声"],
+    "轻音乐": ["轻音乐", "纯音乐", "钢琴 轻音乐"],
+    "小酒馆": ["小酒馆", "民谣 酒馆", "爵士 微醺"],
+    "ktv必点": ["KTV 必点", "合唱 金曲", "经典 对唱"],
+    "起床": ["晨间 歌单", "起床 轻快", "元气 早晨"],
+    "浪漫情歌": ["浪漫 情歌", "甜蜜 对唱", "恋爱 歌单"],
+    "摇滚": ["摇滚", "中国摇滚", "摇滚 经典"],
+    "r&b": ["R&B", "中文 R&B", "soul"],
+    "佛系时间": ["佛系", "安静 纯音乐", "禅意"],
+    "怀旧老歌": ["怀旧 老歌", "经典 老歌", "80年代"],
+    "民谣": ["民谣", "中文民谣", "独立民谣"],
+    "甜美女声": ["甜美女声", "女声 甜", "治愈 女声"],
+    "k-pop": ["K-pop", "韩语 歌单", "韩国 流行"],
+    "日语": ["日语 歌单", "J-POP", "日系"],
+    "旅行": ["旅行 歌单", "公路 旅行", "出发"],
+    "摸鱼": ["摸鱼 歌单", "上班 听", "轻松 背景"],
+    "儿歌": ["儿歌", "儿童 歌曲", "宝宝 歌单"],
+    "雨天": ["雨天 歌单", "下雨 听", "雨天 抒情"],
+    "海边": ["海边 歌单", "夏日 海边", "海风"],
+    "乡村": ["乡村音乐", "country", "民谣 乡村"],
+    "古典": ["古典音乐", "钢琴 古典", "交响"],
 }
+
+# 偏好模式（非场景）继续走官方个性化队列
+PREF_MODES = {"默认模式", "熟悉模式", "新鲜模式"}
 
 JUNK = ("串烧", "连播", "合集", "合辑", "精选集", "伴奏", "铃声", "DJ版")
 
@@ -456,7 +498,8 @@ def load_modes():
         if r["key"] in seen:
             continue
         seen.add(r["key"])
-        r["kw"] = MODE_KEYWORDS.get(r["key"], "")
+        r["kws"] = MODE_PLAYLIST.get(r["key"], [])
+        r["kw"] = r["kws"][0] if r["kws"] else ""
         out.append(r)
     if len(out) > len(MODES_ORDER):
         MODES["list"], MODES["at"] = out, time.time()
@@ -577,32 +620,163 @@ def src_search(kw, pages=2):
     return out
 
 
-def build_feed(key, n=6):
-    """取数顺序（实测结论，别随意调）：
+# ---------------------------------------------------------------- 场景曲目池
+# 官方场景队列（scene_mode_id）只在「登录 + 真实设备签名」下才认，匿名请求
+# song-tab / discover-mix 都会忽略它，只回通用热门池——这就是之前场景模式
+# 只能退回「按名字搜单曲」的原因。
+#
+# 换一条官方内容链：场景词 → 搜官方歌单 → 展开曲目 → 轮转打散。歌单是官方
+# 运营人工编好的场景队列，粤语给的真是《光辉岁月》《海阔天空》，助眠给的
+# 真是纯音和雨声，风格与听歌模式一致。
 
-      登录 + 场景模式 → 官方 discover/mix（服务端认 scene_mode_id）
-      匿名 + 场景模式 → 主题搜索打底（song_tab 是按流派拼的随机池，模式对不上味）
-      匿名 + 偏好模式 → 官方 song-tab 打底（「抖音热歌」这种词搜出来全是合集，不是真歌）
-      不足           → 另一个来源补齐 → 兜底电台
-    """
+POOL = {}          # mode_key -> (ts, [track])
+POOL_CURSOR = {}   # mode_key -> 已消耗到池子第几首
+POOL_LOCK = threading.Lock()
+POOL_TTL = 1800
+
+
+def _pmap(fn, items, workers=4):
+    """并发 map；单个失败返回 None，并发不可用时自动串行（内核差异兜底）。"""
+    def safe(x):
+        try:
+            return fn(x)
+        except Exception:
+            return None
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            return list(ex.map(safe, items))
+    except Exception:
+        return [safe(x) for x in items]
+
+
+def _pl_search(kw, limit=2):
+    """按关键词搜官方歌单，返回 [(playlist_id, name)]。"""
+    body = {"search_type": "playlist", "q": kw, "cursor": None,
+            "search_id": hashlib.md5(str(kw).encode("utf-8")).hexdigest(),
+            "search_method": "input", "search_scene": "search_result"}
+    data = api("/luna/search/playlist", body, {"device_platform": "web"})
+    out = []
+    for grp in data.get("result_groups") or []:
+        for it in grp.get("data") or []:
+            ent = it.get("entity") or it
+            pl = ent.get("playlist") if isinstance(ent.get("playlist"), dict) else ent
+            if not isinstance(pl, dict):
+                continue
+            pid = str(pl.get("id") or "")
+            name = str(pl.get("name") or pl.get("title") or "")
+            if pid and name:
+                out.append((pid, name))
+    junk = ("串烧", "连播", "合辑", "拼盘", "电台合集")
+    out = [x for x in out if not any(j in x[1] for j in junk)]
+    return out[:limit]
+
+
+def _rr_merge(groups):
+    """歌单轮转合并：相邻两首来自不同歌单，避免连着听十首都像一个歌单的尾巴。"""
+    out, seen = [], set()
+    rounds = max([len(g) for g in groups] or [0])
+    for i in range(rounds):
+        for g in groups:
+            if i >= len(g):
+                continue
+            t = g[i]
+            if t["id"] and t["id"] not in seen:
+                seen.add(t["id"])
+                out.append(t)
+    return out
+
+
+# 这些场景本来就靠 DJ/Remix 撑场，质量过滤时放行
+KEEP_DJ = {"dj模式", "电音", "动感健身", "抖音漫游"}
+BAD_MARK = ("remix", "dj", "bpm", "3d", "环绕", "高音质", "无损", "live版", "live 版",
+            "现场版", "(live", "（live", "伴奏", "铃声", "翻唱版", "串烧", "连播", "拼盘")
+
+
+def _pl_clean(tracks, key):
+    """池子质量关：非电音场景把 Remix/DJ版/live 版/伴奏全部拦掉。"""
+    if key in KEEP_DJ:
+        return [t for t in tracks if "伴奏" not in t["name"] and "铃声" not in t["name"]]
+    out = []
+    for t in tracks:
+        low = t["name"].lower()
+        if any(b in low for b in BAD_MARK):
+            continue
+        out.append(t)
+    return out
+
+
+def scene_pool(mode, refresh=False):
+    """构建并缓存一个场景的曲目池（约 60~200 首）。"""
+    key = mode["key"]
+    now = time.time()
+    with POOL_LOCK:
+        hit = POOL.get(key)
+    if hit and not refresh and now - hit[0] < POOL_TTL and len(hit[1]) >= 30:
+        return hit[1]
+
+    kws = mode.get("kws") or ([mode["kw"]] if mode.get("kw") else [])
+    if not kws:
+        return []
+    picks = []
+    for r in _pmap(lambda k: _pl_search(k, 3), kws[:4], 4):
+        if r:
+            picks.extend(r)
+    seen, pids = set(), []
+    for pid, _name in picks:
+        if pid not in seen:
+            seen.add(pid)
+            pids.append(pid)
+    groups = [g for g in _pmap(lambda p: src_playlist(p, 50), pids[:9], 5) if g]
+    tracks = _pl_clean(_rr_merge(groups), key)
+    with POOL_LOCK:
+        POOL[key] = (now, tracks)
+        POOL_CURSOR.setdefault(key, 0)
+    return tracks
+
+
+def pool_take(mode, n=6):
+    """从池子里按游标取 n 首，跳过最近播过的；池子见底就换一批。"""
+    key = mode["key"]
+    pool = scene_pool(mode)
+    if not pool:
+        return []
+    with POOL_LOCK:
+        cur = POOL_CURSOR.get(key, 0)
+    if cur >= len(pool) - 2:
+        pool = scene_pool(mode, refresh=True)
+        cur = 0
+        with POOL_LOCK:
+            POOL_CURSOR[key] = 0
+    with LOCK:
+        recent = {r["id"] for r in PLAYED[-40:]}
+    out, consumed, names = [], 0, set()
+    for t in pool[cur:]:
+        consumed += 1
+        # 官方库里同曲多版本极多（罗文/徐小凤各一版《顺流逆流》），按歌名去重
+        if t["id"] in recent or t["name"] in names:
+            continue
+        names.add(t["name"])
+        out.append(t)
+        if len(out) >= n:
+            break
+    with POOL_LOCK:
+        POOL_CURSOR[key] = cur + max(1, consumed)
+    return out
+
+
+def build_feed(key, n=6):
+    """取数：所有模式先走官方运营歌单池（人工编好的场景队列），官方个性化
+    队列（played_media 闭环）补齐剩余名额——匿名时 song-tab 只有 20 来首
+    热门歌随机洗牌，撑不起任何模式。"""
     mode = get_mode(key)
     tracks, tried = [], []
-    if logged_in() and mode.get("sid"):
-        part = src_discover_mix(mode, n)
-        tried.append("discover:%d" % len(part))
-        tracks += part
-    scene_first = mode.get("kind") == "scene" and bool(mode.get("kw"))
-    order = (["search", "song_tab"] if scene_first else ["song_tab", "search"])
-    for src in order:
-        if len(tracks) >= n:
-            break
-        if src == "search":
-            if not mode.get("kw"):
-                continue
-            part = src_search(mode["kw"], 2)
-        else:
-            part = src_song_tab(n - len(tracks))
-        tried.append("%s:%d" % (src, len(part)))
+    part = pool_take(mode, n)
+    tried.append("pool:%d" % len(part))
+    tracks += part
+    if len(tracks) < n:
+        part = src_song_tab(n - len(tracks))
+        tried.append("song_tab:%d" % len(part))
         ids = {x["id"] for x in tracks}
         tracks += [t for t in part if t["id"] not in ids]
     if len(tracks) < n:
