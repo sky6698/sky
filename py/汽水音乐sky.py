@@ -53,16 +53,16 @@
 # ============================================================================
 # 配置（init 的 extend，JSON 串；都可省略）
 # ============================================================================
-#   {"port": 8788,        音乐页面端口(被占用会往后扫 20 个)
-#    "login": 1,           是否启用扫码登录(0 = 纯匿名)
-#    "page": 1,            是否在首页显示「音乐页面」入口(0 = 隐藏)
+#   {"port": 8788,        本机服务端口(被占用会往后扫 20 个)
+#    "login": 1,           是否启用扫码登录(0 = 纯匿名，登录分类整个不显示)
+#    "page": 1,            是否启动本机服务(0 = 关闭；关闭后扫码登录也用不了)
 #    "mode_count": 50}     点开一个听歌模式时给多少首(20~200)
 #
 # ============================================================================
 # 入口
 # ============================================================================
-#   · 首页「音乐页面」→ 宿主里弹内嵌窗口（手机扫的码就在里面），失败则回地址文案
-#   · 首页「听歌模式」→ 45 个模式，点进去是一整列歌
+#   · 首页「听歌模式」→ 48 个模式，点进去是一整列歌
+#   · 首页「登录」→「扫码登录」→ 打开 /qr 极简二维码页（详情页海报也是二维码）
 #   · 搜索框 `#登录 <Cookie>` 手工粘会话；`#退出` 清登录态
 #   · 直接 python 汽水音乐sky.py 会跑一遍自检并打印结果
 import base64
@@ -1670,6 +1670,108 @@ $('#logoutBtn').onclick = async () => {
 """
 
 
+# 极简扫码页：点「扫码登录」直接弹这个，只有二维码，不会跟播放器首页混在一起。
+# （旧做法是打开 /?login=1，宿主 WebView 常把 query 丢掉，用户看到的是封面海报。）
+QR_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>扫码登录 · 汽水音乐</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  background:radial-gradient(120% 80% at 50% 0%,#1d2130 0%,#0b0d12 60%,#07080b 100%);
+  color:#eef1f7;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  padding:24px;text-align:center;
+}
+h1{margin:0;font-size:19px;font-weight:600;letter-spacing:.4px}
+.sub{margin:0;font-size:13px;color:#8e96a8;line-height:1.6}
+.card{
+  width:min(78vw,320px);aspect-ratio:1;border-radius:20px;background:#fff;
+  display:flex;align-items:center;justify-content:center;padding:12px;
+  box-shadow:0 18px 48px rgba(0,0,0,.55);
+}
+.card img{width:100%;height:100%;object-fit:contain;border-radius:10px;display:block}
+.card.dim{opacity:.25;filter:blur(4px)}
+.status{min-height:22px;font-size:14px;color:#b9c0d0}
+.status.ok{color:#3ad07f;font-weight:600}
+.status.warn{color:#ffb454}
+.btn{
+  appearance:none;border:1px solid #333a4b;background:#1a1f2b;color:#dfe4ee;
+  height:40px;padding:0 20px;border-radius:999px;font-size:14px;cursor:pointer;
+}
+.btn:active{transform:scale(.97)}
+.hint{font-size:12px;color:#5d6478;line-height:1.7;max-width:320px}
+</style></head>
+<body>
+<h1>扫码登录汽水音乐</h1>
+<p class="sub">用手机「汽水音乐」或「抖音」扫一下</p>
+<div class="card" id="card"><img id="qr" alt="二维码" src="/qr.png"></div>
+<div class="status" id="st">二维码加载中…</div>
+<button class="btn" id="rf">刷新二维码</button>
+<p class="hint">扫码后在手机上点「确认」。登录成功这一页会变绿，直接返回就行。</p>
+<script>
+const $=s=>document.querySelector(s);
+let timer=null, done=false;
+function paint(txt,cls){ const st=$('#st'); st.textContent=txt; st.className='status'+(cls?' '+cls:''); }
+async function refresh(force){
+  paint('二维码加载中…');
+  $('#card').classList.remove('dim');
+  $('#qr').src='/qr.png?f='+(force?1:0)+'&t='+Date.now();
+  if(done) return;
+  try{
+    const r=await fetch('/api/login/poll',{cache:'no-store'});
+    const d=await r.json();
+    if(d.status==='confirmed'&&d.ok){ success(d); return; }
+    if(d.status==='expired'){ paint('二维码已过期，点下面刷新', 'warn'); $('#card').classList.add('dim'); }
+    else if(d.status==='scanned'){ paint(d.msg||'已扫码，请在手机上点「确认」'); }
+    else paint('等待扫码…');
+  }catch(e){ paint('等待扫码…'); }
+}
+function success(d){
+  done=true; clearInterval(timer);
+  $('#card').classList.add('dim');
+  paint('✓ 登录成功'+(d.nick?' · '+d.nick:''),'ok');
+  $('#rf').textContent='可以返回了';
+}
+$('#rf').onclick=()=>{ if(done) return; done=false; refresh(1); };
+refresh(0);
+timer=setInterval(refresh,2200);
+window.addEventListener('beforeunload',()=>clearInterval(timer));
+</script>
+</body></html>
+"""
+
+# 二维码 PNG 缓存：官方给的是 data:image/png;base64，转成 http 图片后
+# 任何 TVBox 内核的图片加载器都能显示（列表页 vod_pic 直接就是二维码）。
+QR_PNG = {"bytes": b"", "at": 0.0, "expire": 0.0}
+
+
+def qr_png_bytes(force=False):
+    now = time.time()
+    with QR_LOCK:
+        if not force and QR_PNG["bytes"] and now < QR_PNG["expire"] - 5:
+            return QR_PNG["bytes"]
+        cached = QR["png"] if QR["png"] and now < QR["expire"] - 5 else ""
+    png = cached
+    if not png:
+        png = (qr_new(True) or {}).get("png") or ""
+    if not png.startswith("data:"):
+        return b""
+    try:
+        body = png.split(",", 1)[1]
+        raw = base64.b64decode(body + "=" * (-len(body) % 4))
+    except Exception:
+        return b""
+    with QR_LOCK:
+        QR_PNG["bytes"] = raw
+        QR_PNG["at"] = now
+        QR_PNG["expire"] = float(QR["expire"] or (now + 120))
+    return raw
+
+
 # ============================================================================
 # 本机服务：页面 + 接口（网页与列表共用同一个引擎）
 # ============================================================================
@@ -1713,6 +1815,13 @@ class PageHandler(BaseHTTPRequestHandler):
         q = self._query(self.path)
         if path in ("/", "/index.html", "/music"):
             return self._send(200, MUSIC_HTML, "text/html; charset=utf-8")
+        if path in ("/qr", "/qr/"):
+            return self._send(200, QR_HTML, "text/html; charset=utf-8")
+        if path == "/qr.png":
+            png = qr_png_bytes(bool((q.get("f") or [""])[0]))
+            if not png:
+                return self._send(500, b"no qrcode", "text/plain")
+            return self._send(200, png, "image/png")
         if path == "/api/ping":
             return self._json({"ok": True, "logged": logged_in()})
         if path == "/api/bootstrap":
@@ -1994,10 +2103,9 @@ class Spider(BaseSpider):
 
     # ------------------------------------------------------------------ 首页
     def homeContent(self, filter):
-        classes = []
-        if CFG["page"]:
-            classes.append({"type_id": "page", "type_name": "音乐页面"})
-        classes.append({"type_id": "mode", "type_name": "听歌模式"})
+        # 分类里只放「听歌模式 / 登录」：音乐页面是扫码登录的载体，
+        # 单独挂一个分类只会让首页多一层没必要的入口。
+        classes = [{"type_id": "mode", "type_name": "听歌模式"}]
         if CFG["login"]:
             classes.append({"type_id": "login", "type_name": "登录"})
         return {"class": classes, "filters": {}}
@@ -2015,13 +2123,6 @@ class Spider(BaseSpider):
         tid = str(tid or "")
         page = max(1, int(pg or 1))
         try:
-            if tid == "page":
-                local, lan = page_urls()
-                url = lan or local or ""
-                return _result([{"vod_id": _pack("p", {"k": "home"}),
-                                 "vod_name": "音乐页面（扫码 / 推荐 / 听歌模式）",
-                                 "vod_pic": ICON,
-                                 "vod_remarks": url or "页面未启动"}], page)
             if tid == "mode":
                 cards = []
                 for m in load_modes():
@@ -2043,10 +2144,7 @@ class Spider(BaseSpider):
                 else:
                     cards = [{"vod_id": _pack("l", {"k": "qr"}),
                               "vod_name": "扫码登录", "vod_pic": ICON,
-                              "vod_remarks": "点开弹出二维码，手机扫"},
-                             {"vod_id": _pack("l", {"k": "info"}),
-                              "vod_name": "当前：匿名推荐", "vod_pic": ICON,
-                              "vod_remarks": "不登录也能用，只是不按你的画像推"}]
+                              "vod_remarks": "点开就是二维码，手机扫一下确认"}]
                 return _result(cards, page)
             # 其余 tid 视为「听歌模式名」→ 直接出歌
             feed = build_feed(tid, CFG["mode_count"])
@@ -2204,26 +2302,29 @@ def _login_detail(info):
     local, lan = page_urls()
     url = (lan or local or "")
     if kind == "qr":
-        target = (url + "/?login=1") if url else ""
+        base = local or lan or ""            # 本机地址最稳（宿主 WebView 就在本机）
+        qr_png_bytes()                       # 预热，详情页海报就是二维码
+        target = (base + "/qr") if base else ""
         popped = open_window(target) if target else False
         if popped:
-            body = ("已弹出登录窗口，用手机「抖音 / 汽水音乐」扫码并确认。\n\n"
-                    "登录态在后台推进，成功后窗口里会显示「登录成功」，按返回键回列表即可。\n\n"
-                    "窗口没弹出来？手机浏览器打开：%s" % (lan or target))
+            body = ("已弹出二维码，用手机「汽水音乐 / 抖音」扫码后点「确认」。\n\n"
+                    "这页只放二维码，不会再跟播放器混在一起。登录成功后窗口里的状态会变绿，"
+                    "直接返回列表即可，推荐会按你的账号画像走。\n\n"
+                    "扫不出来？浏览器打开：%s" % (lan or target))
         else:
-            body = ("用手机浏览器打开下面这条，页面右上角点「未登录」出二维码：\n\n%s\n\n"
-                    "同一 WiFi 下手机可直接访问；不方便的话在搜索框粘 Cookie：`#登录 <Cookie>`"
-                    % (lan or local or "（页面服务未启动）"))
+            body = ("用手机浏览器打开下面这条，页面里就是二维码：\n\n%s\n\n"
+                    "同一 WiFi 下手机可直接访问；也可以直接扫上面的二维码。"
+                    % ((lan or target) or "（页面服务未启动）"))
         return {"vod_id": _pack("l", {"k": "qr"}), "vod_name": "扫码登录",
-                "vod_pic": ICON, "vod_content": body,
+                "vod_pic": (base + "/qr.png") if base else ICON, "vod_content": body,
                 "vod_play_from": "汽水音乐", "vod_play_url": ""}
     if kind == "info":
         nick = nick_now()
-        state = ("已登录：%s" % nick) if logged_in() else "未登录（匿名推荐）"
+        state = ("已登录：%s" % nick) if logged_in() else "未登录"
         body = ("当前状态：**%s**\n\n"
-                "登录后：听歌模式走官方 discover/mix（认 scene_mode_id），推荐按账号画像。\n"
-                "未登录：场景模式走主题搜索，推荐走官方公共池 —— 也能用，只是不针对你。\n\n"
-                "%s" % (state, ("音乐页面：" + (lan or local)) if (lan or local) else ""))
+                "登录后：官方按你的账号画像出歌（场景队列 + 个性化推荐）。\n"
+                "未登录：用官方运营歌单池出歌 —— 场景同样对味，只是不针对你个人。\n\n"
+                "%s" % (state, ("页面：" + (lan or local)) if (lan or local) else ""))
         return {"vod_id": _pack("l", {"k": "info"}), "vod_name": state,
                 "vod_pic": ICON, "vod_content": body,
                 "vod_play_from": "汽水音乐", "vod_play_url": ""}
