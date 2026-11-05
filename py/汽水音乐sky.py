@@ -1,3 +1,71 @@
+# -*- coding: utf-8 -*-
+# 汽水音乐  TVBox / 影视仓 py 源  —— 重写版(2026-11-05)
+# 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
+#
+# ============================================================================
+# 这一版跟旧版(3570 行)的关系
+# ============================================================================
+# 旧版是「列表一套逻辑 + 内嵌登录页一套逻辑 + 宿主弹窗/代理/会话收割各一套」，
+# 登录页那套是后来手写的，两边取数口径并不一致（同一首歌在列表和页面里可能来自
+# 不同来源）。这一版把「推荐取数」收敛成**唯一一个引擎**：
+#
+#     build_feed(模式)  →  网页 / 列表分类 / 详情页剧集  全部走它
+#     resolve(曲目)     →  网页播放 / 列表播放          全部走它
+#
+# 于是「不登录」和「登录后」的行为在所有入口天然一致，不会出现「页面对味、列表不对味」。
+#
+# ============================================================================
+# 四个核心事实（都是实测，不是推断）
+# ============================================================================
+# 1) 推荐是按会话推的，必须把「已播列表」送回上游
+#    POST /luna/pc/feed/song-tab  body 里的 played_media=[{id,type:'track'}] 就是反馈通道。
+#    实测：带 played_media 再请求，返回的歌会变；不带就是同一批公共池。
+#    所以本源的「切歌/听完/喜欢」都会先写进 PLAYED，再请求下一批 —— 这是「联动它的算法」
+#    唯一真实可用的抓手（模型搬不过来，反馈闭环可以）。
+#
+# 2) 登录前后，服务端的取数逻辑不同
+#    · 匿名：/luna/feed/mode 给的 scene_mode_id 上游**零过滤**（传了也不认），
+#      直接拿 song-tab 是按流派拼的随机池 → 场景模式会对不上味。
+#      所以匿名时场景模式改走**主题搜索**（粤语→真的粤语歌）。
+#    · 登录后：带 Cookie 请求 /luna/pc/discover/mix + scene_mode_id/sub_queue_type，
+#      才是官方 App 里那套「时段×场景」的流。
+#
+# 3) 匿名播放大量曲目只给 30~60 秒试听
+#    判定不要看 label_info.only_vip_playable（会误判：稻香是完整曲但带该字段），
+#    要用「字节数 ÷ 码率 vs 曲目时长」：小于 80% 就是片段。
+#    命中后走酷我直连（搜索+取流实测 0.1~0.2s，320k mp3 完整版）。
+#
+# 4) 取流固定走匿名会话
+#    登录态下 seo_track 可能返回加密档(encrypt_info)或 VIP 限制档，反而播不了。
+#    内容请求带 Cookie，取流不带 —— 旧版第十一轮的结论，这里保留。
+#
+# ============================================================================
+# 从旧版继承的两个「不出声」教训（别改，改了就没声音）
+# ============================================================================
+# · **直连上游，不要包本地代理**：官方音频是 audio-only 的 M4A，部分 CDN 节点把
+#   Content-Type 写成 video/mp4，播放器会当视频起链 → 能播没声。
+#   旧版一度用 http://127.0.0.1:10010/audio/xxx.m4a 代理改写响应头，结果**整条线路无声**
+#   —— 播放器不接受 loopback 地址。所以 playerContent 只回上游直链。
+#   （网页里的 /api/stream 代理是给浏览器用的，跟 TVBox 播放器无关，两码事。）
+#
+# · **回 music_player: 1**：手机端「音乐播放器分流」标记，少了它部分播放器走视频分支。
+#
+# ============================================================================
+# 配置（init 的 extend，JSON 串；都可省略）
+# ============================================================================
+#   {"port": 8788,        本机服务端口(被占用会往后扫 20 个)
+#    "login": 1,           是否启用扫码登录(0 = 纯匿名，登录分类整个不显示)
+#    "page": 1,            是否启动本机服务(0 = 关闭；关闭后扫码登录也用不了)
+#    "mode_count": 50}     点开一个听歌模式时给多少首(20~200)
+#
+# ============================================================================
+# 入口
+# ============================================================================
+#   · 首页「听歌模式」→ 48 个模式，点进去是一整列歌
+#   · 首页「登录」→「扫码登录」卡片封面本身就是二维码；点开尝试弹 App 内小窗
+#     （宿主支持 openInternalWebview 时），登录成功小窗自动关闭
+#   · 搜索框 `#登录 <Cookie>` 手工粘会话；`#退出` 清登录态
+#   · 直接 python 汽水音乐sky.py 会跑一遍自检并打印结果
 import base64
 import gzip
 import hashlib
@@ -1643,7 +1711,7 @@ h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.4px}
 <body>
 <h1>扫码登录汽水音乐</h1>
 <p class="sub">用手机「汽水音乐」或「抖音」扫一下</p>
-<div class="card" id="card"><img id="qr" alt="二维码" src="/qr.png"></div>
+<div class="card" id="card"><img id="qr" alt="二维码" src="/qrs.png"></div>
 <div class="status" id="st">二维码加载中…</div>
 <button class="btn" id="rf">刷新二维码</button>
 <p class="hint">扫码后在手机上点「确认」。登录成功这一页会变绿，直接返回就行。</p>
@@ -1654,7 +1722,7 @@ function paint(txt,cls){ const st=$('#st'); st.textContent=txt; st.className='st
 async function refresh(force){
   paint('二维码加载中…');
   $('#card').classList.remove('dim');
-  $('#qr').src='/qr.png?f='+(force?1:0)+'&t='+Date.now();
+  $('#qr').src='/qrs.png?f='+(force?1:0)+'&t='+Date.now();
   if(done) return;
   try{
     const r=await fetch('/api/login/poll',{cache:'no-store'});
@@ -1688,7 +1756,7 @@ window.addEventListener('beforeunload',()=>clearInterval(timer));
 
 # 二维码 PNG 缓存：官方给的是 data:image/png;base64，转成 http 图片后
 # 任何 TVBox 内核的图片加载器都能显示（列表页 vod_pic 直接就是二维码）。
-QR_PNG = {"bytes": b"", "at": 0.0, "expire": 0.0}
+QR_PNG = {"bytes": b"", "sq": b"", "at": 0.0, "expire": 0.0}
 
 
 def _png_rgb(data):
@@ -1764,15 +1832,18 @@ def _png_gray(w, h, px):
             + chunk(b"IDAT", comp) + chunk(b"IEND", b""))
 
 
-def _qr_square(raw, side=1024):
-    """官方二维码 → 裁掉边缘白边 → 最近邻放大成正方形（带 ~4 模块静区）。
+QR_CORE_N = 512                                   # QR 本体重采样分辨率
+
+
+def _qr_core(raw):
+    """官方二维码 → 裁掉边缘白边 → 最近邻重采样的灰度正方形 (n, n, px)。
 
     像素级处理，不重建 QR 网格：可扫性与官方图完全一致（网格重建试过，
-    中心 logo 区的纠错余量扛不住，扫不出来）。解码失败就原样返回。
+    中心 logo 区的纠错余量扛不住，扫不出来）。解码失败返回 None。
     """
     got = _png_rgb(raw)
     if not got:
-        return raw
+        return None
     w, h, px = got
     x0, x1, y0, y1 = w, 0, h, 0
     for y in range(h):
@@ -1785,28 +1856,65 @@ def _qr_square(raw, side=1024):
                 if y > y1: y1 = y
     bw, bh = x1 - x0 + 1, y1 - y0 + 1
     if bw < 32 or bw > w or bh < 32:
-        return raw
-    side_q = max(bw, bh)                          # QR 是正方形，取长边兜底
-    margin = max(int(side * 0.055), 8)            # 约 4 模块静区
-    inner = side - margin * 2
-    out = bytearray(b"\xff" * (side * side))
-    for oy in range(inner):
-        sy = y0 + bh * oy // inner
-        row = sy * w
-        orow = (margin + oy) * side + margin
-        for ox in range(inner):
-            v = px[row + x0 + bw * ox // inner]
+        return None
+    n = QR_CORE_N
+    core = bytearray(b"\xff" * (n * n))
+    for oy in range(n):
+        srow = (y0 + bh * oy // n) * w
+        orow = oy * n
+        for ox in range(n):
+            v = px[srow + x0 + bw * ox // n]
+            core[orow + ox] = 0 if v < 128 else min(255, v * 2 // 3 + 85)
+    return n, core
+
+
+def _blit_gray(out, w, px, n, dx, dy, size):
+    """把 n×n 的灰度核心最近邻缩放到 size×size，画到 out(w 宽) 的 (dx,dy)。"""
+    for oy in range(size):
+        srow = n * oy // size * n
+        orow = (dy + oy) * w + dx
+        for ox in range(size):
+            v = px[srow + n * ox // size]
             if v < 200:
-                out[orow + ox] = 0 if v < 128 else (v * 2 // 3 + 85)
+                out[orow + ox] = v
+
+
+def _qr_square(raw, side=1024):
+    """官方二维码 → 满幅正方形（约 4 模块静区）。弹窗 base64 用这张。"""
+    core = _qr_core(raw)
+    if not core:
+        return raw
+    n, px = core
+    margin = max(int(side * 0.055), 8)
+    out = bytearray(b"\xff" * (side * side))
+    _blit_gray(out, side, px, n, margin, margin, side - margin * 2)
     return _png_gray(side, side, out)
 
 
-def qr_png_bytes(force=False):
-    """扫码卡封面用：官方二维码 → 裁边放大成正方形（1024x1024）。"""
+def _qr_card(raw, w=900, h=1350):
+    """宿主封面框是竖版海报（约 2:3），正方形码塞进去会被拉伸压扁。
+
+    这里把码以完整正方形放中央：2:3 框无论拉伸还是留白，看到的都是
+    不变形的大正方形码。列表卡片 / 详情页封面用这张。"""
+    core = _qr_core(raw)
+    if not core:
+        return _qr_square(raw)
+    n, px = core
+    pad = w // 24                                 # 左右各留约 4%
+    size = w - pad * 2
+    dy = (h - size) // 2
+    out = bytearray(b"\xff" * (w * h))
+    _blit_gray(out, w, px, n, pad, dy, size)
+    return _png_gray(w, h, out)
+
+
+def qr_png_bytes(force=False, kind="card"):
+    """二维码 PNG。kind: card=竖版卡片封面(900x1350) / square=正方形(1024)。"""
+    key = "bytes" if kind == "card" else "sq"
     now = time.time()
     with QR_LOCK:
-        if not force and QR_PNG["bytes"] and now < QR_PNG["expire"] - 5:
-            return QR_PNG["bytes"]
+        if not force and QR_PNG[key] and now < QR_PNG["expire"] - 5:
+            return QR_PNG[key]
         cached = QR["png"] if QR["png"] and now < QR["expire"] - 5 else ""
     png = cached
     if not png:
@@ -1818,9 +1926,9 @@ def qr_png_bytes(force=False):
         raw = base64.b64decode(body + "=" * (-len(body) % 4))
     except Exception:
         return b""
-    raw = _qr_square(raw)
+    raw = _qr_card(raw) if kind == "card" else _qr_square(raw)
     with QR_LOCK:
-        QR_PNG["bytes"] = raw
+        QR_PNG[key] = raw
         QR_PNG["at"] = now
         QR_PNG["expire"] = float(QR["expire"] or (now + 120))
     return raw
@@ -1829,7 +1937,7 @@ def qr_png_bytes(force=False):
 def qr_data_uri():
     """data:image/png;base64 直塞 vod_pic：本地 8788 没起来 / 端口不通时，
     卡片封面依然是二维码，不会回落成 App 图标海报。"""
-    raw = qr_png_bytes()
+    raw = qr_png_bytes(kind="card")
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii") if raw else ""
 
 
@@ -1878,8 +1986,13 @@ class PageHandler(BaseHTTPRequestHandler):
             return self._send(200, MUSIC_HTML, "text/html; charset=utf-8")
         if path in ("/qr", "/qr/"):
             return self._send(200, QR_HTML, "text/html; charset=utf-8")
-        if path == "/qr.png":
+        if path == "/qr.png":                 # 竖版卡片封面（列表/详情）
             png = qr_png_bytes(bool((q.get("f") or [""])[0]))
+            if not png:
+                return self._send(500, b"no qrcode", "text/plain")
+            return self._send(200, png, "image/png")
+        if path == "/qrs.png":                # 正方形（网页扫码页）
+            png = qr_png_bytes(bool((q.get("f") or [""])[0]), kind="square")
             if not png:
                 return self._send(500, b"no qrcode", "text/plain")
             return self._send(200, png, "image/png")
@@ -2609,7 +2722,7 @@ def _login_detail(info):
     url = (lan or local or "")
     if kind == "qr":
         base = local or lan or ""
-        png = qr_png_bytes()                 # 官方二维码 PNG（data uri 已转字节）
+        png = qr_png_bytes(kind="square")    # 弹窗用正方形；封面才用竖版 card
         b64 = base64.b64encode(png).decode("utf-8") if png else ""
         target = (base + "/qr") if base else ""
         # 1) 宿主 bridge 的原生小窗（摸鱼网盘登录同款通道，登录成功自动关）
