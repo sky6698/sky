@@ -1,71 +1,3 @@
-# -*- coding: utf-8 -*-
-# 汽水音乐  TVBox / 影视仓 py 源  —— 重写版(2026-11-05)
-# 站点: 字节「汽水音乐」Web 接口 https://api.qishui.com
-#
-# ============================================================================
-# 这一版跟旧版(3570 行)的关系
-# ============================================================================
-# 旧版是「列表一套逻辑 + 内嵌登录页一套逻辑 + 宿主弹窗/代理/会话收割各一套」，
-# 登录页那套是后来手写的，两边取数口径并不一致（同一首歌在列表和页面里可能来自
-# 不同来源）。这一版把「推荐取数」收敛成**唯一一个引擎**：
-#
-#     build_feed(模式)  →  网页 / 列表分类 / 详情页剧集  全部走它
-#     resolve(曲目)     →  网页播放 / 列表播放          全部走它
-#
-# 于是「不登录」和「登录后」的行为在所有入口天然一致，不会出现「页面对味、列表不对味」。
-#
-# ============================================================================
-# 四个核心事实（都是实测，不是推断）
-# ============================================================================
-# 1) 推荐是按会话推的，必须把「已播列表」送回上游
-#    POST /luna/pc/feed/song-tab  body 里的 played_media=[{id,type:'track'}] 就是反馈通道。
-#    实测：带 played_media 再请求，返回的歌会变；不带就是同一批公共池。
-#    所以本源的「切歌/听完/喜欢」都会先写进 PLAYED，再请求下一批 —— 这是「联动它的算法」
-#    唯一真实可用的抓手（模型搬不过来，反馈闭环可以）。
-#
-# 2) 登录前后，服务端的取数逻辑不同
-#    · 匿名：/luna/feed/mode 给的 scene_mode_id 上游**零过滤**（传了也不认），
-#      直接拿 song-tab 是按流派拼的随机池 → 场景模式会对不上味。
-#      所以匿名时场景模式改走**主题搜索**（粤语→真的粤语歌）。
-#    · 登录后：带 Cookie 请求 /luna/pc/discover/mix + scene_mode_id/sub_queue_type，
-#      才是官方 App 里那套「时段×场景」的流。
-#
-# 3) 匿名播放大量曲目只给 30~60 秒试听
-#    判定不要看 label_info.only_vip_playable（会误判：稻香是完整曲但带该字段），
-#    要用「字节数 ÷ 码率 vs 曲目时长」：小于 80% 就是片段。
-#    命中后走酷我直连（搜索+取流实测 0.1~0.2s，320k mp3 完整版）。
-#
-# 4) 取流固定走匿名会话
-#    登录态下 seo_track 可能返回加密档(encrypt_info)或 VIP 限制档，反而播不了。
-#    内容请求带 Cookie，取流不带 —— 旧版第十一轮的结论，这里保留。
-#
-# ============================================================================
-# 从旧版继承的两个「不出声」教训（别改，改了就没声音）
-# ============================================================================
-# · **直连上游，不要包本地代理**：官方音频是 audio-only 的 M4A，部分 CDN 节点把
-#   Content-Type 写成 video/mp4，播放器会当视频起链 → 能播没声。
-#   旧版一度用 http://127.0.0.1:10010/audio/xxx.m4a 代理改写响应头，结果**整条线路无声**
-#   —— 播放器不接受 loopback 地址。所以 playerContent 只回上游直链。
-#   （网页里的 /api/stream 代理是给浏览器用的，跟 TVBox 播放器无关，两码事。）
-#
-# · **回 music_player: 1**：手机端「音乐播放器分流」标记，少了它部分播放器走视频分支。
-#
-# ============================================================================
-# 配置（init 的 extend，JSON 串；都可省略）
-# ============================================================================
-#   {"port": 8788,        本机服务端口(被占用会往后扫 20 个)
-#    "login": 1,           是否启用扫码登录(0 = 纯匿名，登录分类整个不显示)
-#    "page": 1,            是否启动本机服务(0 = 关闭；关闭后扫码登录也用不了)
-#    "mode_count": 50}     点开一个听歌模式时给多少首(20~200)
-#
-# ============================================================================
-# 入口
-# ============================================================================
-#   · 首页「听歌模式」→ 48 个模式，点进去是一整列歌
-#   · 首页「登录」→「扫码登录」卡片封面本身就是二维码；点开尝试弹 App 内小窗
-#     （宿主支持 openInternalWebview 时），登录成功小窗自动关闭
-#   · 搜索框 `#登录 <Cookie>` 手工粘会话；`#退出` 清登录态
-#   · 直接 python 汽水音乐sky.py 会跑一遍自检并打印结果
 import base64
 import gzip
 import hashlib
@@ -75,12 +7,14 @@ import os
 import random
 import re
 import socket
+import struct
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -1757,7 +1691,118 @@ window.addEventListener('beforeunload',()=>clearInterval(timer));
 QR_PNG = {"bytes": b"", "at": 0.0, "expire": 0.0}
 
 
+def _png_rgb(data):
+    """最小 PNG 解码：只解 8bit RGB(2) / 灰度(0) 的 IHDR+IDAT，返回 (w,h,灰度列表)。
+    官方二维码就是 8bit RGB 512x512；其它格式原样放行，不做裁边。"""
+    try:
+        if data[12:16] != b"IHDR":
+            return None
+        w, h, depth, ctype = struct.unpack(">IIBB", data[16:26])
+        if depth != 8 or ctype not in (0, 2):
+            return None
+        nch = 1 if ctype == 0 else 3
+        idat, i = b"", 8
+        while i < len(data):
+            ln = struct.unpack(">I", data[i:i + 4])[0]
+            if data[i + 4:i + 8] == b"IDAT":
+                idat += data[i + 8:i + 8 + ln]
+            i += 12 + ln
+        raw = zlib.decompress(idat)
+        stride = w * nch + 1
+        if len(raw) != h * stride:
+            return None
+        px = bytearray(w * h)                      # 灰度 0~255
+        prev = bytearray(w * nch)
+        for y in range(h):
+            row = raw[y * stride:(y + 1) * stride]
+            f, cur = row[0], bytearray(row[1:])
+            if f == 1:
+                for x in range(nch, len(cur)):
+                    cur[x] = (cur[x] + cur[x - nch]) & 0xFF
+            elif f == 2:
+                for x in range(len(cur)):
+                    cur[x] = (cur[x] + prev[x]) & 0xFF
+            elif f == 3:
+                for x in range(len(cur)):
+                    a = cur[x - nch] if x >= nch else 0
+                    cur[x] = (cur[x] + ((a + prev[x]) >> 1)) & 0xFF
+            elif f == 4:
+                for x in range(len(cur)):
+                    a = cur[x - nch] if x >= nch else 0
+                    b, c = prev[x], (prev[x - nch] if x >= nch else 0)
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                    cur[x] = (cur[x] + pr) & 0xFF
+            base = y * w
+            for x in range(w):
+                px[base + x] = cur[x * nch]
+            prev = cur
+        return w, h, px
+    except Exception:
+        return None
+
+
+def _png_gray(w, h, px):
+    """灰度像素 → 8bit RGB PNG（filter 0）。"""
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        row = bytearray()
+        base = y * w
+        for x in range(w):
+            v = px[base + x]
+            row += bytes((v, v, v))
+        raw += row
+    comp = zlib.compress(bytes(raw), 6)
+
+    def chunk(tag, blob):
+        c = tag + blob
+        return struct.pack(">I", len(blob)) + c + struct.pack(">I", zlib.crc32(c))
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", comp) + chunk(b"IEND", b""))
+
+
+def _qr_square(raw, side=1024):
+    """官方二维码 → 裁掉边缘白边 → 最近邻放大成正方形（带 ~4 模块静区）。
+
+    像素级处理，不重建 QR 网格：可扫性与官方图完全一致（网格重建试过，
+    中心 logo 区的纠错余量扛不住，扫不出来）。解码失败就原样返回。
+    """
+    got = _png_rgb(raw)
+    if not got:
+        return raw
+    w, h, px = got
+    x0, x1, y0, y1 = w, 0, h, 0
+    for y in range(h):
+        base = y * w
+        for x in range(w):
+            if px[base + x] < 128:
+                if x < x0: x0 = x
+                if x > x1: x1 = x
+                if y < y0: y0 = y
+                if y > y1: y1 = y
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+    if bw < 32 or bw > w or bh < 32:
+        return raw
+    side_q = max(bw, bh)                          # QR 是正方形，取长边兜底
+    margin = max(int(side * 0.055), 8)            # 约 4 模块静区
+    inner = side - margin * 2
+    out = bytearray(b"\xff" * (side * side))
+    for oy in range(inner):
+        sy = y0 + bh * oy // inner
+        row = sy * w
+        orow = (margin + oy) * side + margin
+        for ox in range(inner):
+            v = px[row + x0 + bw * ox // inner]
+            if v < 200:
+                out[orow + ox] = 0 if v < 128 else (v * 2 // 3 + 85)
+    return _png_gray(side, side, out)
+
+
 def qr_png_bytes(force=False):
+    """扫码卡封面用：官方二维码 → 裁边放大成正方形（1024x1024）。"""
     now = time.time()
     with QR_LOCK:
         if not force and QR_PNG["bytes"] and now < QR_PNG["expire"] - 5:
@@ -1773,11 +1818,19 @@ def qr_png_bytes(force=False):
         raw = base64.b64decode(body + "=" * (-len(body) % 4))
     except Exception:
         return b""
+    raw = _qr_square(raw)
     with QR_LOCK:
         QR_PNG["bytes"] = raw
         QR_PNG["at"] = now
         QR_PNG["expire"] = float(QR["expire"] or (now + 120))
     return raw
+
+
+def qr_data_uri():
+    """data:image/png;base64 直塞 vod_pic：本地 8788 没起来 / 端口不通时，
+    卡片封面依然是二维码，不会回落成 App 图标海报。"""
+    raw = qr_png_bytes()
+    return "data:image/png;base64," + base64.b64encode(raw).decode("ascii") if raw else ""
 
 
 # ============================================================================
@@ -2389,10 +2442,12 @@ class Spider(BaseSpider):
                               "vod_name": "退出登录", "vod_pic": ICON,
                               "vod_remarks": "清掉本机登录态，回到匿名推荐"}]
                 else:
-                    # 卡片封面直接给二维码：列表里就能扫，不必先点进详情页
+                    # 卡片封面直接给二维码：列表里就能扫，不必先点进详情页。
+                    # 正方形满幅大图；本地服务不通时用 data URI 兜底，不再回落海报
                     local, _lan = page_urls()
-                    qr_png_bytes()
-                    pic = (local + "/qr.png?t=%d" % int(time.time())) if local else ICON
+                    uri = qr_data_uri()
+                    pic = ((local + "/qr.png?t=%d" % int(time.time()))
+                           if (local and uri) else uri) or ICON
                     cards = [{"vod_id": _pack("l", {"k": "qr"}),
                               "vod_name": "扫码登录", "vod_pic": pic,
                               "vod_remarks": "封面就是二维码，手机扫一下确认"}]
@@ -2563,7 +2618,8 @@ def _login_detail(info):
         # 2) 实在不在 bridge 里（安卓 java 桥 / 桌面 /msg）再试内嵌 WebView
         if not popped and target:
             popped = open_window(target)
-        pic = (base + "/qr.png?t=%d" % int(time.time())) if (base and png) else ICON
+        pic = ((base + "/qr.png?t=%d" % int(time.time())) if (base and png)
+               else qr_data_uri()) or ICON
         if popped:
             body = ("已弹出扫码小窗，用手机「汽水音乐 / 抖音」扫里面的二维码并点「确认」。\n\n"
                     "登录成功后小窗会自己关掉并提示昵称；返回「听歌模式」重新进一次就是登录态。")
