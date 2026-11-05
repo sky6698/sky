@@ -219,6 +219,70 @@ def logged_in():
     return bool(cookie_now())
 
 
+def qr_log(msg):
+    """扫码链路诊断日志（源同目录 qishui_qr.log）：官方确认后到底给了什么，
+    只有看到 raw 响应才能判断，纯 HTTP 与签名页两条路的差别全在这里。"""
+    try:
+        path = os.path.join(os.path.dirname(_data_path()), "qishui_qr.log")
+        if os.path.exists(path) and os.path.getsize(path) > 200000:
+            os.remove(path)
+        with open(path, "a", encoding="utf-8") as fp:
+            fp.write("%s %s\n" % (time.strftime("%m-%d %H:%M:%S"), msg))
+    except Exception:
+        pass
+
+
+def _qr_follow(payload, sess):
+    """confirmed 后跟一跳 redirect 收会话 Cookie。
+
+    官方文档实测：确认后的登录态不在响应体、常规也不带 Set-Cookie，它挂在
+    「扫码页那个浏览器会话」里。跟着 redirect_url 走一跳，运气好能通过
+    票据把 sessionid 种到我们这边；拿不到就说明必须走签名页/手工 Cookie。
+    """
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    cands = []
+    for src in (data, payload):
+        if not isinstance(src, dict):
+            continue
+        for k in ("redirect_url", "redirect_uri", "url", "desc_url"):
+            v = src.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                cands.append(v)
+        extra = src.get("extra")
+        if isinstance(extra, str) and "http" in extra:
+            try:
+                j = json.loads(extra)
+            except Exception:
+                j = {}
+            if isinstance(j, dict):
+                for k in ("redirect_url", "redirect_uri", "url"):
+                    v = j.get(k)
+                    if isinstance(v, str) and v.startswith("http"):
+                        cands.append(v)
+    seen = set()
+    for url in cands[:3]:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA_QR, "Referer": API + "/",
+                "Accept": "text/html,application/xhtml+xml"})
+            with sess["opener"].open(req, timeout=10) as r:
+                r.read(2048)
+            qr_log("follow ok %s" % url[:120])
+        except Exception as e:
+            qr_log("follow fail %s (%s)" % (url[:100], e))
+
+
+def qr_url(base):
+    """封面图地址带 token 指纹：App 会缓存封面图，不带指纹时用户扫到的
+    可能是上一张已作废的码，手机点确认后这边永远等不到。"""
+    with QR_LOCK:
+        tk = (QR.get("token") or "")[:8]
+    return "%s/qr.png?t=%d&k=%s" % (base, int(time.time()), tk)
+
+
 def save_cookie(cookie, nick=""):
     with LOCK:
         STATE["cookie"] = str(cookie or "")
@@ -1008,9 +1072,11 @@ def qr_new(force=False):
         exp = data.get("expire_time")
         if isinstance(exp, (int, float)):
             expire = float(exp) if exp > 10 ** 9 else time.time() + float(exp)
+        old = [t for t in (QR.get("tokens") or []) if t != data["token"]][-3:]
         QR.update({"token": data["token"], "png": data.get("qrcode") or "",
                    "expire": expire, "status": "new", "msg": "", "raw": "",
-                   "error_code": 0})
+                   "error_code": 0, "tokens": old + [data["token"]]})
+    qr_log("qr_new token=%s expire=%ds" % (data["token"][:12], int(expire - time.time())))
     return {"png": QR["png"], "expire": QR["expire"]}
 
 
@@ -1019,17 +1085,32 @@ def qr_poll():
         return {"status": "confirmed", "msg": "已登录", "ok": True, "nick": nick_now()}
     with QR_LOCK:
         token, prev = QR["token"], QR["status"]
+        hist = list(QR.get("tokens") or [])
     if not token:
         return {"status": prev or "new", "msg": "二维码已失效，请刷新", "ok": False}
     sess = _qr_session()
+    # App 会缓存封面图，用户扫到的可能是前一两张码；把最近几个 token 一起查，
+    # 命中哪个都算数，免得「手机已确认、这边还在等」。
+    order = [token] + [t for t in reversed(hist) if t != token][:2]
+    best, best_rank = None, -1
+    rank_of = {"confirmed": 3, "3": 3, "success": 3, "scanned": 2, "2": 2,
+               "scanning": 2, "new": 1, "1": 1}
     try:
-        payload = _qr_call(sess, "POST", QR_CHECK, {}, {
-            "need_logo": "false", "need_short_url": "false", "is_frontier": "true",
-            "token": token, "is_new_login": "1", "next": API})
+        for tk in order:
+            p = _qr_call(sess, "POST", QR_CHECK, {}, {
+                "need_logo": "false", "need_short_url": "false", "is_frontier": "true",
+                "token": tk, "is_new_login": "1", "next": API})
+            d = p.get("data") if isinstance(p.get("data"), dict) else p
+            r = rank_of.get(str(d.get("status") or ""), 0)
+            if r > best_rank:
+                best, best_rank = p, r
+            if r >= 3:
+                break
     except Exception as e:
         return {"status": prev, "msg": "网络异常：%s" % e, "ok": False}
-
+    payload = best if best is not None else {"data": {"status": "new"}}
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+
     raw = str(data.get("status") or "")
     code = int(data.get("error_code") or 0)
     status = {"new": "new", "1": "new", "scanned": "scanned", "scanning": "scanned",
@@ -1044,6 +1125,9 @@ def qr_poll():
         if status:
             QR["status"] = status
     if status != "confirmed":
+        if status in ("scanned", "expired") or code:
+            qr_log("poll status=%s code=%s body=%s"
+                   % (status, code, json.dumps(payload, ensure_ascii=False)[:400]))
         tip = {"new": "等待扫码…", "scanned": "已扫码，请在手机上点「确认」",
                "expired": "二维码已过期，点一下刷新"}.get(status, "状态：%s" % (raw or code))
         if code == 7:
@@ -1052,12 +1136,19 @@ def qr_poll():
             tip = "需要在手机上完成二次验证"
         return {"status": status, "msg": tip, "ok": False, "raw": raw, "code": code}
 
-    # 已确认 → 从 cookie jar 取会话
+    # 已确认 → 官方常规不给 Cookie，先跟一跳 redirect 试收，再查 jar
+    qr_log("confirmed raw=%s code=%s body=%s" % (raw, code,
+                                                json.dumps(payload, ensure_ascii=False)[:600]))
+    _qr_follow(payload, sess)
     jar = sess["jar"]
     names = {c.name: c.value for c in jar}
+    qr_log("jar keys=%s" % ",".join(sorted(names)))
     if not any(k in names for k in SID_KEYS):
-        return {"status": "confirmed", "msg": "已确认，但没拿到会话（官方风控），请刷新后重扫",
-                "ok": False, "raw": raw, "code": code}
+        return {"status": "confirmed",
+                "msg": ("手机已确认，但官方没把会话发给本机（它只存在扫码页浏览器里）。\n"
+                        "改用手工 Cookie：浏览器登录汽水网页版后，把整段 Cookie 粘到"
+                        "搜索框，开头写 `#登录 `。"),
+                "need_cookie": True, "ok": False, "raw": raw, "code": code}
     cookie = "; ".join("%s=%s" % (c.name, c.value) for c in jar)
     info = me_info(cookie)
     if int((info or {}).get("status_code") or 0) == 1000016:
@@ -2492,8 +2583,7 @@ class Spider(BaseSpider):
                     # 正方形满幅大图；本地服务不通时用 data URI 兜底，不再回落海报
                     local, _lan = page_urls()
                     uri = qr_data_uri()
-                    pic = ((local + "/qr.png?t=%d" % int(time.time()))
-                           if (local and uri) else uri) or ICON
+                    pic = (qr_url(local) if (local and uri) else uri) or ICON
                     cards = [{"vod_id": _pack("l", {"k": "qr"}),
                               "vod_name": "扫码登录", "vod_pic": pic,
                               "vod_remarks": ""}]      # remarks 会以绿字盖在封面底部，遮住码，留空
@@ -2664,8 +2754,7 @@ def _login_detail(info):
         # 2) 实在不在 bridge 里（安卓 java 桥 / 桌面 /msg）再试内嵌 WebView
         if not popped and target:
             popped = open_window(target)
-        pic = ((base + "/qr.png?t=%d" % int(time.time())) if (base and png)
-               else qr_data_uri()) or ICON
+        pic = (qr_url(base) if (base and png) else qr_data_uri()) or ICON
         if popped:
             body = ("已弹出扫码小窗，用手机「汽水音乐 / 抖音」扫里面的二维码并点「确认」。\n\n"
                     "登录成功后小窗会自己关掉并提示昵称；返回「听歌模式」重新进一次就是登录态。")
@@ -2681,10 +2770,22 @@ def _login_detail(info):
     if kind == "info":
         nick = nick_now()
         state = ("已登录：%s" % nick) if logged_in() else "未登录"
+        recent = ""
+        try:
+            path = os.path.join(os.path.dirname(_data_path()), "qishui_qr.log")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fp:
+                    lines = fp.read().strip().splitlines()[-4:]
+                if lines:
+                    recent = "\n\n**最近扫码记录**\n" + "\n".join("- " + l for l in lines)
+        except Exception:
+            pass
         body = ("当前状态：**%s**\n\n"
                 "登录后：官方按你的账号画像出歌（场景队列 + 个性化推荐）。\n"
                 "未登录：用官方运营歌单池出歌 —— 场景同样对味，只是不针对你个人。\n\n"
-                "%s" % (state, ("页面：" + (lan or local)) if (lan or local) else ""))
+                "%s%s" % (state,
+                          ("页面：" + (lan or local)) if (lan or local) else "",
+                          recent))
         return {"vod_id": _pack("l", {"k": "info"}), "vod_name": state,
                 "vod_pic": ICON, "vod_content": body,
                 "vod_play_from": "汽水音乐", "vod_play_url": ""}
