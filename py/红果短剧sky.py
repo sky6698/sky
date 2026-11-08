@@ -488,28 +488,83 @@ def _spade_value(item: Mapping[str, Any]) -> str:
         encrypt_info = {}
     return _first(item.get("spade_a"), encrypt_info.get("spade_a"))
 
-def derive_content_key(spade_b64: str) -> bytes:
-    raw = _b64(spade_b64)
-    if len(raw) < 3:
-        raise HongguoPluginError("spade_a 太短")
-    v8 = len(raw) - (raw[0] ^ raw[1] ^ raw[2]) + 47
-    if v8 <= 0 or 1 + v8 > len(raw):
-        v8 = len(raw) - 1
-    if v8 < 33:
-        raise HongguoPluginError("spade_a 长度异常")
-    value = bytearray(raw[1 : 1 + v8])
-    va, vb = 85, 246
-    for index in range(v8):
-        previous = va if index & 1 else vb
-        if index & 1:
-            va = value[index]
-        else:
-            vb = value[index]
-        value[index] = (-21 - bin(index).count("1") + (previous ^ value[index])) & 0xFF
+def _spade_direct(text: str) -> bytes | None:
+    """对齐 node 的 T20()：把一段文本当密钥本体读。
+
+    十六进制优先，其次 base64；只有长度落在 16/24/32（AES-128/192/256）才认。
+    """
+    value = (text or "").strip()
+    if not value:
+        return None
+    if len(value) % 2 == 0 and all(char in "0123456789abcdefABCDEF" for char in value):
+        try:
+            raw = binascii.unhexlify(value)
+        except (ValueError, binascii.Error):
+            raw = b""
+        if len(raw) in (16, 24, 32):
+            return raw
     try:
-        return binascii.unhexlify(bytes(value[1:33]).decode("ascii"))
-    except (ValueError, binascii.Error) as exc:
-        raise HongguoPluginError("spade_a 密钥材料无效") from exc
+        raw = _b64(value + "=" * (-len(value) % 4))
+    except Exception:  # noqa: BLE001 - base64 失败就当不是密钥
+        return None
+    return raw if len(raw) in (16, 24, 32) else None
+
+
+def _yqt(value: int) -> int:
+    """node 的 Yqt()：'0'-'9' -> 0-9，'a'-'z' -> 10-35，其它 -1。"""
+    if 48 <= value <= 57:
+        return value - 48
+    if 97 <= value <= 122:
+        return value - 97 + 10
+    return -1
+
+
+def _spade_payload(spade: str) -> str:
+    """对齐 node 的 qqt()：解出 spade_a 里包裹的「payload + type」。
+
+    布局：三字节异或出偏移 c，type_len = c-48，data_len = len-c+47；
+    真正的内容在原始串的 [1, 1+data_len) 段，先按 zqt(..., t=null, n=0)
+    做交替种子异或还原，再用首字符解码出 payload 的截取长度。
+    """
+    raw = _b64((spade or "").strip() + "=" * (-len(spade or "") % 4))
+    if len(raw) < 5:
+        return ""
+    magic = (raw[0] ^ raw[1] ^ raw[2]) & 0xFF
+    type_len = magic - 48
+    data_len = len(raw) - magic + 47
+    if type_len < 1 or data_len < 1 or 1 + data_len > len(raw):
+        return ""
+    if len(raw) - type_len - 2 < 0:
+        return ""
+    body = bytearray(raw[1 : 1 + data_len])
+    seed_left, seed_right = 85, 250
+    for index in range(len(body)):
+        value = body[index]
+        if index & 1:
+            previous = seed_left
+            seed_left = value
+        else:
+            previous = seed_right
+            seed_right = value
+        body[index] = ((previous ^ value) - 21 - bin(index).count("1")) & 0xFF
+    head = _yqt(body[0])
+    if head < 0 or data_len - head < 2:
+        return ""
+    begin = 1
+    size = data_len - head - 1
+    return bytes(body[begin : begin + size]).decode("utf-8", "ignore")
+
+
+def derive_content_key(spade_b64: str) -> bytes:
+    direct = _spade_direct(spade_b64)
+    if direct:
+        return direct
+    payload = _spade_payload(spade_b64)
+    if payload:
+        direct = _spade_direct(payload)
+        if direct:
+            return direct
+    raise HongguoPluginError("spade_a 密钥材料无效")
 
 def _find_box(data: memoryview, fourcc: bytes, start: int) -> tuple[int, int]:
     for index in range(max(4, start), len(data) - 4):
@@ -738,30 +793,316 @@ def _toplevel_boxes(buf: bytes) -> list[tuple[int, int, bytes]]:
     return boxes
 
 
-def _range_get(url: str, start: int, end: int) -> tuple[bytes, int]:
+_CENC_CHUNK = 1 << 20
+_CENC_PROBE = 1 << 16
+_CENC_TTL = 900
+_CENC_MAX_PLANS = 6
+_CENC_PLANS: dict[str, tuple] = {}
+_CENC_LOCK = threading.RLock()
+
+
+def _c_box(buf: bytes, off: int, end: int):
+    """读一个 MP4 box。越界返回 None（对齐 node 运行时的 NN）。"""
+    if off + 8 > end or off + 8 > len(buf):
+        return None
+    size = struct.unpack(">I", buf[off : off + 4])[0]
+    typ = bytes(buf[off + 4 : off + 8])
+    head = 8
+    if size == 1:
+        if off + 16 > end or off + 16 > len(buf):
+            return None
+        size = struct.unpack(">Q", buf[off + 8 : off + 16])[0]
+        head = 16
+    elif size == 0:
+        size = end - off
+    if size < head or off + size > end or off + size > len(buf):
+        return None
+    return {"off": off, "size": size, "typ": typ,
+            "start": off + head, "end": off + size}
+
+
+def _c_children(buf: bytes, box) -> list:
+    items = []
+    cursor = box["start"] + (4 if box["typ"] == b"meta" else 0)
+    while cursor + 8 <= box["end"]:
+        child = _c_box(buf, cursor, box["end"])
+        if child is None:
+            break
+        items.append(child)
+        cursor = child["end"]
+    return items
+
+
+def _c_find(buf: bytes, box, typ: bytes):
+    for child in _c_children(buf, box):
+        if child["typ"] == typ:
+            return child
+    return None
+
+
+def _c_all(buf: bytes, box, typ: bytes) -> list:
+    return [c for c in _c_children(buf, box) if c["typ"] == typ]
+
+
+def _c_fullbox(buf: bytes, box) -> tuple:
+    if box["start"] + 4 > box["end"]:
+        raise HongguoPluginError("%s 盒太短" % box["typ"].decode("ascii", "replace"))
+    flags = (buf[box["start"] + 1] << 16) | (buf[box["start"] + 2] << 8) | buf[box["start"] + 3]
+    return flags, box["start"] + 4
+
+
+def _c_u32(buf: bytes, off: int) -> int:
+    return struct.unpack(">I", buf[off : off + 4])[0]
+
+
+def _c_sample_sizes(buf: bytes, box) -> list:
+    _, pos = _c_fullbox(buf, box)
+    default = _c_u32(buf, pos)
+    count = _c_u32(buf, pos + 4)
+    if count > 4_000_000:
+        raise HongguoPluginError("stsz 样本数异常 %d" % count)
+    if default:
+        return [int(default)] * count
+    return [_c_u32(buf, pos + 8 + index * 4) for index in range(count)]
+
+
+def _c_chunk_offsets(buf: bytes, box) -> list:
+    _, pos = _c_fullbox(buf, box)
+    count = _c_u32(buf, pos)
+    width = 8 if box["typ"] == b"co64" else 4
+    return [int.from_bytes(buf[pos + 4 + i * width : pos + 4 + (i + 1) * width], "big")
+            for i in range(count)]
+
+
+def _c_stsc(buf: bytes, box) -> list:
+    _, pos = _c_fullbox(buf, box)
+    count = _c_u32(buf, pos)
+    return [(_c_u32(buf, pos + 4 + i * 12), _c_u32(buf, pos + 8 + i * 12))
+            for i in range(count)]
+
+
+def _c_expand(entries: list, chunk_offsets: list, sizes: list) -> list:
+    """stsc + stco 展开成逐样本的文件偏移。"""
+    offsets = []
+    cursor = 0
+    for chunk_no in range(1, len(chunk_offsets) + 1):
+        per = entries[0][1] if entries else 0
+        for index, entry in enumerate(entries):
+            stop = entries[index + 1][0] if index + 1 < len(entries) else 0xFFFFFFFF
+            if entry[0] <= chunk_no < stop:
+                per = entry[1]
+                break
+        base = chunk_offsets[chunk_no - 1]
+        for _ in range(per):
+            if cursor >= len(sizes):
+                return offsets
+            offsets.append(base)
+            base += sizes[cursor]
+            cursor += 1
+    return offsets
+
+
+def _c_entries_of(buf: bytes, stsd) -> list:
+    """stsd 里的样本描述表（每个 entry 自带 8 字节 reserved+dref 前缀）。"""
+    entries = []
+    cursor = stsd["start"] + 8          # version/flags(4) + entry_count(4)
+    while cursor + 8 <= stsd["end"]:
+        entry = _c_box(buf, cursor, stsd["end"])
+        if entry is None:
+            break
+        entries.append(entry)
+        cursor = entry["end"]
+    return entries
+
+
+def _c_stsd_entries(buf: bytes, stbl) -> list:
+    stsd = _c_find(buf, stbl, b"stsd")
+    return _c_entries_of(buf, stsd) if stsd is not None else []
+
+
+def _c_tenc(buf: bytes, entry) -> list:
+    """在样本描述里扫 tenc，返回若干候选 {protected, iv_size, kid}。
+
+    红果的 tenc 实测布局为 version+flags(4) | reserved(1) | isProtected(1)
+    | ivSize(1) | KID(16)（对应 delta=6），个别文件少一个保留字节（delta=5），
+    这里两个偏移都收，后面用「KID 是否等于接口给的 kid」来挑。
+    """
+    found = []
+    start, end = entry["start"], entry["end"]
+    index = start
+    while True:
+        index = buf.find(b"tenc", index, end)
+        if index < 0:
+            break
+        box_off = index - 4
+        if box_off >= start:
+            for delta in (6, 5):
+                pos = box_off + 8 + delta
+                if pos + 19 > end:
+                    continue
+                found.append({
+                    "protected": buf[pos],
+                    "iv_size": buf[pos + 1],
+                    "kid": bytes(buf[pos + 2 : pos + 18]).hex(),
+                    "delta": delta,
+                })
+        index += 4
+    return found
+
+
+def _c_senc(buf: bytes, box, iv_size: int) -> list:
+    """读 senc：逐样本 IV + （flags&2 时）子样本表。"""
+    flags, pos = _c_fullbox(buf, box)
+    count = _c_u32(buf, pos)
+    pos += 4
+    size = iv_size if iv_size in (8, 16) else 8
+    entries = []
+    for _ in range(count):
+        if pos + size > box["end"]:
+            break
+        iv = bytes(buf[pos : pos + size])
+        pos += size
+        subs = []
+        if flags & 2:
+            if pos + 2 > box["end"]:
+                break
+            sub_count = struct.unpack(">H", buf[pos : pos + 2])[0]
+            pos += 2
+            for _ in range(sub_count):
+                if pos + 6 > box["end"]:
+                    break
+                clear = struct.unpack(">H", buf[pos : pos + 2])[0]
+                enc = _c_u32(buf, pos + 2)
+                pos += 6
+                subs.append((clear, enc))
+        entries.append((iv, subs))
+    return entries
+
+
+def _c_frame_boxes(buf: bytes, box, base: int) -> list:
+    """收集需要改写的 box: sinf/senc/saiz/saio -> free, encv/enca -> frma 原始编码。"""
+    patches = []
+    for child in _c_children(buf, box):
+        if child["typ"] in (b"sinf", b"senc", b"saiz", b"saio"):
+            patches.append((base + child["off"] + 4, b"free"))
+        elif child["typ"] == b"stsd":
+            for entry in _c_entries_of(buf, child):
+                if entry["typ"] not in (b"encv", b"enca"):
+                    continue
+                original = b""
+                sinf_at = buf.find(b"sinf", entry["start"], entry["end"])
+                if sinf_at >= 0:
+                    sinf_box = _c_box(buf, sinf_at - 4, entry["end"])
+                    if sinf_box is not None and sinf_box["typ"] == b"sinf":
+                        # sinf 也改成 free：否则播放器见到 sinf/tenc 会当成 DRM 拒绝解码
+                        patches.append((base + sinf_box["off"] + 4, b"free"))
+                    frma_at = buf.find(b"frma", sinf_at, min(entry["end"], sinf_at + 512))
+                    if frma_at >= 0 and frma_at + 8 <= entry["end"]:
+                        original = bytes(buf[frma_at + 4 : frma_at + 8])
+                if original and all(32 <= ch <= 126 for ch in original):
+                    patches.append((base + entry["off"] + 4, original))
+        patches.extend(_c_frame_boxes(buf, child, base))
+    return patches
+
+
+def _c_track_samples(buf: bytes, stbl, wanted: str):
+    """给一条轨道建样本表；返回 (kid, samples) 或 None。
+
+    IV 长度、tenc 偏移都用「senc 条数必须等于 stsz 条数」来自校验，
+    避免像旧实现那样写死 8 字节 IV 把 16 字节 IV 的集数解成花屏。
+    """
+    stsz = _c_find(buf, stbl, b"stsz")
+    stsc = _c_find(buf, stbl, b"stsc")
+    stco = _c_find(buf, stbl, b"stco") or _c_find(buf, stbl, b"co64")
+    senc = _c_find(buf, stbl, b"senc")
+    if not (stsz and stsc and stco and senc):
+        return None
+    try:
+        sizes = _c_sample_sizes(buf, stsz)
+        offsets = _c_expand(_c_stsc(buf, stsc), _c_chunk_offsets(buf, stco), sizes)
+    except Exception:
+        return None
+    if not sizes or len(offsets) != len(sizes):
+        return None
+    guesses = []
+    for entry in _c_stsd_entries(buf, stbl):
+        guesses.extend(_c_tenc(buf, entry))
+    guesses.sort(key=lambda item: (
+        0 if (wanted and item["kid"] == wanted) else 1,
+        0 if item["delta"] == 6 else 1,
+    ))
+    best = None
+    for guess in guesses:
+        if not guess["protected"] and not wanted:
+            continue
+        for iv_size in (guess["iv_size"], 8, 16):
+            aux = _c_senc(buf, senc, iv_size)
+            if len(aux) != len(sizes):
+                continue
+            best = (guess["kid"], [
+                (offsets[index], sizes[index], aux[index][0], aux[index][1])
+                for index in range(len(sizes))
+            ])
+            break
+        if best:
+            break
+    return best
+
+
+def _c_build_plan(moov: bytes, base: int, kid: str, spade: str) -> dict:
+    """从 moov 构建解密计划：样本表 + 头部补丁 + 内容密钥。"""
+    root = _c_box(moov, 0, len(moov))
+    if root is None or root["typ"] != b"moov":
+        root = {"off": 0, "size": len(moov), "typ": b"root",
+                "start": 0, "end": len(moov)}
+    key = derive_content_key(spade)
+    wanted = (kid or "").strip().lower()
+    tracks = []
+    for trak in _c_all(moov, root, b"trak"):
+        mdia = _c_find(moov, trak, b"mdia")
+        minf = _c_find(moov, mdia, b"minf") if mdia else None
+        stbl = _c_find(moov, minf, b"stbl") if minf else None
+        if stbl is None:
+            continue
+        built = _c_track_samples(moov, stbl, wanted)
+        if built:
+            tracks.append({"kid": built[0], "samples": built[1]})
+    if not tracks:
+        raise HongguoPluginError("moov 中没有可解密的 CENC 轨道")
+    matched = [t for t in tracks if wanted and t["kid"] == wanted]
+    if matched:
+        tracks = matched
+    samples = []
+    for track in tracks:
+        samples.extend(track["samples"])
+    samples.sort(key=lambda item: item[0])
+    return {
+        "key": key,
+        "samples": samples,
+        "offsets": [item[0] for item in samples],
+        "patches": _c_frame_boxes(moov, root, base),
+        "kids": sorted({track["kid"] for track in tracks}),
+    }
+
+
+def _cenc_get(url: str, start: int, end: int) -> tuple:
     headers = dict(MEDIA_HEADERS)
     headers["Range"] = "bytes=%d-%d" % (start, end)
-    expected = end - start + 1
-    last_error: Exception | None = None
-    for attempt in range(_RANGE_FETCH_ATTEMPTS):
+    last: Exception | None = None
+    for attempt in range(3):
         if attempt:
-            time.sleep(_RANGE_FETCH_BACKOFF_SECONDS * attempt)
+            time.sleep(0.4 * attempt)
         try:
             response = _http().get(url, headers=headers, timeout=45)
         except requests.RequestException as error:
-            last_error = error
+            last = error
             continue
         if response.status_code not in (200, 206):
-            last_error = HongguoPluginError(
-                "媒体分片请求失败 %s" % response.status_code
-            )
+            last = HongguoPluginError("媒体分片 HTTP %s" % response.status_code)
             continue
-        body = response.content
-        # 上游偶发返回短包；短于请求长度时重试，避免播放器收到截断数据。
-        if not body or (response.status_code == 206 and len(body) < expected):
-            last_error = HongguoPluginError(
-                "媒体分片长度不足 %d/%d" % (len(body), expected)
-            )
+        body = response.content or b""
+        if not body:
+            last = HongguoPluginError("媒体分片为空")
             continue
         total = 0
         content_range = response.headers.get("Content-Range") or ""
@@ -773,212 +1114,119 @@ def _range_get(url: str, start: int, end: int) -> tuple[bytes, int]:
             length = response.headers.get("Content-Length") or ""
             total = int(length) if length.isdigit() else 0
         return body, total
-    raise last_error or HongguoPluginError("媒体分片请求失败")
+    raise last or HongguoPluginError("媒体分片请求失败")
 
 
-def _fetch_moov(url: str) -> tuple[int, int, bytes]:
-    probe, total = _range_get(url, 0, _STREAM_HEAD_PROBE - 1)
-    if not total:
-        raise HongguoPluginError("媒体总长度未知")
-    moov_start = 0
-    moov_size = 0
-    for offset, size, fourcc in _toplevel_boxes(probe):
-        if fourcc == b"moov":
-            moov_start = offset
-            moov_size = size
-            break
-    if not moov_size:
-        raise HongguoPluginError("未找到 moov 顶层盒")
-    if moov_start + moov_size > total:
-        raise HongguoPluginError("moov 越界")
-    if moov_start + moov_size <= len(probe):
-        return total, moov_start, bytes(probe[moov_start : moov_start + moov_size])
-    moov, _ = _range_get(url, moov_start, moov_start + moov_size - 1)
-    if len(moov) != moov_size:
-        raise HongguoPluginError("moov 分片长度不符")
-    return total, moov_start, moov
-
-
-def _rewrite_moov(moov: bytes) -> bytes:
-    result = bytearray(moov)
-    _replace_fourcc(result, b"encv", b"hvc1")
-    _replace_fourcc(result, b"enca", b"mp4a")
-    _neutralize_cenc(result)
-    return bytes(result)
-
-
-def _sample_table(moov: bytes, moov_start: int) -> list[tuple[int, int, bytes]]:
-    view = memoryview(moov)
-    samples: list[tuple[int, int, bytes]] = []
-    track_search = 0
-    while True:
-        track, track_size = _find_box(view, b"trak", track_search)
-        if track < 0:
-            break
-        track_search = track + max(track_size, 8)
-        parsed = _parse_track(view, track)
-        if parsed is None:
-            continue
-        sizes, offsets, chunk_counts, aux_sizes, aux_offset, sample_count = parsed
-        aux_length = sum(max(size, 8) for size in aux_sizes)
-        aux_local = aux_offset - moov_start
-        if aux_local < 0 or aux_local + aux_length > len(moov):
-            raise HongguoPluginError("CENC 辅助信息不在 moov 内，无法流式解密")
-        aux = moov[aux_local : aux_local + aux_length]
-        sample_index = 0
-        aux_index = 0
-        for chunk_index, chunk_offset in enumerate(offsets):
-            current = chunk_offset
-            for _ in range(chunk_counts[chunk_index]):
-                if sample_index >= sample_count or sample_index >= len(sizes):
-                    break
-                if sample_index >= len(aux_sizes):
-                    raise HongguoPluginError("CENC 辅助信息数量不足")
-                entry_size = max(aux_sizes[sample_index], 8)
-                initial_vector = bytes(
-                    aux[aux_index : aux_index + min(entry_size, 8)]
-                ).ljust(8, b"\0") + b"\0" * 8
-                samples.append((current, sizes[sample_index], initial_vector))
-                current += sizes[sample_index]
-                aux_index += entry_size
-                sample_index += 1
-    if not samples:
-        raise HongguoPluginError("moov 中没有可解密的 CENC 样本")
-    samples.sort()
-    return samples
-
-
-class _StreamSession:
-    """按 Range 逐块拉取加密 MP4，边下边解 CENC，供本地播放器直连。"""
-
-    def __init__(
-        self,
-        url: str,
-        content_key: bytes,
-        total: int,
-        moov_start: int,
-        moov: bytes,
-    ) -> None:
-        if len(content_key) != 16:
-            raise HongguoPluginError("CENC 密钥长度错误")
-        self.url = url
-        self.content_key = content_key
-        self.total = total
-        self.moov_start = moov_start
-        self.moov_plain = _rewrite_moov(moov)
-        self.moov_end = moov_start + len(moov)
-        self.samples = _sample_table(moov, moov_start)
-        self.offsets = [item[0] for item in self.samples]
-        self.created = time.time()
-
-    def expired(self) -> bool:
-        return time.time() - self.created > _STREAM_TTL_SECONDS
-
-    def _patch(self, buffer: bytearray, base: int) -> None:
-        end = base + len(buffer) - 1
-        index = max(bisect.bisect_right(self.offsets, base) - 1, 0)
-        while index < len(self.samples):
-            offset, size, initial_vector = self.samples[index]
-            index += 1
-            if offset > end:
-                break
-            if offset + size <= base:
-                continue
-            first = max(offset, base)
-            last = min(offset + size - 1, end)
-            skip = first - offset
-            counter = (
-                (int.from_bytes(initial_vector, "big") + skip // 16)
-                & ((1 << 128) - 1)
-            ).to_bytes(16, "big")
-            padding = skip % 16
-            plain = _aes_ctr_decrypt(
-                self.content_key,
-                counter,
-                b"\0" * padding + bytes(buffer[first - base : last - base + 1]),
-            )
-            buffer[first - base : last - base + 1] = plain[padding:]
-        if base < self.moov_end and end >= self.moov_start:
-            first = max(base, self.moov_start)
-            last = min(end, self.moov_end - 1)
-            buffer[first - base : last - base + 1] = self.moov_plain[
-                first - self.moov_start : last - self.moov_start + 1
-            ]
-
-    def read_range(self, start: int, end: int) -> bytes:
-        raw, _ = _range_get(self.url, start, end)
+def _cenc_iter(plan: dict, start: int, end: int):
+    cursor = start
+    while cursor <= end:
+        stop = min(cursor + _CENC_CHUNK - 1, end)
+        raw, _ = _cenc_get(plan["src"], cursor, stop)
         if not raw:
             raise HongguoPluginError("媒体分片为空")
         buffer = bytearray(raw)
-        self._patch(buffer, start)
-        return bytes(buffer)
-
-    def iter_range(self, start: int, end: int):
-        cursor = start
-        while cursor <= end:
-            stop = min(cursor + _STREAM_CHUNK - 1, end)
-            block = self.read_range(cursor, stop)
-            yield block
-            cursor += len(block)
+        _cenc_patch(plan, buffer, cursor)
+        yield bytes(buffer)
+        cursor += len(buffer)
 
 
-def _stream_session(video_id: str, config: Mapping[str, Any]) -> "_StreamSession":
-    # 选集 id 可能带清晰度档位: "vid@1080"，按档位就近降级取流
-    wanted = "1080"
-    bare = video_id
-    if "@" in video_id:
-        bare, tier = video_id.rsplit("@", 1)
-        if tier.isdigit():
-            wanted = tier
-    with _STREAM_LOCK:
-        sessions = _STREAM_STATE["sessions"]
-        for key in [key for key, item in sessions.items() if item.expired()]:
-            sessions.pop(key, None)
-        session = sessions.get(video_id)
-    if session is not None:
-        return session
-    last: Exception | None = None
-    # 媒体直链带有效期(url_expire); 模型缓存比直链活得更久时, 老链接会 403,
-    # 所以这里失败就丢掉该项缓存重取一次, 而不是把错误直接抛给播放器。
-    # 但"被判空/限流"不重来第二回合 —— _video_model 内部已经耐心等过一轮了,
-    # 再叠一轮只会让播放器转圈一分钟。
-    for attempt in range(2):
-        model = None
-        try:
-            model = _video_model(bare, config)
-            _, item = _select_quality(_video_list_from_model(model), wanted)
-            url = _media_url(item)
-            spade = _spade_value(item)
-            if not url or not spade:
-                raise HongguoPluginError("播放模型缺少地址或密钥材料")
-            key_seed = _key_seed_from_model(model)
-            if key_seed:
-                try:
-                    url = _decrypt_spade_url(url, key_seed)
-                except HongguoPluginError:
-                    pass
-            total, moov_start, moov = _fetch_moov(url)
-            session = _StreamSession(url, derive_content_key(spade), total, moov_start, moov)
+def _cenc_patch(plan: dict, buffer: bytearray, base: int) -> None:
+    end = base + len(buffer) - 1
+    for offset, replacement in plan["patches"]:
+        if base <= offset and offset + 4 <= end + 1:
+            buffer[offset - base : offset - base + 4] = replacement
+    offsets = plan["offsets"]
+    index = max(bisect.bisect_right(offsets, base) - 1, 0)
+    samples = plan["samples"]
+    while index < len(samples):
+        sample = samples[index]
+        index += 1
+        if sample[0] > end:
             break
-        except Exception as exc:
-            last = exc
-            _MODEL_CACHE.pop(_text(bare).split("@")[0].strip(), None)
-            # 取流阶段就失败(签名/限流)不要再叠一轮, 否则等于双倍消耗配额;
-            # 只有"模型拿到了但直链已过期/403"时才值得丢缓存重取。
-            if model is None or _is_throttled(exc) or attempt > 0:
-                break
-            time.sleep(0.4)
-    if last is not None and session is None:
-        raise last
-    with _STREAM_LOCK:
-        sessions = _STREAM_STATE["sessions"]
-        while len(sessions) >= _STREAM_MAX_SESSIONS:
-            sessions.pop(next(iter(sessions)), None)
-        sessions[video_id] = session
-    return session
+        if sample[0] + sample[1] <= base:
+            continue
+        _cenc_sample(buffer, base, plan["key"], sample)
+
+
+def _cenc_sample(buffer: bytearray, base: int, key: bytes, sample) -> None:
+    offset, size, iv, subs = sample
+    if not subs:
+        _cenc_ctr(buffer, base, key, iv, offset, offset + size, 0)
+        return
+    clear_acc = 0
+    enc_acc = 0
+    for clear, enc in subs:
+        clear_acc += clear
+        begin = offset + clear_acc
+        _cenc_ctr(buffer, base, key, iv, begin, begin + enc, enc_acc)
+        enc_acc += enc
+        clear_acc += enc
+
+
+def _cenc_ctr(buffer: bytearray, base: int, key: bytes, iv: bytes,
+              start: int, end: int, extra: int) -> None:
+    limit = base + len(buffer)
+    first = max(base, start)
+    last = min(limit, end)
+    if last <= first:
+        return
+    skip = extra + (first - start)
+    segment = bytes(buffer[first - base : last - base])
+    # CENC 的 8 字节 IV 是「左对齐」填进 16 字节计数器的（iv||0*8），
+    # 进位只作用在低 8 字节上；右对齐会让整个流解成乱码。
+    counter_iv = bytes(iv)
+    if len(counter_iv) > 16:
+        counter_iv = counter_iv[:16]
+    elif len(counter_iv) < 16:
+        counter_iv = counter_iv + b"\0" * (16 - len(counter_iv))
+    counter = (int.from_bytes(counter_iv, "big") + skip // 16) & ((1 << 128) - 1)
+    pad = skip % 16
+    plain = _aes_ctr_decrypt(key, counter.to_bytes(16, "big"), b"\0" * pad + segment)
+    buffer[first - base : last - base] = plain[pad:]
+
+
+def _cenc_plan(src: str, kid: str, spade: str) -> dict:
+    """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
+    cache_key = "%s|%s" % (src, kid)
+    with _CENC_LOCK:
+        hit = _CENC_PLANS.get(cache_key)
+        if hit and time.time() - hit[0] < _CENC_TTL:
+            return hit[1]
+    probe, total = _cenc_get(src, 0, _CENC_PROBE - 1)
+    if not total:
+        raise HongguoPluginError("媒体总长度未知")
+    moov = b""
+    moov_at = -1
+    for offset, size, fourcc in _toplevel_boxes(probe):
+        if fourcc != b"moov":
+            continue
+        moov_at = offset
+        if offset + size <= len(probe):
+            moov = bytes(probe[offset : offset + size])
+        else:
+            raw, _ = _cenc_get(src, offset, offset + size - 1)
+            if len(raw) < size:
+                raise HongguoPluginError("moov 分片长度不符")
+            moov = raw[:size]
+        break
+    if not moov:
+        raise HongguoPluginError("未找到 moov 盒")
+    plan = _c_build_plan(moov, moov_at, kid, spade)
+    plan["src"] = src
+    plan["total"] = total
+    plan["created"] = time.time()
+    _play_log("cenc plan 样本=%d 补丁=%d 总长=%d kid=%s"
+              % (len(plan["samples"]), len(plan["patches"]), total,
+                 ",".join(plan["kids"])[:16]))
+    with _CENC_LOCK:
+        if len(_CENC_PLANS) >= _CENC_MAX_PLANS:
+            _CENC_PLANS.pop(next(iter(_CENC_PLANS)), None)
+        _CENC_PLANS[cache_key] = (time.time(), plan)
+    return plan
 
 
 _RANGE_UNSATISFIABLE = "unsatisfiable"
+
 
 def _parse_range(value: str, total: int) -> Any:
     """解析 Range 头。返回 (start, end)、None（忽略）或 _RANGE_UNSATISFIABLE。"""
@@ -1012,20 +1260,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args: Any) -> None:
         return None
-
-    def _params(self) -> dict[str, str]:
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
-        video_id = (query.get("vid") or query.get("id") or [""])[0]
-        if not video_id:
-            video_id = parsed.path.rsplit("/", 1)[-1].split(".")[0]
-        # 允许 "vid" 或 "vid@档位" 两种形式（%40 已由 parse_qs 解码为 @）
-        vid = video_id if re.match(r"^\d+(@\d+)?$", video_id) else ""
-        return {
-            "vid": vid,
-            "device_id": (query.get("did") or [""])[0],
-            "install_id": (query.get("iid") or [""])[0],
-        }
 
     def _fail(self, code: int, message: bytes) -> None:
         self.send_response(code)
@@ -1063,7 +1297,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self._serve(body=True)
 
     def _serve(self, body: bool) -> None:
-        route = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        route = parsed.path
         # 登录二维码: 详情页 vod_pic 指到本机这个端点, 无需外网图床
         if route.rstrip("/").endswith("/login/qr.png"):
             self._serve_login_qr(body)
@@ -1071,50 +1306,46 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if not route.endswith(".mp4"):
             self._fail(404, b"not found")
             return
-        params = self._params()
-        if not params["vid"]:
-            self._fail(400, b"missing vid")
+        query = parse_qs(parsed.query)
+        src = (query.get("src") or [""])[0]
+        kid = (query.get("kid") or [""])[0]
+        spade = (query.get("spade") or query.get("spade_a") or [""])[0]
+        if not src or not spade:
+            self._fail(400, b"missing src/spade")
             return
         try:
-            session = _stream_session(
-                params["vid"],
-                {
-                    "device_id": params["device_id"],
-                    "install_id": params["install_id"],
-                },
-            )
-        except Exception:
+            plan = _cenc_plan(src, kid, spade)
+        except Exception as exc:
+            _play_log("cenc plan FAIL %s" % str(exc)[:80])
             self._fail(502, b"media session failed")
             return
-        raw_range = self.headers.get("Range") or ""
-        requested = _parse_range(raw_range, session.total)
+        total = int(plan["total"])
+        requested = _parse_range(self.headers.get("Range") or "", total)
         if requested is _RANGE_UNSATISFIABLE:
             self.send_response(416)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Range", "bytes */%d" % session.total)
+            self.send_header("Content-Range", "bytes */%d" % total)
             self.send_header("Content-Length", "0")
             self.send_header("Connection", "close")
             self.end_headers()
             return
-        start, end = requested if requested else (0, session.total - 1)
+        start, end = requested if requested else (0, total - 1)
         self.send_response(206 if requested else 200)
         self.send_header("Content-Type", "video/mp4")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         if requested:
-            self.send_header(
-                "Content-Range",
-                "bytes %d-%d/%d" % (start, end, session.total),
-            )
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, total))
         self.end_headers()
         if not body:
             return
         try:
-            for block in session.iter_range(start, end):
+            for block in _cenc_iter(plan, start, end):
                 self.wfile.write(block)
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
-        except Exception:
+        except Exception as exc:
+            _play_log("cenc stream FAIL %s" % str(exc)[:80])
             self.close_connection = True
 
 
@@ -1133,6 +1364,7 @@ def _start_stream_server() -> int:
             _STREAM_STATE["server"] = server
             return port
     return 0
+
 
 def _b64(value: str) -> bytes:
     text = _text(value)
@@ -3421,7 +3653,7 @@ HG_PROFILE_FILE = "hongguo_profile.json"
 HG_SIGN_TIMEOUT = 10
 HG_PLAY_ROUNDS = 2
 HG_PLAY_WAITS = (0.0, 3.0)
-_HG_PROFILE = {"token": "", "at": 0.0}
+_HG_PROFILE = {"token": "", "expires": 0}
 _HG_LOCK = threading.RLock()
 _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详情页提示）
 _EP_CT: dict[str, int] = {}      # vid -> content_type（详情接口带回来，播放时透传）
@@ -3460,6 +3692,10 @@ class _HgSignUnavailable(HongguoPluginError):
     """签名服务本身不可用（网络/5xx/协议变更），此时才值得退回旧的直连实现。"""
 
 
+class _HgExpiredEnvelope(HongguoPluginError):
+    """签名包已过期（expires_at_ms 已到），重新签一次即可。"""
+
+
 def _hg_sign(path: str, payload: Any) -> dict[str, Any]:
     """调用签名服务。签名串：POST\\n{path}\\n\\n{sha256(body)}\\n{ts}\\n{nonce}\\n{client}"""
     body = json.dumps(payload if payload is not None else {},
@@ -3477,13 +3713,27 @@ def _hg_sign(path: str, payload: Any) -> dict[str, Any]:
         "X-Huolong-Nonce": nonce,
         "X-Huolong-Sign": sign,
     }
-    try:
-        resp = _http().post(HG_SIGN_API + path, data=body, headers=headers,
-                            timeout=HG_SIGN_TIMEOUT)
-    except Exception as exc:
-        raise _HgSignUnavailable("签名服务不可达: %s" % exc) from exc
-    if resp.status_code != 200:
-        raise _HgSignUnavailable("签名服务 HTTP %s" % resp.status_code)
+    # 签名调用不消耗取流额度，偶发 403/连接抖动值得短退避重试 ——
+    # 直接掉到兜底就是用户看到的"有时能播有时不能"。
+    resp = None
+    reason = ""
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.5 * attempt)
+        try:
+            resp = _http().post(HG_SIGN_API + path, data=body, headers=headers,
+                                timeout=HG_SIGN_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - 网络层全部按可重试处理
+            reason = "签名服务不可达: %s" % exc
+            continue
+        if resp.status_code == 200:
+            break
+        reason = "签名服务 HTTP %s" % resp.status_code
+        if resp.status_code not in (403, 429, 500, 502, 503, 504):
+            break
+        resp = None
+    if resp is None or resp.status_code != 200:
+        raise _HgSignUnavailable(reason or "签名服务不可用")
     try:
         data = resp.json()
     except ValueError as exc:
@@ -3494,7 +3744,28 @@ def _hg_sign(path: str, payload: Any) -> dict[str, Any]:
     return data
 
 
-def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple[int, bytes]:
+def _hg_decode_body(body: bytes, encoding: str) -> bytes:
+    """上游/签名包可能带 content-encoding，node 源也是手动解的。"""
+    label = _text(encoding).lower()
+    if not body:
+        return body
+    try:
+        if "br" in label:
+            try:
+                import brotli  # type: ignore
+                return brotli.decompress(body)
+            except Exception:
+                return body
+        if "gzip" in label or (len(body) > 2 and body[0] == 0x1F and body[1] == 0x8B):
+            return gzip.decompress(body)
+        if "deflate" in label:
+            return zlib.decompress(body)
+    except Exception:
+        return body
+    return body
+
+
+def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple:
     """执行签名包里的真实上游请求，返回 (状态码, 解压后的 body)。"""
     method = str(env.get("method") or "GET").upper()
     url = _text(env.get("url"))
@@ -3511,18 +3782,29 @@ def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple[int, bytes]:
         else:
             data = _text(env.get("body")).encode("utf-8")
     resp = _http().request(method, url, headers=headers, data=data, timeout=timeout)
-    body = resp.content or b""
-    if len(body) > 2 and body[0] == 0x1F and body[1] == 0x8B:
-        try:
-            body = gzip.decompress(body)
-        except Exception:
-            pass
-    elif "deflate" in str(resp.headers.get("content-encoding") or "").lower():
-        try:
-            body = zlib.decompress(body)
-        except Exception:
-            pass
+    body = _hg_decode_body(resp.content or b"",
+                           str(resp.headers.get("content-encoding") or ""))
     return resp.status_code, body
+
+
+def _hg_ensure_fresh(env: Mapping[str, Any]) -> None:
+    try:
+        expires = int(env.get("expires_at_ms") or 0)
+    except (TypeError, ValueError):
+        expires = 0
+    if expires and expires <= int(time.time() * 1000) + 500:
+        raise _HgExpiredEnvelope("签名包已过期")
+
+
+def _hg_is_profile_err(exc: BaseException | None) -> bool:
+    text = str(exc or "").lower()
+    return ("profile token" in text or "device token" in text
+            or "token expired" in text)
+
+
+def _hg_auth_loss(status: int, body: bytes) -> bool:
+    """与 node 源一致的判据：空 body 或 401/403 视为令牌失效。"""
+    return (not body) or status in (401, 403)
 
 
 def _hg_profile_path() -> str:
@@ -3533,31 +3815,39 @@ def _hg_profile_path() -> str:
     return os.path.join(base, HG_PROFILE_FILE)
 
 
-def _hg_profile_load() -> str:
-    """读缓存令牌。已用过的令牌直接视为无效（一个令牌实际只够 1 次取流）。"""
+def _hg_profile_load() -> tuple:
+    """读缓存令牌 + 过期时间。令牌可用就一直复用，不再"用一次就丢"。"""
     try:
         with open(_hg_profile_path(), "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        if isinstance(data, Mapping) and data.get("spent"):
-            return ""
-        token = _text((data or {}).get("profile_token"))
     except Exception:
-        return ""
-    return token
+        return "", 0
+    if not isinstance(data, Mapping):
+        return "", 0
+    token = _text(data.get("profile_token"))
+    try:
+        expires = int(data.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        expires = 0
+    return token, expires
 
 
-def _hg_profile_save(token: str, spent: bool = False) -> None:
+def _hg_profile_save(token: str, expires: int = 0) -> None:
     try:
         with open(_hg_profile_path(), "w", encoding="utf-8") as handle:
-            json.dump({"profile_token": token, "at": int(time.time()),
-                       "spent": bool(spent)}, handle)
+            json.dump({"profile_token": token, "expires_at": int(expires or 0),
+                       "at": int(time.time())}, handle)
     except Exception:
         pass
 
 
-def _hg_profile_clear() -> None:
+def _hg_profile_clear(expected: str = "") -> None:
+    """清令牌。带 expected 时只在仍是那枚令牌时才清（对齐 node 的 clearHongguoProfile）。"""
     with _HG_LOCK:
+        if expected and _HG_PROFILE["token"] and expected != _HG_PROFILE["token"]:
+            return
         _HG_PROFILE["token"] = ""
+        _HG_PROFILE["expires"] = 0
     try:
         os.remove(_hg_profile_path())
     except Exception:
@@ -3566,45 +3856,104 @@ def _hg_profile_clear() -> None:
 
 def _hg_register() -> str:
     """注册一个 App 设备，拿到 profile_token（取流额度随设备走）。"""
-    prepared = _hg_sign("/device/v1/hongguo/prepare", {})
-    data = prepared.get("data") or {}
-    reg_token = _text(data.get("registration_token"))
-    env = data.get("request") or {}
-    if not reg_token or not isinstance(env, Mapping):
-        raise HongguoPluginError("设备注册准备数据为空")
-    status, body = _hg_execute(env)
-    if status != 200 or not body:
-        raise HongguoPluginError("设备注册请求失败(HTTP %s)" % status)
-    done = _hg_sign("/device/v1/hongguo/complete", {
-        "registration_token": reg_token,
-        "status_code": status,
-        "content_encoding": "",
-        "response_base64": base64.b64encode(body).decode("ascii"),
-    })
-    token = _text((done.get("data") or {}).get("profile_token"))
-    if not token:
-        raise HongguoPluginError("设备注册未返回 profile_token")
-    with _HG_LOCK:
-        _HG_PROFILE["token"] = token
-        _HG_PROFILE["at"] = time.time()
-    _hg_profile_save(token)
-    _play_log("register ok token=%s..." % token[:8])
-    return token
+    last: Exception | None = None
+    for _ in range(2):
+        try:
+            prepared = _hg_sign("/device/v1/hongguo/prepare", {})
+            data = prepared.get("data") or {}
+            reg_token = _text(data.get("registration_token"))
+            env = data.get("request") or {}
+            if not reg_token or not isinstance(env, Mapping):
+                raise HongguoPluginError("设备注册准备数据为空")
+            _hg_ensure_fresh(env)
+            status, body = _hg_execute(env)
+            if not (200 <= status < 300) or not body:
+                raise HongguoPluginError("设备注册请求失败(HTTP %s)" % status)
+            done = _hg_sign("/device/v1/hongguo/complete", {
+                "registration_token": reg_token,
+                "status_code": status,
+                "content_encoding": "",
+                "response_base64": base64.b64encode(body).decode("ascii"),
+            })
+            entry = done.get("data") or {}
+            token = _text(entry.get("profile_token"))
+            if not token:
+                raise HongguoPluginError("设备注册未返回 profile_token")
+            try:
+                expires = int(entry.get("expires_at_ms") or 0)
+            except (TypeError, ValueError):
+                expires = 0
+            with _HG_LOCK:
+                _HG_PROFILE["token"] = token
+                _HG_PROFILE["expires"] = expires
+            _hg_profile_save(token, expires)
+            _play_log("register ok token=%s..." % token[:8])
+            return token
+        except _HgExpiredEnvelope as exc:
+            last = exc
+            continue
+        except Exception as exc:
+            last = exc
+    raise last or HongguoPluginError("红果设备注册失败")
 
 
 def _hg_profile_token(force: bool = False) -> str:
+    """令牌可复用；只剩 60 秒寿命时提前换新的（node 源同样逻辑）。"""
     if force:
         _hg_profile_clear()
         return _hg_register()
     with _HG_LOCK:
-        if _HG_PROFILE["token"]:
-            return _HG_PROFILE["token"]
-    cached = _hg_profile_load()
-    if cached:
+        token = _HG_PROFILE["token"]
+        expires = int(_HG_PROFILE.get("expires") or 0)
+    if not token:
+        token, expires = _hg_profile_load()
         with _HG_LOCK:
-            _HG_PROFILE["token"] = cached
-        return cached
+            _HG_PROFILE["token"] = token
+            _HG_PROFILE["expires"] = expires
+    if token and not (expires and expires <= int(time.time() * 1000) + 60000):
+        return token
+    if token:
+        _hg_profile_clear(token)
     return _hg_register()
+
+
+def _hg_execute_signed(provider: str, action: str, payload: Mapping[str, Any]) -> tuple:
+    """对齐 node 的 hgSigner.execute：判空/401 就换令牌重来，最多 2 轮 × 2 次。"""
+    needs = provider in ("hongguo", "hongguobook")
+    rounds = 2 if needs else 1
+    last: Exception | None = None
+    for outer in range(rounds):
+        token = _hg_profile_token() if needs else ""
+        retry = False
+        for _ in range(2):
+            try:
+                body_in = dict(payload or {})
+                if needs:
+                    body_in["profile_token"] = token
+                signed = _hg_sign("/sign/v1/%s/%s" % (provider, action), body_in)
+                env = signed.get("data") or {}
+                if not isinstance(env, Mapping) or not env.get("url"):
+                    raise HongguoPluginError("签名服务未返回请求包")
+                _hg_ensure_fresh(env)
+                status, body = _hg_execute(env)
+                if needs and _hg_auth_loss(status, body) and outer == 0:
+                    retry = True
+                    break
+                return status, body
+            except _HgExpiredEnvelope as exc:
+                last = exc
+                continue
+            except Exception as exc:
+                last = exc
+                if needs and outer == 0 and _hg_is_profile_err(exc):
+                    retry = True
+                    break
+                raise
+        if retry:
+            _play_log("token 失效 -> 换令牌重试")
+            _hg_profile_clear(token)
+            continue
+    raise last or HongguoPluginError("签名请求失败")
 
 
 def _hg_content_type(video_id: str) -> int:
@@ -3614,53 +3963,52 @@ def _hg_content_type(video_id: str) -> int:
     return ct if ct in (1, 1001) else 1
 
 
+def _hg_play_ok(status: int, body: bytes) -> bool:
+    if not (200 <= status < 300) or not body:
+        return False
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return False
+    if str(payload.get("code", -1)) != "0":
+        return False
+    entry = payload.get("data") or {}
+    return isinstance(entry, Mapping) and bool(entry.get("video_model"))
+
+
 def _hg_signed_play(video_id: str) -> dict[str, Any]:
-    """走签名服务取 video_model：判空就换设备重注册，最多 HG_PLAY_ROUNDS 轮。"""
+    """对齐 node 的 executeHongguoPlay：2 轮，判空就清令牌重取。"""
     vid = _text(video_id).split("@")[0].strip()
     if not vid:
         raise HongguoPluginError("缺少 vid")
     content_type = _hg_content_type(vid)
     last = ""
-    for round_ in range(HG_PLAY_ROUNDS):
-        wait = HG_PLAY_WAITS[min(round_, len(HG_PLAY_WAITS) - 1)]
-        if wait > 0:
-            time.sleep(wait)
-        # 第一轮用缓存令牌；之后每轮强制重注册（判空多为额度用尽/设备被判异常）
-        token = _hg_profile_token(force=round_ > 0)
-        signed = _hg_sign("/sign/v1/hongguo/play", {
-            "vid": vid, "content_type": content_type, "profile_token": token})
-        env = signed.get("data") or {}
-        if not isinstance(env, Mapping) or not env.get("url"):
-            raise HongguoPluginError("签名服务未返回请求包")
-        status, body = _hg_execute(env)
-        if status in (401, 403) or not body:
-            last = "HTTP %s, %d 字节" % (status, len(body))
-            _play_log("play %s 空响应(%s) -> 重新注册设备" % (vid, last))
-            continue
+    for _ in range(2):
         try:
-            payload = json.loads(body.decode("utf-8", "replace"))
-        except ValueError:
-            last = "响应非 JSON"
-            _play_log("play %s 响应非 JSON" % vid)
+            status, body = _hg_execute_signed(
+                "hongguo", "play", {"vid": vid, "content_type": content_type})
+        except Exception as exc:
+            if not _hg_is_profile_err(exc):
+                raise
+            last = str(exc)
+            _hg_profile_clear()
             continue
-        entry = payload.get("data") if isinstance(payload, Mapping) else None
-        model = entry.get("video_model") if isinstance(entry, Mapping) else None
-        if isinstance(model, str):
-            try:
-                model = json.loads(model)
-            except ValueError:
-                model = None
-        if isinstance(model, Mapping) and _video_list_from_model(model):
-            # 这个令牌基本只够一次取流，标记为已用，下次直接注册新设备省掉一轮空转
-            with _HG_LOCK:
-                _HG_PROFILE["token"] = ""
-            _hg_profile_save(token, spent=True)
-            _play_log("play %s -> signed ok (ct=%d)" % (vid, content_type))
-            _HG_FAIL_AT[0] = 0.0
-            return dict(model)
-        last = "video_model 为空"
-        _play_log("play %s code=%s 但 video_model 为空"
-                  % (vid, payload.get("code") if isinstance(payload, Mapping) else "?"))
+        if _hg_play_ok(status, body):
+            payload = json.loads(body.decode("utf-8", "replace"))
+            entry = payload.get("data") or {}
+            model = entry.get("video_model")
+            if isinstance(model, str):
+                try:
+                    model = json.loads(model)
+                except ValueError:
+                    model = None
+            if isinstance(model, Mapping):
+                _HG_FAIL_AT[0] = 0.0
+                _play_log("play %s -> signed ok (ct=%d)" % (vid, content_type))
+                return dict(model)
+        last = "HTTP %s, %d 字节" % (status, len(body))
+        _play_log("play %s 空响应(%s) -> 换令牌重试" % (vid, last))
+        _hg_profile_clear()
     _HG_FAIL_AT[0] = time.time()
     raise HongguoPluginError("签名取流失败(%s)" % (last or "unknown"))
 
@@ -3885,6 +4233,65 @@ def _definition_of(item: Mapping[str, Any]) -> str:
     return m.group(1) if m else ""
 
 
+def _height_of(meta: Mapping[str, Any]) -> int:
+    """对齐 node 的 hgHeight: 从 definition/resolution 里挑最小的合理数值。"""
+    raw = "%s %s" % (_text(meta.get("definition")), _text(meta.get("resolution")))
+    best = 0
+    for match in re.finditer(r"(\d{3,4})", raw):
+        value = int(match.group(1))
+        if 240 <= value <= 4320 and (not best or value < best):
+            best = value
+    if best:
+        return best
+    try:
+        width = int(meta.get("vwidth") or meta.get("width") or 0)
+        height = int(meta.get("vheight") or meta.get("height") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if width > 0 and height > 0:
+        return min(width, height)
+    return height if height > 0 else 0
+
+
+def _cenc_tracks(model: Any) -> list:
+    """从 video_model 收集所有可播放档位（对齐 node 的 hgVideos）。
+
+    video_model 里每个可播放条目自带 main_url + encrypt_info.kid/spade_a，
+    一次取流即可拿到全部分辨率，播放时按档位直接走本机解密代理，
+    不再为"切档/换集"重复请求上游。
+    """
+    found = []
+    seen = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, Mapping):
+            return
+        info = value.get("encrypt_info") if isinstance(value.get("encrypt_info"), Mapping) else {}
+        src = _media_url(value)
+        spade = _spade_value(value)
+        kid = _first(info.get("kid"), value.get("kid"))
+        if src and spade and kid:
+            meta = value.get("video_meta") if isinstance(value.get("video_meta"), Mapping) else {}
+            height = _height_of(meta)
+            name = ("%dP" % height) if height else _first(
+                meta.get("definition"), meta.get("quality"), "红果")
+            if src not in seen:
+                seen.add(src)
+                found.append((name, {"src": src, "kid": kid,
+                                     "spade": spade, "height": height}))
+            return
+        for item in value.values():
+            walk(item)
+
+    walk(model)
+    found.sort(key=lambda pair: pair[1]["height"], reverse=True)
+    return found
+
+
 def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
     """探测该视频实际可用的清晰度档位(走 App video_model 接口, 无需登录)。
 
@@ -3916,13 +4323,20 @@ def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
     return tiers
 
 
-def _build_play(pairs: list, tiers: list) -> tuple:
-    """按可用档位生成 vod_play_from / vod_play_url。
+def _build_play(pairs: list, tiers: Any) -> tuple:
+    """生成 vod_play_from / vod_play_url。
 
-    pairs: [(标题, vid), ...]; tiers 非空 -> 每档一条线路(走 App 流+本地解密),
-    为空 -> 官网 360p 单线路。
+    pairs: [(标题, vid), ...]
+      tiers is None -> 单线路 "红果┃短剧"：播放时**一次取流**就带回全部清晰度，
+                       由 playerContent 以 url 数组形式给出（对齐内置 node 源）。
+      tiers 非空    -> 每档一条线路(旧方案，保留兼容)。
+      空列表        -> 官网 360p 试看单线路。
     """
-    if tiers:
+    if tiers is None:
+        play_from = PLAY_LINE
+        play_url = "#".join("%s$%s%s" % (title, EPISODE_PREFIX, vid)
+                            for title, vid in pairs)
+    elif tiers:
         play_from = "$$$".join(name for name, _ in tiers)
         play_url = "$$$".join(
             "#".join("%s$%s%s@%s" % (title, EPISODE_PREFIX, vid, tier)
@@ -4625,9 +5039,9 @@ class Spider(Spider):
                 pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
-            # 固定列 5 档线路, 不在详情页探测: 上游取流额度极紧, 详情页探测一次
-            # 就会把"播放那一次"用掉, 导致播放回落到 10 秒试看(见 _probe_tiers 注释)。
-            tiers = list(QUALITY_TIERS) if pairs else []
+            # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
+            # 详情页绝不预取, 上游额度按次卡死。
+            tiers = None
             play_from, play_url = _build_play(marked, tiers)
             remarks = meta.get("remarks") or ""
             intro = meta.get("intro") or ""
@@ -4651,7 +5065,7 @@ class Spider(Spider):
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
         pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
         marked = [(title, vid) for title, vid in pairs]
-        tiers = list(QUALITY_TIERS) if pairs else []
+        tiers = None if pairs else []
         play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
@@ -4662,41 +5076,50 @@ class Spider(Spider):
         if raw.startswith("hg_login"):
             return {"parse": 1, "jx": 0, "playUrl": "",
                     "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
-        # "vid@档位" 或纯 vid; 档位直接透传给本机流服务(_stream_session 会解析 @ 后缀)
-        parts = raw.split("@")
-        vid = parts[0].strip()
+        vid = raw.split("@")[0].strip()
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
-        # 正片只有一条路: App 取流(CENC) + 本机解密串流, 这才是完整一集, 也才能给到
-        # 360p~1080p 多档。官网 /video/public/<vid>/360p.mp4 只是给搜索引擎看的
-        # 10 秒试看片段(实测 duration=10s), 一旦被当成首选, 播放器就是"点开即结束"。
-        # 所以顺序是: 先确认 App 流可用 -> 再退到 public 试看片段。
+        # 正片只有一条路: App 取流(CENC) + 本机解密串流。官网
+        # /video/public/<vid>/360p.mp4 只是给搜索引擎看的 10 秒试看, 最后才用。
+        #
+        # 与内置 node 源（16_manjuhongguo.js）对齐的两点关键差异:
+        #   1. **一次取流拿到全部清晰度**（video_model 里每档自带 main_url +
+        #      encrypt_info.kid/spade_a），播放时不再按档位重复打上游 ——
+        #      旧实现每切一档/每播一集都多烧一次额度, 于是"这集能播下集不行"。
+        #   2. 交给 playerContent 的是一个 [档位名, 地址, 档位名, 地址, ...] 数组,
+        #      播放器自己列线路, 与 node 源返回多路 url 的行为一致。
         try:
             port = _start_stream_server()
         except Exception:
             port = 0
         public_url = _public_media_url(vid)
         if port and vid.isdigit():
-            cfg = self._cfg()
-            built = False
-            # 先建一次会话: 拿不到媒体模型时直接走兜底, 别把必然 502 的地址丢给播放器。
-            # 取流的重试与设备重注册都在 _video_model/_hg_signed_play 内部做完了,
-            # 这里再叠一轮只会让播放器多转圈几秒。
+            tracks = []
+            error = ""
             try:
-                _stream_session(raw, cfg)
-                built = True
-            except Exception:
-                built = False
-            if built:
-                query = urlencode({"vid": raw,
-                                   "did": cfg.get("device_id") or "",
-                                   "iid": cfg.get("install_id") or ""})
-                _play_log("play %s -> app-stream ok" % raw)
-                return {"parse": 0, "jx": 0, "playUrl": "",
-                        "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
+                model = _video_model(vid, self._cfg())
+                tracks = _cenc_tracks(model)
+            except Exception as exc:
+                error = str(exc)[:70]
+                tracks = []
+            if tracks:
+                pairs = []
+                for name, item in tracks:
+                    query = urlencode({
+                        "src": item["src"],
+                        "kid": item["kid"],
+                        "spade": item["spade"],
+                        "name": name,
+                    })
+                    pairs.append(name)
+                    pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
+                _play_log("play %s -> %d 档 (ct=%d)"
+                          % (vid, len(tracks), _hg_content_type(vid)))
+                return {"parse": 0, "jx": 0, "playUrl": "", "url": pairs,
                         "header": {"User-Agent": UA}}
+            _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
+                      % (vid, error or "无可用档位"))
         # 兜底: 官网公开直链(仅 10 秒试看片段)
-        _play_log("play %s -> app-stream FAIL, fallback preview(10s)" % raw)
         if public_url and _public_ok(public_url):
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
         if public_url:
