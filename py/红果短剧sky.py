@@ -4257,6 +4257,321 @@ def _hg_signed_category(genre: str, page: int,
     return out
 
 
+# ===================== 分季（显季） =====================
+# 红果的连续剧会把每一季做成一个独立的 series_id，但它们在同一个
+# 「专辑」下（详情里的 related_album_id / 官网的 season_info.series_group_id），
+# 剧名则形如「某某剧第二季」。默认点进来只看得到当前那一季，
+# 分季就是把同专辑的每一季各做成一条线路，按季号从低到高排。
+_HG_SEASON_RE = re.compile(u"第\\s*([0-9]{1,3}|[一二三四五六七八九十]{1,3})\\s*[季部]")
+_HG_CN_NUM = u"零一二三四五六七八九十"
+_SEASON_CACHE: dict = {}          # album_id -> (ts, seasons)
+_SEASON_CACHE_TTL = 1800          # 内存 30 分钟
+_SEASON_DISK_TTL = 12 * 3600      # 磁盘 12 小时
+_SEASON_LOCK = threading.Lock()
+SEASON_FILE = "hongguo_seasons.json"
+
+
+def _hg_cn(n) -> str:
+    """数字转中文（季号命名用）。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if n <= 10:
+        return _HG_CN_NUM[n]
+    if n < 20:
+        return u"十" + _HG_CN_NUM[n % 10]
+    if n < 100:
+        return _HG_CN_NUM[n // 10] + u"十" + (_HG_CN_NUM[n % 10] if n % 10 else u"")
+    return str(n)
+
+
+def _hg_season_no(name) -> int:
+    """从剧名解析季号：「第二季」->2，「第3部」->3，解析不到返回 0。"""
+    match = _HG_SEASON_RE.search(_text(name))
+    if not match:
+        return 0
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    if token == u"十":
+        return 10
+    if token.startswith(u"十"):
+        return 10 + (_HG_CN_NUM.index(token[1]) if len(token) > 1 else 0)
+    if u"十" in token:
+        head, _, tail = token.partition(u"十")
+        return (_HG_CN_NUM.index(head) * 10 if head in _HG_CN_NUM else 0) + (
+            _HG_CN_NUM.index(tail) if tail in _HG_CN_NUM else 0)
+    return _HG_CN_NUM.index(token) if token in _HG_CN_NUM else 0
+
+
+def _hg_base_name(name) -> str:
+    """去掉季号后的基名，用于站内搜索其它季。"""
+    return _HG_SEASON_RE.sub(u"", _text(name)).strip(u"：:·-—_ 　")
+
+
+def _fill_season_meta(meta: dict, video_data: Mapping) -> None:
+    """把「季号 + 专辑 id」写进 meta。两条详情通道(App 直连 / 8788 签名)都带这两个字段。"""
+    if not isinstance(meta, dict) or not isinstance(video_data, Mapping):
+        return
+    album = _text(video_data.get("related_album_id"))
+    if not album:
+        info = video_data.get("season_info")
+        if isinstance(info, Mapping):
+            album = _text(info.get("series_group_id"))
+    if album:
+        meta["album_id"] = album
+    try:
+        index = int(video_data.get("season_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if index > 0:
+        meta["season_no"] = index
+
+
+def _season_disk_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, SEASON_FILE)
+
+
+def _season_disk_load() -> dict:
+    try:
+        with open(_season_disk_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _season_disk_save(data: dict) -> None:
+    try:
+        if len(data) > 40:
+            # 只留最新的 20 组，避免缓存文件无限长
+            keys = sorted(data, key=lambda k: float((data.get(k) or {}).get("ts") or 0))
+            for key in keys[: len(data) - 20]:
+                data.pop(key, None)
+        with open(_season_disk_path(), "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _hg_search_candidates(keyword, pages=1) -> list:
+    """站内搜索候选 [(series_id, 剧名), ...]，只用于分季，失败返回 []。"""
+    out = []
+    seen = set()
+    try:
+        for page in range(1, max(1, int(pages)) + 1):
+            data = _search_api(keyword, page) or {}
+            for item in (data.get("searchList") or []):
+                if not isinstance(item, Mapping):
+                    continue
+                vd = item.get("video_data") if isinstance(item.get("video_data"), Mapping) else {}
+                csid = _text(vd.get("series_id") or item.get("series_id"))
+                if not csid.isdigit() or csid in seen:
+                    continue
+                seen.add(csid)
+                out.append((csid, _text(item.get("name") or vd.get("series_title"))))
+            if not data.get("hasMore"):
+                break
+    except Exception:
+        pass
+    return out
+
+
+def _season_fetch(sid: str) -> dict:
+    """拉一季的详情（独立设备号），返回 {sid,no,title,vids,ct,...}，失败 None。
+
+    只打详情接口，不碰取流接口，所以不消耗播放额度；每季用新设备号，
+    避免同一设备短时间内连续打同一个后端。
+    """
+    try:
+        did, iid = _random_identity()
+        config = _device_config({"device_id": did, "install_id": iid})
+        meta, eps = _app_episode_detail(sid, config)
+        if not eps:
+            return None
+        vids = []
+        cts = {}
+        for item in eps:
+            _, _, ep = str(item).partition("$")
+            vid = ep.replace(EPISODE_PREFIX, "")
+            if not vid:
+                continue
+            vids.append(vid)
+            cts[vid] = _EP_CT.get(vid) or 0
+        if not vids:
+            return None
+        return {
+            "sid": _text(sid),
+            "no": int(meta.get("season_no") or 0) if isinstance(meta, Mapping) else 0,
+            "title": _text((meta or {}).get("title")),
+            "vids": vids,
+            "cts": cts,
+            "ct": cts.get(vids[0]) or 0,
+            "album": _text((meta or {}).get("album_id")),
+            "cover": _text((meta or {}).get("cover")),
+            "intro": _text((meta or {}).get("intro")),
+            "actors": _text((meta or {}).get("actors")),
+            "remarks": _text((meta or {}).get("remarks")),
+        }
+    except Exception:
+        return None
+
+
+def _hg_season_plan(sid: str, meta: Mapping, cur_vids: list) -> list:
+    """算出同专辑的各季，**按季号从低到高**返回 [{no,sid,title,vids,ct,...}, ...]。
+
+    单季剧返回 []（调用方沿用原来的单线路逻辑）。结果内存 + 磁盘双缓存，
+    二次进入同一部剧零请求。
+    """
+    meta = meta or {}
+    album = _text(meta.get("album_id"))
+    sid = _text(sid).strip()
+    cur_vids = [str(v) for v in (cur_vids or []) if str(v)]
+    if not album or not sid.isdigit() or not cur_vids:
+        return []
+
+    with _SEASON_LOCK:
+        hit = _SEASON_CACHE.get(album)
+    if hit and time.time() - hit[0] < _SEASON_CACHE_TTL:
+        return hit[1]
+    try:
+        disk = _season_disk_load()
+        cached = disk.get(album)
+        if isinstance(cached, Mapping) and time.time() - float(cached.get("ts") or 0) < _SEASON_DISK_TTL:
+            seasons = [x for x in (cached.get("seasons") or []) if isinstance(x, Mapping) and x.get("vids")]
+            if seasons:
+                seasons.sort(key=lambda x: (int(x.get("no") or 0) or 1))
+                with _SEASON_LOCK:
+                    _SEASON_CACHE[album] = (time.time(), seasons)
+                return seasons
+    except Exception:
+        pass
+
+    base = _hg_base_name(meta.get("title"))
+    if not base:
+        return []
+
+    cur_no = 0
+    try:
+        cur_no = int(meta.get("season_no") or 0)
+    except (TypeError, ValueError):
+        cur_no = 0
+    cur_no = cur_no or max(1, _hg_season_no(meta.get("title")) or 1)
+
+    known = {cur_no: sid}
+    for csid, name in _hg_search_candidates(base, 1):
+        no = _hg_season_no(name)
+        if not no and _hg_base_name(name).strip() == base.strip():
+            # 第一季的剧名就是基名本身（不带「第X季」），按第 1 季收下
+            no = 1
+        if no and no not in known and csid != sid:
+            known[no] = csid
+
+    # 缺季定向补齐：基名搜索第 1 页未必覆盖到所有季（实测第五季常漏第一季）
+    top = max(known) if known else 1
+    missing = [n for n in range(1, top + 2) if n not in known]
+    if missing and top >= 2:
+        for no in missing[:3]:
+            for csid, name in _hg_search_candidates("%s第%s季" % (base, _hg_cn(no)), 1):
+                if _hg_season_no(name) == no and csid not in known.values():
+                    known[no] = csid
+                    break
+
+    seasons = [{
+        "no": cur_no, "sid": sid, "title": _text(meta.get("title")), "vids": cur_vids,
+        "cts": {}, "ct": _EP_CT.get(cur_vids[0]) if cur_vids else 0,
+        "album": album, "cover": _text(meta.get("cover")),
+        "intro": _text(meta.get("intro")), "actors": _text(meta.get("actors")),
+        "remarks": _text(meta.get("remarks")),
+    }]
+    todo = [(no, csid) for no, csid in known.items() if csid != sid]
+    if todo:
+        pool = None
+        try:
+            import concurrent.futures as _cf
+            pool = _cf.ThreadPoolExecutor(max_workers=min(4, len(todo)))
+            futures = {pool.submit(_season_fetch, csid): no for no, csid in todo}
+            deadline = time.time() + 8.0
+            for future in _cf.as_completed(list(futures), timeout=max(0.5, deadline - time.time())):
+                no = futures.get(future)
+                try:
+                    row = future.result()
+                except Exception:
+                    row = None
+                if not row or not row.get("vids"):
+                    continue
+                # 专辑 id 必须一致，否则是名字相近的别的剧（搜索经常混进来）
+                if _text(row.get("album")) and _text(row.get("album")) != album:
+                    continue
+                row["no"] = no or row.get("no") or 0
+                seasons.append(row)
+        except Exception:
+            pass
+        finally:
+            if pool is not None:
+                try:
+                    pool.shutdown(wait=False)
+                except Exception:
+                    pass
+
+    if len(seasons) <= 1:
+        return []
+
+    # 去重（不同季号给出同一份片源的情况）+ 严格按季号升序
+    seen = set()
+    unique = []
+    for row in seasons:
+        key = tuple(row.get("vids") or [])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    if len(unique) <= 1:
+        return []
+    unique.sort(key=lambda x: (int(x.get("no") or 0) or 1))
+
+    with _SEASON_LOCK:
+        _SEASON_CACHE[album] = (time.time(), unique)
+    try:
+        disk = _season_disk_load()
+        disk[album] = {"ts": time.time(), "seasons": unique}
+        _season_disk_save(disk)
+    except Exception:
+        pass
+    return unique
+
+
+def _build_season_play(seasons: list) -> tuple:
+    """多季线路：一季一条，线路名「第一季/第二季…」，顺序就是传入顺序（已升序）。"""
+    names = []
+    urls = []
+    for row in seasons:
+        vids = [str(v) for v in (row.get("vids") or []) if str(v)]
+        if not vids:
+            continue
+        line = "第%s季" % _hg_cn(int(row.get("no") or 0) or 1)
+        if line in names:
+            line = "%s%d" % (line, len(names) + 1)
+        cts = row.get("cts") if isinstance(row.get("cts"), Mapping) else {}
+        parts = []
+        for index, vid in enumerate(vids, 1):
+            ct = cts.get(vid) or row.get("ct") or 0
+            parts.append("%d$%s%s" % (index, EPISODE_PREFIX, _hg_play_id(vid, ct)))
+        names.append(line)
+        urls.append("#".join(parts))
+        # 每季都登记集序，预取下一集才会跨季正确（看到季末集不会串到别的剧）
+        try:
+            _remember_series(row.get("sid") or "", vids)
+        except Exception:
+            pass
+    return "$$$".join(names), "$$$".join(urls)
+
+
 def _hg_signed_detail(sid: str) -> tuple:
     """8788 签名剧集详情。返回与 _app_episode_detail 对齐的 (meta, eps)。"""
     j = _hg_data("detail", {"series_id": str(sid)})
@@ -4269,6 +4584,7 @@ def _hg_signed_detail(sid: str) -> tuple:
         "intro": _text(vd.get("series_intro") or vd.get("video_desc")),
         "remarks": ("全%s集" % vd.get("episode_cnt")) if vd.get("episode_cnt") else "",
     }
+    _fill_season_meta(meta, vd)
     actors = [str(c.get("nickname")) for c in (vd.get("celebrities") or [])
               if isinstance(c, dict) and c.get("nickname")]
     meta["actors"] = ",".join(actors)
@@ -5177,6 +5493,7 @@ def _app_episode_detail(sid, config):
         "intro": vd.get("series_intro") or "",
         "remarks": ("全%s集" % vd.get("episode_cnt")) if vd.get("episode_cnt") else "",
     }
+    _fill_season_meta(meta, vd)
     actors = [str(c.get("nickname")) for c in (vd.get("celebrities") or [])
               if isinstance(c, dict) and c.get("nickname")]
     eps = []
@@ -5546,16 +5863,19 @@ class Spider(Spider):
         if sid in (LOGIN_QR, LOGIN_APP, LOGIN_LOGOUT):
             return self._login_detail(sid)
         config = self._cfg()
-        # 8788 签名剧集接口优先（TV 盒直连上游常被 CDN 拦截）；
-        # 服务不可用或返回空时回退本地 App 剧集接口，再退官网详情。
+        # App 直连优先：详情接口不消耗取流额度、也不需要注册 profile_token，
+        # 单次 0.3~0.8s；签名服务要注册设备（1~2s），只在直连失败时兜底。
+        # 8788 签名接口同时保留：「TV 盒直连上游常被 CDN 拦截」的场景仍然能走通。
         meta, eps = None, []
         try:
-            meta, eps = _hg_signed_detail(sid)
+            meta, eps = _app_episode_detail(sid, config)
         except Exception:
             meta, eps = None, []
         if not eps:
-            # 兜底: 本地 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
-            meta, eps = _app_episode_detail(sid, config)
+            try:
+                meta, eps = _hg_signed_detail(sid)
+            except Exception:
+                meta, eps = None, []
         if eps:
             # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, 播放id)。
             # 播放 id 里带上该集真实的 content_type（对齐 node 的 hgPlayId），
@@ -5570,10 +5890,25 @@ class Spider(Spider):
             _remember_series(sid, order)
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
-            # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
-            # 详情页绝不预取, 上游额度按次卡死。
-            tiers = None
-            play_from, play_url = _build_play(marked, tiers)
+            # 分季：同专辑的每一季各做一条线路，线路名「第一季/第二季…」，
+            # 顺序严格按季号从小到大（用户要求：显季按低到高排）。
+            seasons = []
+            try:
+                seasons = _hg_season_plan(sid, meta or {}, order)
+            except Exception as exc:
+                _play_log("season plan fail: %s" % str(exc)[:80])
+                seasons = []
+            if seasons:
+                play_from, play_url = _build_season_play(seasons)
+                _play_log("season %s -> %d 季: %s"
+                          % (sid, len(seasons),
+                             "/".join("%s(%d集)" % ("第%s季" % _hg_cn(int(x.get("no") or 1)),
+                                                    len(x.get("vids") or []))
+                                      for x in seasons)))
+            else:
+                # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
+                # 详情页绝不预取, 上游额度按次卡死。
+                play_from, play_url = _build_play(marked, None)
             remarks = meta.get("remarks") or ""
             intro = meta.get("intro") or ""
             notes = []
@@ -5612,7 +5947,24 @@ class Spider(Spider):
         _remember_series(sid, order)
         marked = [(title, vid) for title, vid in pairs]
         tiers = None if pairs else []
-        play_from, play_url = _build_play(marked, tiers)
+        # 官网兜底也带上分季（seriesDetail 里有 season_info.series_group_id）
+        _web_meta = {
+            "title": str(s.get("series_name") or ""),
+            "cover": str(s.get("series_cover") or ""),
+            "intro": str(s.get("series_intro") or ""),
+            "remarks": str(s.get("episode_right_text") or ""),
+            "actors": ",".join(actors),
+        }
+        _fill_season_meta(_web_meta, s)
+        season_rows = []
+        try:
+            season_rows = _hg_season_plan(sid, _web_meta, order)
+        except Exception:
+            season_rows = []
+        if season_rows:
+            play_from, play_url = _build_season_play(season_rows)
+        else:
+            play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
 
