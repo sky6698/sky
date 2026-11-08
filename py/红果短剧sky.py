@@ -3659,6 +3659,7 @@ _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详
 _EP_CT: dict[str, int] = {}      # vid -> content_type（详情接口带回来，播放时透传）
 _EP_CT_FILE = "hongguo_ct.json"  # 落盘：宿主重载进程后仍知道哪集是漫剧(1001)
 _EP_CT_READY = [False]
+_HG_SEARCH_CTX: dict[str, tuple] = {}   # 关键词 -> (search_id, passback) 搜索翻页上下文
 
 
 def _ep_ct_load() -> None:
@@ -4011,6 +4012,179 @@ def _hg_signed_play(video_id: str) -> dict[str, Any]:
         _hg_profile_clear()
     _HG_FAIL_AT[0] = time.time()
     raise HongguoPluginError("签名取流失败(%s)" % (last or "unknown"))
+
+
+# ------------------------------------------------------------ 签名数据链路
+# TV 盒(Chaquopy)网络直连 fqnovel.com 常被 CDN 拦截，而 8788 签名服务出网正常。
+# category/detail/search 优先走签名链路，签名服务不可用时回退本地直连。
+def _hg_data(action: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """走签名服务取数据接口，返回上游 JSON(已校验 code==0)。"""
+    status, body = _hg_execute_signed("hongguo", action, payload)
+    if not (200 <= status < 300) or not body:
+        raise HongguoPluginError("签名数据接口 HTTP %s 空响应" % status)
+    try:
+        j = json.loads(body.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise HongguoPluginError("签名数据接口返回非 JSON") from exc
+    if str(j.get("code", -1)) != "0":
+        raise HongguoPluginError("签名数据接口拒绝: %s"
+                                 % (j.get("message") or j.get("code")))
+    return j
+
+
+def _hg_signed_category(genre: str, page: int,
+                        filters: Mapping[str, Any]) -> list:
+    """8788 签名分类列表。递归收集(与 node 版 hgCollect 一致)，返回 vod 卡片。"""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    j = _hg_data("category", {
+        "scene": genre, "page": page, "offset": (page - 1) * 18,
+        "limit": 18, "session_id": "",
+        "filters": {k: v for k, v in dict(filters or {}).items() if v},
+    })
+    out = []
+    seen = set()
+
+    def walk(x):
+        if isinstance(x, list):
+            for c in x:
+                walk(c)
+        elif isinstance(x, dict):
+            sid = _text(x.get("series_id") or x.get("series_id_str"))
+            if sid and sid not in seen:
+                title = _text(x.get("title") or x.get("series_title"))
+                if title:
+                    seen.add(sid)
+                    cnt = x.get("episode_cnt") or 0
+                    out.append({
+                        "vod_id": sid,
+                        "vod_name": title,
+                        "vod_pic": _text(x.get("cover") or x.get("series_cover")
+                                         or x.get("thumb_url")),
+                        "vod_remarks": "全%s集" % cnt if cnt else _text(x.get("score")),
+                    })
+            for v in x.values():
+                walk(v)
+
+    walk(j.get("data") or {})
+    return out
+
+
+def _hg_signed_detail(sid: str) -> tuple:
+    """8788 签名剧集详情。返回与 _app_episode_detail 对齐的 (meta, eps)。"""
+    j = _hg_data("detail", {"series_id": str(sid)})
+    vd = (j.get("data") or {}).get("video_data") or {}
+    if not vd:
+        return None, []
+    meta = {
+        "title": _text(vd.get("series_title") or vd.get("title")),
+        "cover": _text(vd.get("series_cover") or vd.get("cover")),
+        "intro": _text(vd.get("series_intro") or vd.get("video_desc")),
+        "remarks": ("全%s集" % vd.get("episode_cnt")) if vd.get("episode_cnt") else "",
+    }
+    actors = [str(c.get("nickname")) for c in (vd.get("celebrities") or [])
+              if isinstance(c, dict) and c.get("nickname")]
+    meta["actors"] = ",".join(actors)
+    eps = []
+    for e in (vd.get("video_list") or []):
+        vid = _text(e.get("vid"))
+        if not vid:
+            continue
+        try:
+            idx = int(e.get("vid_index") or 0)
+        except (TypeError, ValueError):
+            idx = 0
+        title = "第%d集" % (idx if idx else len(eps) + 1)
+        # 记下每集的 content_type(1=短剧, 1001=漫剧), 播放走签名接口时要原样带上
+        try:
+            _EP_CT[vid] = int(e.get("content_type") or vd.get("content_type") or 1)
+        except (TypeError, ValueError):
+            _EP_CT[vid] = 1
+        eps.append((idx, "%s$%s%s" % (title, EPISODE_PREFIX, vid)))
+    eps.sort(key=lambda x: x[0] if x[0] else 0)
+    if eps:
+        _ep_ct_save()
+    return meta, [s for _, s in eps]
+
+
+def _hg_signed_search(kw: str, page: int) -> dict[str, Any]:
+    """8788 签名搜索。返回与 _search_api 兼容的
+    {searchList, totalCount, totalPages}，卡片结构对齐 _search_item 的输入。
+
+    翻页靠上游回传的 search_id/passback：第 1 页拿回后缓存，后续页带回。"""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    cached = _HG_SEARCH_CTX.get(kw) if page > 1 else None
+    j = _hg_data("search", {
+        "keyword": kw, "page": page, "offset": (page - 1) * 18,
+        "count": 18,
+        "search_id": cached[0] if cached else "",
+        "passback": cached[1] if cached else "",
+    })
+    rows = []
+    seen = set()
+
+    def walk(x):
+        if isinstance(x, list):
+            for c in x:
+                walk(c)
+        elif isinstance(x, dict):
+            sid = _text(x.get("series_id") or x.get("series_id_str"))
+            if sid and sid not in seen:
+                title = _text(x.get("title") or x.get("series_title")
+                              or x.get("series_name"))
+                if title:
+                    seen.add(sid)
+                    rows.append({
+                        "keyword": sid,
+                        "video_data": {
+                            "series_id": sid,
+                            "series_title": title,
+                            "series_cover": _text(x.get("cover") or x.get("series_cover")
+                                                   or x.get("thumb_url")),
+                            "series_intro": _text(x.get("series_intro")
+                                                  or x.get("sub_title")),
+                            "episode_cnt": x.get("episode_cnt") or 0,
+                        },
+                    })
+            for v in x.values():
+                walk(v)
+
+    walk(j)
+    # 缓存本响应带回的翻页上下文，供下一页使用
+    new_sid = _find_first_str(j, "search_id")
+    new_pb = _find_first_str(j, "passback")
+    if page == 1:
+        _HG_SEARCH_CTX[kw] = (new_sid, new_pb)
+        if len(_HG_SEARCH_CTX) > 32:
+            _HG_SEARCH_CTX.clear()
+    elif new_sid or new_pb:
+        old_sid, old_pb = _HG_SEARCH_CTX.get(kw, ("", ""))
+        _HG_SEARCH_CTX[kw] = (new_sid or old_sid, new_pb or old_pb)
+    return {"searchList": rows, "totalCount": len(rows),
+            "totalPages": 1 if rows else 0}
+
+
+def _find_first_str(x: Any, key: str) -> str:
+    """在嵌套 JSON 里取第一个非空字符串值（search_id/passback 位置不固定）。"""
+    if isinstance(x, list):
+        for c in x:
+            v = _find_first_str(c, key)
+            if v:
+                return v
+    elif isinstance(x, dict):
+        v = x.get(key)
+        if isinstance(v, str) and v:
+            return v
+        for val in x.values():
+            v = _find_first_str(val, key)
+            if v:
+                return v
+    return ""
 
 
 def _hg_blocked(seconds: float = 300.0) -> bool:
@@ -4990,8 +5164,29 @@ class Spider(Spider):
             gender = ["0"]
         else:
             gender = None
-        items = _app_category_list(genre, page, config, sort=sort, gender=gender,
-                                   theme=theme, epoch=epoch, role=role, online_time=online)
+        # 8788 签名链路优先（TV 盒直连上游常被 CDN 拦截）；服务不可用或返回空时回退本地直连。
+        # filters 维度与 node 版对齐：theme→category_dim_theme / background→category_dim_epoch /
+        # setting→category_dim_role / time→online_time / 受众→gender，sort 原样透传。
+        signed = {"sort": sort}
+        if theme:
+            signed["category_dim_theme"] = [theme[0]]
+        if epoch:
+            signed["category_dim_epoch"] = [epoch[0]]
+        if role:
+            signed["category_dim_role"] = [role[0]]
+        if online:
+            signed["online_time"] = [online[0]]
+        if gender:
+            signed["gender"] = gender
+        items = []
+        try:
+            items = _hg_signed_category(genre, page, signed)
+        except Exception:
+            items = []
+        if not items:
+            items = _app_category_list(genre, page, config, sort=sort, gender=gender,
+                                       theme=theme, epoch=epoch, role=role,
+                                       online_time=online)
         return {"page": page, "pagecount": 9999, "limit": len(items), "total": 999999, "list": items}
 
     def searchContent(self, key, quick=False, pg="1"):
@@ -5000,7 +5195,14 @@ class Spider(Spider):
         kw = _text(key)[:SEARCH_MAX_KEY]
         if not kw:
             return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
-        j = _search_api(kw, page)
+        # 8788 签名搜索优先（TV 盒直连官网/上游常被拦）；服务不可用时回退官网搜索接口。
+        j = {}
+        try:
+            j = _hg_signed_search(kw, page)
+        except Exception:
+            j = {}
+        if not (j.get("searchList")):
+            j = _search_api(kw, page)
         rows = j.get("searchList") or []
         try: total = int(j.get("totalCount") or 0)
         except (TypeError, ValueError): total = 0
@@ -5029,8 +5231,16 @@ class Spider(Spider):
         if sid in (LOGIN_QR, LOGIN_APP, LOGIN_LOGOUT):
             return self._login_detail(sid)
         config = self._cfg()
-        # 优先走 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
-        meta, eps = _app_episode_detail(sid, config)
+        # 8788 签名剧集接口优先（TV 盒直连上游常被 CDN 拦截）；
+        # 服务不可用或返回空时回退本地 App 剧集接口，再退官网详情。
+        meta, eps = None, []
+        try:
+            meta, eps = _hg_signed_detail(sid)
+        except Exception:
+            meta, eps = None, []
+        if not eps:
+            # 兜底: 本地 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
+            meta, eps = _app_episode_detail(sid, config)
         if eps:
             # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, vid)
             pairs = []
