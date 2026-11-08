@@ -4546,15 +4546,30 @@ def _hg_season_plan(sid: str, meta: Mapping, cur_vids: list) -> list:
     return unique
 
 
-def _build_season_play(seasons: list) -> tuple:
-    """多季线路：一季一条，线路名「第一季/第二季…」，顺序就是传入顺序（已升序）。"""
+def _build_season_play(seasons: list, cur_sid: str = "") -> tuple:
+    """多季线路：一季一条，线路名「第一季/第二季…」。
+
+    顺序 = **当前这一季排第一** + 其余按季号从低到高。
+    壳默认选中第一条线路、默认落到它的第一集，所以从第二季点进来就是
+    第二季在第一条 → 点开直接播第二季，不会被顶回第一季。
+    """
+    rows = [x for x in (seasons or []) if isinstance(x, Mapping)]
+    cur_sid = _text(cur_sid).strip()
+    if cur_sid:
+        mine = [x for x in rows if _text(x.get("sid")) == cur_sid]
+        rest = [x for x in rows if _text(x.get("sid")) != cur_sid]
+        if mine:
+            rows = mine + rest
+
     names = []
     urls = []
-    for row in seasons:
+    for row in rows:
         vids = [str(v) for v in (row.get("vids") or []) if str(v)]
         if not vids:
             continue
         line = "第%s季" % _hg_cn(int(row.get("no") or 0) or 1)
+        if cur_sid and _text(row.get("sid")) == cur_sid:
+            line = line + " · 当前"
         if line in names:
             line = "%s%d" % (line, len(names) + 1)
         cts = row.get("cts") if isinstance(row.get("cts"), Mapping) else {}
@@ -5899,7 +5914,7 @@ class Spider(Spider):
                 _play_log("season plan fail: %s" % str(exc)[:80])
                 seasons = []
             if seasons:
-                play_from, play_url = _build_season_play(seasons)
+                play_from, play_url = _build_season_play(seasons, sid)
                 _play_log("season %s -> %d 季: %s"
                           % (sid, len(seasons),
                              "/".join("%s(%d集)" % ("第%s季" % _hg_cn(int(x.get("no") or 1)),
@@ -5962,7 +5977,7 @@ class Spider(Spider):
         except Exception:
             season_rows = []
         if season_rows:
-            play_from, play_url = _build_season_play(season_rows)
+            play_from, play_url = _build_season_play(season_rows, sid)
         else:
             play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
