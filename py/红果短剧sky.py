@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import binascii
 import bisect
+import gzip
 import hashlib
+import hmac
 import json
 import lzma
 import os
@@ -12,6 +14,7 @@ import re
 import struct
 import threading
 import time
+import zlib
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html.parser import HTMLParser
@@ -934,20 +937,39 @@ def _stream_session(video_id: str, config: Mapping[str, Any]) -> "_StreamSession
         session = sessions.get(video_id)
     if session is not None:
         return session
-    model = _video_model(bare, config)
-    _, item = _select_quality(_video_list_from_model(model), wanted)
-    url = _media_url(item)
-    spade = _spade_value(item)
-    if not url or not spade:
-        raise HongguoPluginError("播放模型缺少地址或密钥材料")
-    key_seed = _key_seed_from_model(model)
-    if key_seed:
+    last: Exception | None = None
+    # 媒体直链带有效期(url_expire); 模型缓存比直链活得更久时, 老链接会 403,
+    # 所以这里失败就丢掉该项缓存重取一次, 而不是把错误直接抛给播放器。
+    # 但"被判空/限流"不重来第二回合 —— _video_model 内部已经耐心等过一轮了,
+    # 再叠一轮只会让播放器转圈一分钟。
+    for attempt in range(2):
+        model = None
         try:
-            url = _decrypt_spade_url(url, key_seed)
-        except HongguoPluginError:
-            pass
-    total, moov_start, moov = _fetch_moov(url)
-    session = _StreamSession(url, derive_content_key(spade), total, moov_start, moov)
+            model = _video_model(bare, config)
+            _, item = _select_quality(_video_list_from_model(model), wanted)
+            url = _media_url(item)
+            spade = _spade_value(item)
+            if not url or not spade:
+                raise HongguoPluginError("播放模型缺少地址或密钥材料")
+            key_seed = _key_seed_from_model(model)
+            if key_seed:
+                try:
+                    url = _decrypt_spade_url(url, key_seed)
+                except HongguoPluginError:
+                    pass
+            total, moov_start, moov = _fetch_moov(url)
+            session = _StreamSession(url, derive_content_key(spade), total, moov_start, moov)
+            break
+        except Exception as exc:
+            last = exc
+            _MODEL_CACHE.pop(_text(bare).split("@")[0].strip(), None)
+            # 取流阶段就失败(签名/限流)不要再叠一轮, 否则等于双倍消耗配额;
+            # 只有"模型拿到了但直链已过期/403"时才值得丢缓存重取。
+            if model is None or _is_throttled(exc) or attempt > 0:
+                break
+            time.sleep(0.4)
+    if last is not None and session is None:
+        raise last
     with _STREAM_LOCK:
         sessions = _STREAM_STATE["sessions"]
         while len(sessions) >= _STREAM_MAX_SESSIONS:
@@ -3185,9 +3207,159 @@ def _core_sixgod(url: str, params: Mapping[str, Any], devices: Mapping[str, Any]
     result_headers["x-tt-dt"] = str(devices.get("x_tt_dt", ""))
     return result_headers, encrypted_url
 
+# ---------------------------------------------------------------- 设备号轮换
+# 实测(2026-11-08): multi_video_model 对同一个 device_id 只放行一次取流,
+# 第二次起恒定 HTTP 200 + Content-Length: 0(空 body), 且不是几分钟能恢复的限流
+# —— 同一设备号 10 分钟后仍返回空, 换个全新随机设备号立刻正常。
+# 这正是"播放只有 10 秒"的根因: 详情页 _probe_tiers 已经把该设备的额度用掉,
+# 播放时 _stream_session 再取流就被判空 -> 回落到官网 /video/public/<vid>/360p.mp4,
+# 而那条链接本身就是 10 秒试看片段。
+# 对策: 一旦取流被空 body 拒绝, 立刻轮换一个新的匿名设备号并落盘复用, 再重试。
+_DEVICE_LOCK = threading.RLock()
+_DEVICE_STATE = {"burned": [], "current": ["", ""], "rotations": []}
+_DEVICE_BURN_MAX = 32
+# 轮换预算: 一小时最多换 8 个设备号。无节制地造新设备号会被上游当成异常流量,
+# 连带把整个 IP 的取流接口封掉(实测封掉后连全新设备号也一直回空 body), 得不偿失。
+_DEVICE_ROTATE_LIMIT = 8
+_DEVICE_ROTATE_WINDOW = 3600
+_REQUEST_GAP = 0.8              # 取流请求之间的最小间隔(秒), 避免连发被判空
+_THROTTLE_UNTIL = [0.0]         # 上游回空后的全局冷却时间点
+_THROTTLE_PENALTY = 2.0         # 判空一次 -> 全局冷却再加长的秒数(上限 _THROTTLE_MAX)
+_THROTTLE_MAX = 12.0
+_LAST_REQUEST_AT = [0.0]
+# 连续判空计数: 连续换了几个设备号都还是空 body, 说明不是"设备号用尽"而是整条
+# 取流接口对本机 IP 做了封禁 —— 这时候继续重试只会把封禁续期, 必须停手。
+_BAN_STATE = {"streak": 0, "until": 0.0}
+_BAN_STREAK_LIMIT = 4
+_BAN_COOLDOWN = 600.0           # 判定被封后静默的秒数, 期间直接走试看兜底
+
+
+class _DeviceThrottled(HongguoPluginError):
+    """上游以空 body 拒绝该 device_id(该设备号取流额度已用尽)。"""
+
+    def __init__(self, message: str, device_id: str = "") -> None:
+        super().__init__(message)
+        self.device_id = device_id
+
+
+def _is_throttled(exc: BaseException | None) -> bool:
+    """异常链里是否含"取流被判空"(含 _video_model 包装后的错)。"""
+    seen = 0
+    while exc is not None and seen < 5:
+        if isinstance(exc, _DeviceThrottled):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def _throttle_blocked() -> bool:
+    """当前是否处于取流冷却/受限中(上一次取流被判空, 或连续判空判定为封禁)。"""
+    with _DEVICE_LOCK:
+        return time.time() < max(_THROTTLE_UNTIL[0], _BAN_STATE["until"])
+
+
+_LOG_LOCK = threading.Lock()
+
+
+def _play_log(line: str) -> None:
+    """取流结果落盘: 线上排查"只播 10 秒"时直接看 hongguo_play.log。"""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    path = os.path.join(base, "hongguo_play.log")
+    try:
+        with _LOG_LOCK:
+            if os.path.exists(path) and os.path.getsize(path) > 200 * 1024:
+                os.remove(path)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write("%s %s\n" % (time.strftime("%m-%d %H:%M:%S"), line))
+    except Exception:
+        pass
+
+
+def _random_identity() -> tuple[str, str]:
+    return (str(random.randint(10 ** 18, 10 ** 19 - 1)),
+            str(random.randint(10 ** 18, 10 ** 19 - 1)))
+
+
+def _persist_identity(device_id: str, install_id: str) -> None:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    with _DEVICE_LOCK:
+        burned = list(_DEVICE_STATE["burned"])[-_DEVICE_BURN_MAX:]
+    try:
+        with open(os.path.join(base, DEVICE_FILE), "w", encoding="utf-8") as handle:
+            # burned 一起落盘: 重启后就不必拿已用尽的设备号白撞一次空响应
+            json.dump({"device_id": device_id, "install_id": install_id,
+                       "burned": burned}, handle)
+    except Exception:
+        pass
+
+
+def _current_device() -> tuple[str, str]:
+    with _DEVICE_LOCK:
+        return _DEVICE_STATE["current"][0], _DEVICE_STATE["current"][1]
+
+
+def _is_burned(device_id: str) -> bool:
+    with _DEVICE_LOCK:
+        return bool(device_id) and device_id in _DEVICE_STATE["burned"]
+
+
+def _can_rotate() -> bool:
+    with _DEVICE_LOCK:
+        now = time.time()
+        recent = [t for t in _DEVICE_STATE["rotations"] if now - t < _DEVICE_ROTATE_WINDOW]
+        _DEVICE_STATE["rotations"] = recent
+        return len(recent) < _DEVICE_ROTATE_LIMIT
+
+
+def _rotate_device(bad_id: str = "") -> tuple[str, str]:
+    """把一个取流额度用尽的设备号换成新的(落盘), 返回新的 (device_id, install_id)。"""
+    with _DEVICE_LOCK:
+        burned = _DEVICE_STATE["burned"]
+        if bad_id and bad_id not in burned:
+            burned.append(bad_id)
+            del burned[:-_DEVICE_BURN_MAX]
+        _DEVICE_STATE["rotations"].append(time.time())
+        device_id, install_id = _random_identity()
+        while device_id in burned:
+            device_id, install_id = _random_identity()
+        _DEVICE_STATE["current"] = [device_id, install_id]
+    _persist_identity(device_id, install_id)
+    return device_id, install_id
+
+
+def _pace_request() -> None:
+    """取流请求之间留间隔 + 遵守全局冷却: 连发只会让上游继续回空 body。"""
+    with _DEVICE_LOCK:
+        now = time.time()
+        wait = max(_REQUEST_GAP - (now - _LAST_REQUEST_AT[0]), _THROTTLE_UNTIL[0] - now)
+        if wait > 0:
+            time.sleep(min(wait, 20.0))
+        _LAST_REQUEST_AT[0] = time.time()
+
+
+def _note_throttled() -> None:
+    """记一次空响应: 之后的请求整体往后推, 免得越撞越死。"""
+    with _DEVICE_LOCK:
+        now = time.time()
+        current = max(_THROTTLE_UNTIL[0] - now, 0.0)
+        _THROTTLE_UNTIL[0] = now + min(current + _THROTTLE_PENALTY, _THROTTLE_MAX)
+
+
 def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
     device_id = _text(config.get("device_id"))
     install_id = _text(config.get("install_id"))
+    if not device_id or _is_burned(device_id):
+        # 传进来的设备号已经被判空 -> 用轮换后的当前设备号
+        current_id, current_iid = _current_device()
+        if current_id:
+            device_id, install_id = current_id, current_iid
     if not device_id or not install_id:
         raise HongguoPluginError("缺少红果 device_id/install_id 配置")
     # 登录态: 站点 ext 显式指定优先, 否则用扫码登录落盘的凭证
@@ -3205,18 +3377,298 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
         "ua": APP_UA,
     }
 
-# 取流端点 multi_video_model/v1 的空 body 与"限流/灰度"无关, 是两个确定性原因:
-#   1) 路径写错: 旧的 /novel/player/video_model/v1/ 已下线, 恒定 200 + 空 body;
-#   2) 多带了 iid: 上游对"device_id + iid"这套组合直接判风控, 同样 200 + 空 body。
-# 只保留 device_id、走 multi_video_model 后实测连续 4/4 成功, 无需重试;
-# 仍留 2 次短重试兜住偶发网络抖动/502。
-_VIDEO_MODEL_ATTEMPTS = 2
-_VIDEO_MODEL_BACKOFF = 0.2
+# 取流端点 multi_video_model/v1 的空 body 有两个来源:
+#   1) 路径/参数写错: 旧的 /novel/player/video_model/v1/ 已下线, 恒定 200 + 空 body;
+#      多带 iid 也会被判风控, 同样空 body —— 这两种属于代码错, 重试无用;
+#   2) device_id 取流额度用尽: 换新设备号即可恢复(见上面的设备号轮换)。
+# 所以重试分两类: 空 body 走"换设备号", 其余(网络抖动/5xx)走短退避。
+_VIDEO_MODEL_ATTEMPTS = 1        # 签名层内部已按轮次重试, 外层再叠一轮会让播放器干等
+_VIDEO_MODEL_BACKOFF = 0.4
+_VIDEO_MODEL_ROTATIONS = 3      # 单次取流最多换几次设备号
+# 判空后的等待序列: 上游按"短时间内的取流次数"记冷却, 立刻重发只会继续回空,
+# 所以换号后按递增间隔耐心等(整个播放最多多等 ~26s, 但换来的是整集而不是 10 秒试看)。
+_THROTTLE_WAITS = (3.0, 8.0, 15.0)
 # 取流模型缓存: 详情页探测成功后就存下来, 播放时直接复用,
 # 免掉切集/换线路时重复请求上游(还顺带省掉一次签名与握手的耗时)。
 _MODEL_CACHE: dict[str, tuple] = {}
-_MODEL_CACHE_TTL = 180
-_MODEL_CACHE_MAX = 16
+# 缓存久一点: 每多打一次上游就多烧一个设备号, 且同集重复播放不该再请求
+_MODEL_CACHE_TTL = 900
+_MODEL_CACHE_MAX = 32
+
+
+# ---------------------------------------------------------------- 签名服务
+# 内置 node 源（16_manjuhongguo.js）取流的真正姿势不是"自己拼请求"，
+# 而是让**签名服务下发一个已经签好名的请求包**（url + headers + body），
+# 客户端只负责执行这一跳。请求体内是官方 App 的设备令牌，所以不会被判风控。
+#
+#   注册：POST /device/v1/hongguo/prepare  -> {registration_token, request(签名包)}
+#         执行 request -> 得到 device_register 响应
+#         POST /device/v1/hongguo/complete {registration_token,status_code,response_base64}
+#         -> {profile_token}
+#   取流：POST /sign/v1/hongguo/play {vid, content_type, profile_token}
+#         -> {data:{method,url,headers,body_base64,expires_at_ms}}  执行即可
+#
+# 实测结论（内置 node 源的策略同此）：
+#   · 一个 profile_token 只放行约 1~2 次取流，之后恒回 200 + 0 字节；
+#   · 判空后重新注册设备，新的令牌通常立刻可用；
+#   · 但短时间内频繁"注册+取流"会把整条 IP 打进分钟级冷却（此时换令牌也空）。
+#   所以只做 2 轮（与 node 源 executeHongguoPlay 的 2 次循环一致），失败就快速退回，
+#   别把配额和冷却都浪费在无谓重试上。
+HG_SIGN_API = "http://211.101.237.42:8788"
+HG_SIGN_CLIENT = "java-client"
+HG_SIGN_SECRET = "7683cfa39c6fc5e700b34ffc022eea016a85c6ff641b70cc1c9f1bd09b0b6f92"
+HG_PROFILE_FILE = "hongguo_profile.json"
+HG_SIGN_TIMEOUT = 10
+HG_PLAY_ROUNDS = 2
+HG_PLAY_WAITS = (0.0, 3.0)
+_HG_PROFILE = {"token": "", "at": 0.0}
+_HG_LOCK = threading.RLock()
+_HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详情页提示）
+_EP_CT: dict[str, int] = {}      # vid -> content_type（详情接口带回来，播放时透传）
+_EP_CT_FILE = "hongguo_ct.json"  # 落盘：宿主重载进程后仍知道哪集是漫剧(1001)
+_EP_CT_READY = [False]
+
+
+def _ep_ct_load() -> None:
+    if _EP_CT_READY[0]:
+        return
+    _EP_CT_READY[0] = True
+    try:
+        with open(_hg_profile_path().replace(HG_PROFILE_FILE, _EP_CT_FILE),
+                  "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, Mapping):
+            for key, value in data.items():
+                try:
+                    _EP_CT[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        pass
+
+
+def _ep_ct_save() -> None:
+    try:
+        with open(_hg_profile_path().replace(HG_PROFILE_FILE, _EP_CT_FILE),
+                  "w", encoding="utf-8") as handle:
+            json.dump(_EP_CT, handle)
+    except Exception:
+        pass
+
+
+class _HgSignUnavailable(HongguoPluginError):
+    """签名服务本身不可用（网络/5xx/协议变更），此时才值得退回旧的直连实现。"""
+
+
+def _hg_sign(path: str, payload: Any) -> dict[str, Any]:
+    """调用签名服务。签名串：POST\\n{path}\\n\\n{sha256(body)}\\n{ts}\\n{nonce}\\n{client}"""
+    body = json.dumps(payload if payload is not None else {},
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ts = str(int(time.time() * 1000))
+    nonce = binascii.hexlify(os.urandom(16)).decode("ascii")
+    raw = "POST\n%s\n\n%s\n%s\n%s\n%s" % (
+        path, hashlib.sha256(body).hexdigest(), ts, nonce, HG_SIGN_CLIENT)
+    sign = hmac.new(HG_SIGN_SECRET.encode("utf-8"), raw.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Huolong-Client": HG_SIGN_CLIENT,
+        "X-Huolong-Time": ts,
+        "X-Huolong-Nonce": nonce,
+        "X-Huolong-Sign": sign,
+    }
+    try:
+        resp = _http().post(HG_SIGN_API + path, data=body, headers=headers,
+                            timeout=HG_SIGN_TIMEOUT)
+    except Exception as exc:
+        raise _HgSignUnavailable("签名服务不可达: %s" % exc) from exc
+    if resp.status_code != 200:
+        raise _HgSignUnavailable("签名服务 HTTP %s" % resp.status_code)
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise _HgSignUnavailable("签名服务返回非 JSON") from exc
+    if str(data.get("code")) != "0":
+        raise HongguoPluginError("签名服务拒绝: %s"
+                                 % (data.get("message") or data.get("code")))
+    return data
+
+
+def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple[int, bytes]:
+    """执行签名包里的真实上游请求，返回 (状态码, 解压后的 body)。"""
+    method = str(env.get("method") or "GET").upper()
+    url = _text(env.get("url"))
+    if not url:
+        raise HongguoPluginError("签名包缺少上游地址")
+    headers = dict(env.get("headers") or {})
+    data = None
+    if method == "POST":
+        if env.get("body_base64"):
+            try:
+                data = base64.b64decode(str(env["body_base64"]))
+            except Exception as exc:
+                raise HongguoPluginError("签名包 body 解码失败") from exc
+        else:
+            data = _text(env.get("body")).encode("utf-8")
+    resp = _http().request(method, url, headers=headers, data=data, timeout=timeout)
+    body = resp.content or b""
+    if len(body) > 2 and body[0] == 0x1F and body[1] == 0x8B:
+        try:
+            body = gzip.decompress(body)
+        except Exception:
+            pass
+    elif "deflate" in str(resp.headers.get("content-encoding") or "").lower():
+        try:
+            body = zlib.decompress(body)
+        except Exception:
+            pass
+    return resp.status_code, body
+
+
+def _hg_profile_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, HG_PROFILE_FILE)
+
+
+def _hg_profile_load() -> str:
+    """读缓存令牌。已用过的令牌直接视为无效（一个令牌实际只够 1 次取流）。"""
+    try:
+        with open(_hg_profile_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, Mapping) and data.get("spent"):
+            return ""
+        token = _text((data or {}).get("profile_token"))
+    except Exception:
+        return ""
+    return token
+
+
+def _hg_profile_save(token: str, spent: bool = False) -> None:
+    try:
+        with open(_hg_profile_path(), "w", encoding="utf-8") as handle:
+            json.dump({"profile_token": token, "at": int(time.time()),
+                       "spent": bool(spent)}, handle)
+    except Exception:
+        pass
+
+
+def _hg_profile_clear() -> None:
+    with _HG_LOCK:
+        _HG_PROFILE["token"] = ""
+    try:
+        os.remove(_hg_profile_path())
+    except Exception:
+        pass
+
+
+def _hg_register() -> str:
+    """注册一个 App 设备，拿到 profile_token（取流额度随设备走）。"""
+    prepared = _hg_sign("/device/v1/hongguo/prepare", {})
+    data = prepared.get("data") or {}
+    reg_token = _text(data.get("registration_token"))
+    env = data.get("request") or {}
+    if not reg_token or not isinstance(env, Mapping):
+        raise HongguoPluginError("设备注册准备数据为空")
+    status, body = _hg_execute(env)
+    if status != 200 or not body:
+        raise HongguoPluginError("设备注册请求失败(HTTP %s)" % status)
+    done = _hg_sign("/device/v1/hongguo/complete", {
+        "registration_token": reg_token,
+        "status_code": status,
+        "content_encoding": "",
+        "response_base64": base64.b64encode(body).decode("ascii"),
+    })
+    token = _text((done.get("data") or {}).get("profile_token"))
+    if not token:
+        raise HongguoPluginError("设备注册未返回 profile_token")
+    with _HG_LOCK:
+        _HG_PROFILE["token"] = token
+        _HG_PROFILE["at"] = time.time()
+    _hg_profile_save(token)
+    _play_log("register ok token=%s..." % token[:8])
+    return token
+
+
+def _hg_profile_token(force: bool = False) -> str:
+    if force:
+        _hg_profile_clear()
+        return _hg_register()
+    with _HG_LOCK:
+        if _HG_PROFILE["token"]:
+            return _HG_PROFILE["token"]
+    cached = _hg_profile_load()
+    if cached:
+        with _HG_LOCK:
+            _HG_PROFILE["token"] = cached
+        return cached
+    return _hg_register()
+
+
+def _hg_content_type(video_id: str) -> int:
+    """漫剧是 1001，其余是 1（详情接口带回，缺省 1）。"""
+    _ep_ct_load()
+    ct = _EP_CT.get(_text(video_id).split("@")[0].strip()) or 1
+    return ct if ct in (1, 1001) else 1
+
+
+def _hg_signed_play(video_id: str) -> dict[str, Any]:
+    """走签名服务取 video_model：判空就换设备重注册，最多 HG_PLAY_ROUNDS 轮。"""
+    vid = _text(video_id).split("@")[0].strip()
+    if not vid:
+        raise HongguoPluginError("缺少 vid")
+    content_type = _hg_content_type(vid)
+    last = ""
+    for round_ in range(HG_PLAY_ROUNDS):
+        wait = HG_PLAY_WAITS[min(round_, len(HG_PLAY_WAITS) - 1)]
+        if wait > 0:
+            time.sleep(wait)
+        # 第一轮用缓存令牌；之后每轮强制重注册（判空多为额度用尽/设备被判异常）
+        token = _hg_profile_token(force=round_ > 0)
+        signed = _hg_sign("/sign/v1/hongguo/play", {
+            "vid": vid, "content_type": content_type, "profile_token": token})
+        env = signed.get("data") or {}
+        if not isinstance(env, Mapping) or not env.get("url"):
+            raise HongguoPluginError("签名服务未返回请求包")
+        status, body = _hg_execute(env)
+        if status in (401, 403) or not body:
+            last = "HTTP %s, %d 字节" % (status, len(body))
+            _play_log("play %s 空响应(%s) -> 重新注册设备" % (vid, last))
+            continue
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            last = "响应非 JSON"
+            _play_log("play %s 响应非 JSON" % vid)
+            continue
+        entry = payload.get("data") if isinstance(payload, Mapping) else None
+        model = entry.get("video_model") if isinstance(entry, Mapping) else None
+        if isinstance(model, str):
+            try:
+                model = json.loads(model)
+            except ValueError:
+                model = None
+        if isinstance(model, Mapping) and _video_list_from_model(model):
+            # 这个令牌基本只够一次取流，标记为已用，下次直接注册新设备省掉一轮空转
+            with _HG_LOCK:
+                _HG_PROFILE["token"] = ""
+            _hg_profile_save(token, spent=True)
+            _play_log("play %s -> signed ok (ct=%d)" % (vid, content_type))
+            _HG_FAIL_AT[0] = 0.0
+            return dict(model)
+        last = "video_model 为空"
+        _play_log("play %s code=%s 但 video_model 为空"
+                  % (vid, payload.get("code") if isinstance(payload, Mapping) else "?"))
+    _HG_FAIL_AT[0] = time.time()
+    raise HongguoPluginError("签名取流失败(%s)" % (last or "unknown"))
+
+
+def _hg_blocked(seconds: float = 300.0) -> bool:
+    """刚才取流是否彻底失败（上游限流），用于详情页提前提示。"""
+    at = _HG_FAIL_AT[0]
+    return bool(at) and (time.time() - at) < seconds
 
 
 def _video_model(video_id: str, config: Mapping[str, Any],
@@ -3230,7 +3682,7 @@ def _video_model(video_id: str, config: Mapping[str, Any],
     for attempt in range(max(1, attempts)):
         try:
             model = _video_model_once(video_id, config)
-        except Exception as exc:   # 空响应/网络抖动/JSON 异常都重试
+        except Exception as exc:   # 网络抖动/JSON 异常都短退避重试一次
             last = exc
             if attempt + 1 < attempts:
                 time.sleep(backoff * (attempt + 1))
@@ -3243,6 +3695,22 @@ def _video_model(video_id: str, config: Mapping[str, Any],
 
 
 def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+    """签名服务优先；只有签名服务本身挂了才退回旧的直连实现。"""
+    try:
+        return _hg_signed_play(video_id)
+    except _HgSignUnavailable as exc:
+        _play_log("signed unavailable: %s -> legacy" % str(exc)[:60])
+    return _video_model_legacy(video_id, config)
+
+
+def _video_model_legacy(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
+    """旧实现：自己拼 App 请求裸打上游。受"设备号一次额度 + IP 限流"限制，
+    只在签名服务不可达时兜底（签名可用时不要走这里，否则又只剩 10 秒试看）。"""
+    with _DEVICE_LOCK:
+        banned_until = _BAN_STATE["until"]
+    if banned_until > time.time():
+        raise _DeviceThrottled("取流接口受限(冷却中, %ds 后自动重试)"
+                               % int(banned_until - time.time()), "")
     devices = _device_config(config)
     # 关键: 这里不带 iid。实测 query 里只要出现 iid(哪怕 iid==device_id),
     # 上游就判风控并回 200 + 空 body; 只带 device_id 才正常返回。
@@ -3308,11 +3776,13 @@ def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any
     # 先走无签名(与官方 H5 一致、最快), 万一上游重新收紧再用 x-gorgon/x-medusa 签名兜一次。
     response = None
     last_hint = ""
+    empty_body = False
     for signed in (False, True):
         if signed:
             headers, url = _core_sixgod(VIDEO_URL, params, devices, payload, request_headers)
         else:
             headers, url = dict(request_headers), VIDEO_URL + "?" + _url_encode(params)
+        _pace_request()
         try:
             response = _http().post(url, headers=headers, data=body, timeout=15)
         except Exception as exc:
@@ -3321,11 +3791,23 @@ def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any
             continue
         if response.status_code == 200 and response.content:
             break
-        # 空 body / 非 200 都换签名方式再试一次
+        if response.status_code == 200 and not response.content:
+            # 空 body 是"该设备号取流额度用尽/请求被判空", 换签名方式重发同样是空,
+            # 白烧一次请求只会让冷却更久 —— 直接交给上层轮换设备号。
+            empty_body = True
+            last_hint = "HTTP 200, 0 字节"
+            response = None
+            break
+        # 非 200(比如 4xx)才值得换签名方式再试一次
         last_hint = "HTTP %s, %d 字节" % (response.status_code, len(response.content))
         response = None
     if response is None:
-        raise HongguoPluginError("取流接口空响应(%s): 检查 device_id 是否合法、query 是否误带 iid" % (last_hint or "unknown"))
+        message = ("取流接口空响应(%s): 检查 device_id 是否合法、query 是否误带 iid"
+                   % (last_hint or "unknown"))
+        if empty_body:
+            # 该设备号的取流额度已用尽 -> 交给上层换设备号重试
+            raise _DeviceThrottled(message, devices.get("device_id", ""))
+        raise HongguoPluginError(message)
     response_data = _json_response(response)
     data = response_data.get("data") or {}
     if not isinstance(data, Mapping):
@@ -3406,9 +3888,11 @@ def _definition_of(item: Mapping[str, Any]) -> str:
 def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
     """探测该视频实际可用的清晰度档位(走 App video_model 接口, 无需登录)。
 
-    实测游客设备即可拿到 360p/480p/540p/720p/1080p 全档;
-    返回 [(显示名, 档位), ...]; 拿不到则返回 [] 并进入冷却,
-    调用方据此决定用多线路还是回退官网 360p 单线路。
+    ⚠ 详情页已经不再调用它: 上游对同一 IP 的取流次数卡得很死(连续请求直接回
+    200 + 空 body), 详情页探测一次就等于把"播放那一次"的额度提前烧掉, 于是
+    播放时取不到流、回落到官网 10 秒试看。现在线路固定列 5 档(实测成功时
+    video_model 恒定回 360p~1080p 五档), 把唯一的取流请求留给真正播放那一刻。
+    保留此函数仅供手动诊断/调试使用。
     """
     now = time.time()
     with _PROBE_LOCK:
@@ -3799,9 +4283,16 @@ def _app_episode_detail(sid, config):
             continue
         idx = e.get("vid_index") or 0
         title = "第%d集" % (idx if idx else len(eps) + 1)
+        # 记下每集的 content_type(1=短剧, 1001=漫剧), 播放走签名接口时要原样带上
+        try:
+            _EP_CT[str(vid)] = int(e.get("content_type") or vd.get("content_type") or 1)
+        except (TypeError, ValueError):
+            _EP_CT[str(vid)] = 1
         eps.append((idx, f"{title}${EPISODE_PREFIX}{vid}"))
     eps.sort(key=lambda x: x[0] if x[0] else 0)
     meta["actors"] = ",".join(actors)
+    if eps:
+        _ep_ct_save()
     return meta, [s for _, s in eps]
 
 DEVICE_FILE = "hongguo_device.json"
@@ -3823,17 +4314,22 @@ def _device_identity() -> tuple[str, str]:
             data = json.load(handle)
         device_id = _text(data.get("device_id"))
         install_id = _text(data.get("install_id"))
-        if device_id.isdigit() and len(device_id) >= 10:
+        burned = data.get("burned")
+        if isinstance(burned, list):
+            with _DEVICE_LOCK:
+                for item in burned[-_DEVICE_BURN_MAX:]:
+                    item = _text(item)
+                    if item and item not in _DEVICE_STATE["burned"]:
+                        _DEVICE_STATE["burned"].append(item)
+        if device_id.isdigit() and len(device_id) >= 10 and not _is_burned(device_id):
             return device_id, install_id if install_id.isdigit() else device_id
     except Exception:
         pass
-    device_id = str(random.randint(10**17, 10**18 - 1))
-    install_id = str(random.randint(10**17, 10**18 - 1))
-    try:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"device_id": device_id, "install_id": install_id}, handle)
-    except Exception:
-        pass
+    # 没有可用设备号(或落盘的那个额度已用尽) -> 换一个并落盘
+    device_id, install_id = _random_identity()
+    with _DEVICE_LOCK:
+        _DEVICE_STATE["current"] = [device_id, install_id]
+    _persist_identity(device_id, install_id)
     return device_id, install_id
 
 
@@ -3860,7 +4356,12 @@ class Spider(Spider):
         return None
 
     def _cfg(self):
-        cfg = {"device_id": self.device_id, "install_id": self.install_id}
+        device_id, install_id = self.device_id, self.install_id
+        current_id, current_iid = _current_device()
+        # 设备号被上游判空后 _rotate_device 会换号, 这里跟上, 别再拿旧号去撞空响应
+        if current_id and (not device_id or _is_burned(device_id)):
+            device_id, install_id = current_id, current_iid
+        cfg = {"device_id": device_id, "install_id": install_id}
         extra = getattr(self, "_extra_config", None)
         if isinstance(extra, dict):
             for key in ("cookie", "x_tt_token", "x_tt_dt", "sec_device_token",
@@ -4124,15 +4625,23 @@ class Spider(Spider):
                 pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
-            # 探测真实可用档位: 通 -> 多线路(1080P/720P/...), 不通 -> 官网 360p
-            tiers = _probe_tiers(pairs[0][1], config) if pairs else []
+            # 固定列 5 档线路, 不在详情页探测: 上游取流额度极紧, 详情页探测一次
+            # 就会把"播放那一次"用掉, 导致播放回落到 10 秒试看(见 _probe_tiers 注释)。
+            tiers = list(QUALITY_TIERS) if pairs else []
             play_from, play_url = _build_play(marked, tiers)
             remarks = meta.get("remarks") or ""
+            intro = meta.get("intro") or ""
+            notes = []
+            if pairs and (_throttle_blocked() or _hg_blocked()):
+                notes.append("上游刚限流, 若这集只有 10 秒就结束, 等 1~2 分钟再点播放"
+                             "(不会消耗次数, 稍后会自动恢复)。")
+            if notes:
+                intro = (intro + "\n\n" if intro else "") + "\n".join("提示: " + n for n in notes)
             return {"list": [{
                 "vod_id": sid, "vod_name": meta.get("title") or sid,
                 "vod_pic": meta.get("cover") or "", "vod_year": "", "vod_area": "",
                 "vod_director": "", "vod_actor": meta.get("actors") or "",
-                "vod_content": meta.get("intro") or "", "vod_remarks": remarks,
+                "vod_content": intro, "vod_remarks": remarks,
                 "vod_play_from": play_from, "vod_play_url": play_url
             }]}
         # 兜底: 官网详情
@@ -4142,7 +4651,7 @@ class Spider(Spider):
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
         pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
         marked = [(title, vid) for title, vid in pairs]
-        tiers = _probe_tiers(pairs[0][1], config) if pairs else []
+        tiers = list(QUALITY_TIERS) if pairs else []
         play_from, play_url = _build_play(marked, tiers)
         remarks = str(s.get("episode_right_text") or "")
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
@@ -4168,19 +4677,26 @@ class Spider(Spider):
             port = 0
         public_url = _public_media_url(vid)
         if port and vid.isdigit():
+            cfg = self._cfg()
+            built = False
+            # 先建一次会话: 拿不到媒体模型时直接走兜底, 别把必然 502 的地址丢给播放器。
+            # 取流的重试与设备重注册都在 _video_model/_hg_signed_play 内部做完了,
+            # 这里再叠一轮只会让播放器多转圈几秒。
             try:
-                # 先建一次会话: 拿不到媒体模型时直接走兜底, 别把必然 502 的地址丢给播放器
-                _stream_session(raw, {"device_id": self.device_id or "",
-                                      "install_id": self.install_id or ""})
+                _stream_session(raw, cfg)
+                built = True
             except Exception:
-                pass
-            else:
-                query = urlencode({"vid": raw, "did": self.device_id or "",
-                                   "iid": self.install_id or ""})
+                built = False
+            if built:
+                query = urlencode({"vid": raw,
+                                   "did": cfg.get("device_id") or "",
+                                   "iid": cfg.get("install_id") or ""})
+                _play_log("play %s -> app-stream ok" % raw)
                 return {"parse": 0, "jx": 0, "playUrl": "",
                         "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
                         "header": {"User-Agent": UA}}
         # 兜底: 官网公开直链(仅 10 秒试看片段)
+        _play_log("play %s -> app-stream FAIL, fallback preview(10s)" % raw)
         if public_url and _public_ok(public_url):
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
         if public_url:
