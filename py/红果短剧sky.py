@@ -3626,6 +3626,64 @@ _MODEL_CACHE: dict[str, tuple] = {}
 # 缓存久一点: 每多打一次上游就多烧一个设备号, 且同集重复播放不该再请求
 _MODEL_CACHE_TTL = 900
 _MODEL_CACHE_MAX = 32
+# 剧集表: 详情页把每部剧的 vid 顺序记下来, 播放时才能"边看这集边把下集取好"。
+# 上游对同一 IP 的取流有 3 秒级间隔窗口, 用户连播时必然踩到 ——
+# 提前在后台取好下集, 切集就是 0 毫秒命中缓存。
+_SERIES_EPS: dict[str, list] = {}
+_SERIES_LOCK = threading.Lock()
+_PREFETCHING: set = set()
+_PREFETCH_DELAY = 4.0
+
+
+def _remember_series(sid: str, vids: list) -> None:
+    key = _text(sid).strip()
+    if not key or not vids:
+        return
+    with _SERIES_LOCK:
+        _SERIES_EPS[key] = list(vids)
+        if len(_SERIES_EPS) > 24:
+            _SERIES_EPS.pop(next(iter(_SERIES_EPS)), None)
+
+
+def _series_neighbour(vid: str) -> str:
+    """按详情页顺序找下一集（找不到返回空串）。"""
+    with _SERIES_LOCK:
+        for vids in _SERIES_EPS.values():
+            if vid in vids:
+                index = vids.index(vid)
+                if index + 1 < len(vids):
+                    return vids[index + 1]
+                return ""
+    return ""
+
+
+def _prefetch_next(vid: str, config: Mapping[str, Any]) -> None:
+    """后台把下一集的 video_model 先取回来（用户还在看这一集，时间充裕）。"""
+    target = _series_neighbour(vid)
+    if not target:
+        return
+    if _MODEL_CACHE.get(target) and time.time() - _MODEL_CACHE[target][0] < _MODEL_CACHE_TTL:
+        return
+    with _SERIES_LOCK:
+        if target in _PREFETCHING:
+            return
+        _PREFETCHING.add(target)
+
+    def worker():
+        try:
+            # 等当前这集的请求彻底发完，再错开窗口去取下一集
+            time.sleep(_PREFETCH_DELAY)
+            if _MODEL_CACHE.get(target):
+                return
+            _video_model(target, config, ct_hint=_EP_CT.get(target) or 0)
+            _play_log("prefetch %s ok" % target)
+        except Exception as exc:  # noqa: BLE001 - 预取失败不影响当前播放
+            _play_log("prefetch %s skip(%s)" % (target, str(exc)[:50]))
+        finally:
+            with _SERIES_LOCK:
+                _PREFETCHING.discard(target)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 # ---------------------------------------------------------------- 签名服务
@@ -3653,7 +3711,7 @@ HG_PROFILE_FILE = "hongguo_profile.json"
 HG_SIGN_TIMEOUT = 10
 HG_PLAY_ROUNDS = 2
 HG_PLAY_WAITS = (0.0, 3.0)
-_HG_PROFILE = {"token": "", "expires": 0}
+_HG_PROFILE = {"token": "", "expires": 0, "spent": False}
 _HG_LOCK = threading.RLock()
 _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详情页提示）
 _EP_CT: dict[str, int] = {}      # vid -> content_type（详情接口带回来，播放时透传）
@@ -3766,6 +3824,24 @@ def _hg_decode_body(body: bytes, encoding: str) -> bytes:
     return body
 
 
+_HG_REQ_LOCK = threading.Lock()
+_HG_REG_GUARD = threading.Lock()
+_HG_LAST_REQ = [0.0]# 实测：上游对同一 IP 的请求有 ~3 秒级的自适应间隔窗口。
+# 1.5s 内连发必回 HTTP 200 + 0 字节，而 3.3s 后同一枚令牌又能成功。
+# 所以所有打红果的请求都要串行 + 拉开间隔，否则重试只会把窗口撞得更死。
+_HG_MIN_GAP = 1.8
+
+
+def _hg_throttle(min_gap: float = None) -> None:
+    """串行化上游请求，并保证两次请求之间至少 min_gap 秒。"""
+    gap = _HG_MIN_GAP if min_gap is None else min_gap
+    with _HG_REQ_LOCK:
+        wait = _HG_LAST_REQ[0] + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _HG_LAST_REQ[0] = time.time()
+
+
 def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple:
     """执行签名包里的真实上游请求，返回 (状态码, 解压后的 body)。"""
     method = str(env.get("method") or "GET").upper()
@@ -3782,6 +3858,7 @@ def _hg_execute(env: Mapping[str, Any], timeout: int = 25) -> tuple:
                 raise HongguoPluginError("签名包 body 解码失败") from exc
         else:
             data = _text(env.get("body")).encode("utf-8")
+    _hg_throttle()
     resp = _http().request(method, url, headers=headers, data=data, timeout=timeout)
     body = _hg_decode_body(resp.content or b"",
                            str(resp.headers.get("content-encoding") or ""))
@@ -3817,27 +3894,27 @@ def _hg_profile_path() -> str:
 
 
 def _hg_profile_load() -> tuple:
-    """读缓存令牌 + 过期时间。令牌可用就一直复用，不再"用一次就丢"。"""
+    """读缓存令牌 + 过期时间 + 是否已被用掉。"""
     try:
         with open(_hg_profile_path(), "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except Exception:
-        return "", 0
+        return "", 0, False
     if not isinstance(data, Mapping):
-        return "", 0
+        return "", 0, False
     token = _text(data.get("profile_token"))
     try:
         expires = int(data.get("expires_at") or 0)
     except (TypeError, ValueError):
         expires = 0
-    return token, expires
+    return token, expires, bool(data.get("spent"))
 
 
-def _hg_profile_save(token: str, expires: int = 0) -> None:
+def _hg_profile_save(token: str, expires: int = 0, spent: bool = False) -> None:
     try:
         with open(_hg_profile_path(), "w", encoding="utf-8") as handle:
             json.dump({"profile_token": token, "expires_at": int(expires or 0),
-                       "at": int(time.time())}, handle)
+                       "spent": bool(spent), "at": int(time.time())}, handle)
     except Exception:
         pass
 
@@ -3849,14 +3926,45 @@ def _hg_profile_clear(expected: str = "") -> None:
             return
         _HG_PROFILE["token"] = ""
         _HG_PROFILE["expires"] = 0
+        _HG_PROFILE["spent"] = False
     try:
         os.remove(_hg_profile_path())
     except Exception:
         pass
 
 
+def _hg_mark_spent() -> None:
+    """标记当前令牌已被上游用掉。
+
+    实测：拿"上一集用过的令牌"再去取流，上游会回 HTTP 200 + 0 字节，而这一次
+    空请求是有代价的 —— 它会把这个 IP 打进短时窗口，导致紧跟着的重试也全空。
+    日志里"第一集能播、第二集只剩 10 秒"就是这个链条：
+    旧令牌 -> 空 -> 重注册 -> 还是空。所以取流成功后立刻标记，下次直接换新令牌。
+    """
+    with _HG_LOCK:
+        token = _HG_PROFILE["token"]
+        expires = int(_HG_PROFILE.get("expires") or 0)
+        if not token or _HG_PROFILE["spent"]:
+            return
+        _HG_PROFILE["spent"] = True
+    _hg_profile_save(token, expires, True)
+
+
 def _hg_register() -> str:
     """注册一个 App 设备，拿到 profile_token（取流额度随设备走）。"""
+    # 单飞 + 入口复查：并发/连环调用只真正注册一次。
+    # 上游每注册一次会让旧令牌作废，连环注册等于自己踩自己（对齐 node 的 registerPromise）。
+    with _HG_REG_GUARD:
+        with _HG_LOCK:
+            alive = _HG_PROFILE["token"]
+            alive_exp = int(_HG_PROFILE.get("expires") or 0)
+            alive_spent = bool(_HG_PROFILE.get("spent"))
+        if alive and not alive_spent and alive_exp > int(time.time() * 1000) + 60000:
+            return alive
+        return _hg_register_inner()
+
+
+def _hg_register_inner() -> str:
     last: Exception | None = None
     for _ in range(2):
         try:
@@ -3887,7 +3995,8 @@ def _hg_register() -> str:
             with _HG_LOCK:
                 _HG_PROFILE["token"] = token
                 _HG_PROFILE["expires"] = expires
-            _hg_profile_save(token, expires)
+                _HG_PROFILE["spent"] = False
+            _hg_profile_save(token, expires, False)
             _play_log("register ok token=%s..." % token[:8])
             return token
         except _HgExpiredEnvelope as exc:
@@ -3899,19 +4008,24 @@ def _hg_register() -> str:
 
 
 def _hg_profile_token(force: bool = False) -> str:
-    """令牌可复用；只剩 60 秒寿命时提前换新的（node 源同样逻辑）。"""
+    """令牌可复用；但一旦被上游用掉（spent）就直接换新的，绝不再拿它去试探。
+
+    只剩 60 秒寿命时同样提前换新（node 源同样逻辑）。
+    """
     if force:
         _hg_profile_clear()
         return _hg_register()
     with _HG_LOCK:
         token = _HG_PROFILE["token"]
         expires = int(_HG_PROFILE.get("expires") or 0)
+        spent = bool(_HG_PROFILE.get("spent"))
     if not token:
-        token, expires = _hg_profile_load()
+        token, expires, spent = _hg_profile_load()
         with _HG_LOCK:
             _HG_PROFILE["token"] = token
             _HG_PROFILE["expires"] = expires
-    if token and not (expires and expires <= int(time.time() * 1000) + 60000):
+            _HG_PROFILE["spent"] = bool(spent)
+    if token and not spent and not (expires and expires <= int(time.time() * 1000) + 60000):
         return token
     if token:
         _hg_profile_clear(token)
@@ -3940,6 +4054,9 @@ def _hg_execute_signed(provider: str, action: str, payload: Mapping[str, Any]) -
                 if needs and _hg_auth_loss(status, body) and outer == 0:
                     retry = True
                     break
+                if needs and not _hg_auth_loss(status, body):
+                    # 上游吃掉了这枚令牌：立刻标记，别让下一集拿它去撞空响应
+                    _hg_mark_spent()
                 return status, body
             except _HgExpiredEnvelope as exc:
                 last = exc
@@ -3957,11 +4074,68 @@ def _hg_execute_signed(provider: str, action: str, payload: Mapping[str, Any]) -
     raise last or HongguoPluginError("签名请求失败")
 
 
-def _hg_content_type(video_id: str) -> int:
-    """漫剧是 1001，其余是 1（详情接口带回，缺省 1）。"""
+def _hg_content_type(video_id: str, hint: int = 0) -> int:
+    """content_type 必须**原样透传**（实测有 1 / 1001 / 1004 …）。
+
+    曾经这里加了 `ct in (1, 1001)` 白名单，把 1004（真人短剧）压成 1，
+    结果取流恒回 HTTP 200 + 0 字节，播放回落官网 10 秒试看 ——
+    "第一集能播、第二集只剩 10 秒"就是这么来的。node 源是 `hgPage(ct,1)` 直传。
+
+    hint 来自 play id 里内嵌的类型（对齐 node 的 hgPlayId），优先级最高。
+    """
+    try:
+        if hint and int(hint) > 0:
+            return int(hint)
+    except (TypeError, ValueError):
+        pass
     _ep_ct_load()
-    ct = _EP_CT.get(_text(video_id).split("@")[0].strip()) or 1
-    return ct if ct in (1, 1001) else 1
+    raw = _EP_CT.get(_text(video_id).split("@")[0].strip())
+    try:
+        ct = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return ct if ct > 0 else 1
+
+
+def _hg_play_id(vid: str, ct: int = 0) -> str:
+    """对齐 node 的 hgPlayId：把 {vid, content_type} 一起 base64 进播放 id。
+
+    这样播放时永远带着详情页给的原始类型，不依赖进程内的 content_type 表
+    （表在 App 重载后可能缺项，缺项就会退化成 1 → 1004 那类剧必空响应）。
+    """
+    payload = {"vid": _text(vid).strip()}
+    try:
+        value = int(ct or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value > 0:
+        payload["content_type"] = value
+    return base64.b64encode(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+
+
+def _hg_parse_play_id(text: str) -> tuple:
+    """解析播放 id。返回 (vid, content_type)。
+
+    node 的 play id 是 base64(JSON)；老版本的纯 vid（纯数字）也照旧兼容。
+    """
+    raw = _text(text).strip()
+    if not raw:
+        return "", 0
+    if "{" in raw or raw.endswith("=") or len(raw) > 20:
+        try:
+            blob = base64.b64decode(raw + "=" * (-len(raw) % 4))
+            obj = json.loads(blob.decode("utf-8"))
+            if isinstance(obj, Mapping) and _text(obj.get("vid")):
+                try:
+                    ct = int(obj.get("content_type") or 0)
+                except (TypeError, ValueError):
+                    ct = 0
+                return _text(obj.get("vid")).strip(), (ct if ct > 0 else 0)
+        except Exception:  # noqa: BLE001 - 不是 base64 JSON 就当纯 vid
+            pass
+    return raw, 0
 
 
 def _hg_play_ok(status: int, body: bytes) -> bool:
@@ -3977,14 +4151,20 @@ def _hg_play_ok(status: int, body: bytes) -> bool:
     return isinstance(entry, Mapping) and bool(entry.get("video_model"))
 
 
-def _hg_signed_play(video_id: str) -> dict[str, Any]:
-    """对齐 node 的 executeHongguoPlay：2 轮，判空就清令牌重取。"""
+def _hg_signed_play(video_id: str, ct_hint: int = 0) -> dict[str, Any]:
+    """对齐 node 的 executeHongguoPlay：判空就清令牌重取。
+
+    取流总次数被压到 3 次以内，且每次之间都有 `_hg_throttle` 的间隔 ——
+    以前是 1 秒内连打 4 次取流 + 3 次注册，直接把上游的间隔窗口撞死，
+    结果反而"第一集能播、第二集只剩 10 秒"。
+    """
     vid = _text(video_id).split("@")[0].strip()
     if not vid:
         raise HongguoPluginError("缺少 vid")
-    content_type = _hg_content_type(vid)
+    content_type = _hg_content_type(vid, ct_hint)
     last = ""
-    for _ in range(2):
+    # 第 1 发：_hg_execute_signed 内部已含"空响应/401 -> 换令牌再取"的两轮
+    for attempt in range(2):
         try:
             status, body = _hg_execute_signed(
                 "hongguo", "play", {"vid": vid, "content_type": content_type})
@@ -3993,6 +4173,7 @@ def _hg_signed_play(video_id: str) -> dict[str, Any]:
                 raise
             last = str(exc)
             _hg_profile_clear()
+            time.sleep(2.0)
             continue
         if _hg_play_ok(status, body):
             payload = json.loads(body.decode("utf-8", "replace"))
@@ -4005,11 +4186,15 @@ def _hg_signed_play(video_id: str) -> dict[str, Any]:
                     model = None
             if isinstance(model, Mapping):
                 _HG_FAIL_AT[0] = 0.0
-                _play_log("play %s -> signed ok (ct=%d)" % (vid, content_type))
+                _play_log("play %s -> signed ok (ct=%d, 第%d发)"
+                          % (vid, content_type, attempt + 1))
                 return dict(model)
-        last = "HTTP %s, %d 字节" % (status, len(body))
-        _play_log("play %s 空响应(%s) -> 换令牌重试" % (vid, last))
+        last = "HTTP %s, %d 字节" % (status, len(body or b""))
         _hg_profile_clear()
+        if attempt == 0:
+            # 空响应多半是令牌被前面几发用掉了：隔开一拍再换新令牌重取一次
+            _play_log("play %s 空响应(%s) -> 隔 2s 换令牌重取" % (vid, last))
+            time.sleep(2.0)
     _HG_FAIL_AT[0] = time.time()
     raise HongguoPluginError("签名取流失败(%s)" % (last or "unknown"))
 
@@ -4195,7 +4380,8 @@ def _hg_blocked(seconds: float = 300.0) -> bool:
 
 def _video_model(video_id: str, config: Mapping[str, Any],
                  attempts: int = _VIDEO_MODEL_ATTEMPTS,
-                 backoff: float = _VIDEO_MODEL_BACKOFF) -> dict[str, Any]:
+                 backoff: float = _VIDEO_MODEL_BACKOFF,
+                 ct_hint: int = 0) -> dict[str, Any]:
     key = _text(video_id).split("@")[0].strip()
     hit = _MODEL_CACHE.get(key)
     if hit and time.time() - hit[0] < _MODEL_CACHE_TTL:
@@ -4203,7 +4389,7 @@ def _video_model(video_id: str, config: Mapping[str, Any],
     last: Exception | None = None
     for attempt in range(max(1, attempts)):
         try:
-            model = _video_model_once(video_id, config)
+            model = _video_model_once(video_id, config, ct_hint)
         except Exception as exc:   # 网络抖动/JSON 异常都短退避重试一次
             last = exc
             if attempt + 1 < attempts:
@@ -4216,13 +4402,142 @@ def _video_model(video_id: str, config: Mapping[str, Any],
     raise HongguoPluginError("video_model 取流失败: %s" % (last or "unknown")) from last
 
 
-def _video_model_once(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
-    """签名服务优先；只有签名服务本身挂了才退回旧的直连实现。"""
+def _video_model_once(video_id: str, config: Mapping[str, Any],
+                      ct_hint: int = 0) -> dict[str, Any]:
+    """直连优先（每次换新设备号），签名服务只作兜底。
+
+    实测（2026-11-08，连续 6 集）：
+      - 同一设备号只有**第 1 次**取流有结果，之后恒回 HTTP 200 + 0 字节；
+      - 每集换一个本地随机设备号 → 6/6 全成功，间隔 1 秒即可；
+      - query 里带 iid 必被判风控（空 body），只带 device_id 才正常。
+    以前把它当"兜底"、让签名服务打头阵，等于每集都去烧那只有限的令牌，
+    于是"第一集能播、下一集只剩 10 秒"。直连的设备号是本地造出来的，
+    换号零成本、不用注册，所以拿它当主力才是稳的。
+    """
     try:
-        return _hg_signed_play(video_id)
+        return _video_model_direct(video_id, config, ct_hint)
+    except _VideoModelEmpty as exc:
+        _play_log("direct empty: %s -> signed" % str(exc)[:60])
+    except Exception as exc:  # noqa: BLE001 - 直连异常也退回签名
+        _play_log("direct fail: %s -> signed" % str(exc)[:60])
+    try:
+        return _hg_signed_play(video_id, ct_hint)
     except _HgSignUnavailable as exc:
         _play_log("signed unavailable: %s -> legacy" % str(exc)[:60])
     return _video_model_legacy(video_id, config)
+
+
+class _VideoModelEmpty(HongguoPluginError):
+    """直连返回 HTTP 200 + 0 字节（设备号额度用尽/被判风控）。"""
+
+
+def _video_model_direct(video_id: str, config: Mapping[str, Any],
+                        ct_hint: int = 0) -> dict[str, Any]:
+    """直连 multi_video_model，**每次都用全新设备号**（换号零成本）。"""
+    bare = _text(video_id).split("@")[0].strip()
+    if not bare:
+        raise HongguoPluginError("缺少 vid")
+    content_type = _hg_content_type(bare, ct_hint)
+    last = ""
+    for attempt in range(2):
+        device_id, install_id = _random_identity()
+        try:
+            _persist_identity(device_id, install_id)
+        except Exception:
+            pass
+        devices = _device_config({"device_id": device_id, "install_id": install_id})
+        # 注意：query 里绝不能出现 iid，上游见到就回空 body
+        params = {
+            "device_id": device_id,
+            "ac": "wifi", "channel": "update_64", "aid": "8662",
+            "app_name": "novelread", "version_code": "71332",
+            "version_name": "7.1.3.32", "device_platform": "android",
+            "os": "android", "ssmix": "a", "device_type": "25053RT47C",
+            "device_brand": "Redmi", "language": "zh", "os_api": "36",
+            "os_version": "16", "manifest_version_code": "71332",
+            "resolution": "1280*2772", "dpi": "520",
+            "update_version_code": "71332", "host_abi": "arm64-v8a",
+            "dragon_device_type": "phone", "pv_player": "71332",
+            "compliance_status": "0", "need_personal_recommend": "1",
+            "player_so_load": "1", "is_android_pad_screen": "0",
+        }
+        payload = {
+            "biz_param": {
+                "detail_page_version": 0, "device_level": 3,
+                "disable_digg_stat": False, "need_all_video_definition": True,
+                "need_mp4_align": False, "use_os_player": False,
+                "use_server_dns": False, "video_platform": 1024,
+            },
+            "mixed_video_id_map": {str(content_type): [bare]},
+        }
+        request_headers = {
+            "User-Agent": APP_UA,
+            "Accept": "application/json; charset=utf-8,application/x-protobuf",
+            "Content-Type": "application/json; charset=UTF-8",
+            "x-xs-from-web": "0",
+            "x-ss-req-ticket": str(int(time.time() * 1000)),
+            "x-tt-request-tag": "t=0;n=0",
+            "sdk-version": "2", "passport-sdk-version": "50561",
+            "x-vc-bdturing-sdk-version": "3.7.2.cn",
+        }
+        if devices.get("cookie"):
+            request_headers["Cookie"] = devices["cookie"]
+        if devices.get("x_tt_token"):
+            request_headers["x-tt-token"] = devices["x_tt_token"]
+        body = json.dumps(payload, ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")
+        try:
+            headers, url = _core_sixgod(VIDEO_URL, params, devices, payload,
+                                        request_headers)
+            response = _http().post(url, headers=headers, data=body, timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            last = "网络异常: %s" % exc
+            time.sleep(0.5)
+            continue
+        if response.status_code == 200 and response.content:
+            model = _model_from_response(response, bare)
+            if model:
+                _play_log("direct %s ok (ct=%d, 设备%s)"
+                          % (bare, content_type, device_id[:8]))
+                return model
+            last = "video_model 为空"
+        else:
+            last = "HTTP %s, %d 字节" % (response.status_code,
+                                         len(response.content or b""))
+        if attempt == 0:
+            time.sleep(0.6)
+    raise _VideoModelEmpty("直连取流失败(%s)" % (last or "unknown"))
+
+
+def _model_from_response(response: Any, bare: str) -> dict | None:
+    """从 multi_video_model 响应里挖出 video_model（新旧两种结构都认）。"""
+    try:
+        payload = _json_response(response)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    data = payload.get("data") or {}
+    if not isinstance(data, Mapping):
+        return None
+    raw_model: Any = data.get("video_model")
+    if raw_model is None:
+        entry: Any = data.get(bare)
+        if entry is None:
+            for value in data.values():
+                if isinstance(value, Mapping) and value.get("video_model"):
+                    entry = value
+                    break
+                if isinstance(value, list) and value and isinstance(value[0], Mapping):
+                    entry = value[0]
+                    break
+        raw_model = entry.get("video_model") if isinstance(entry, Mapping) else None
+    if isinstance(raw_model, str):
+        try:
+            raw_model = json.loads(raw_model)
+        except ValueError:
+            return None
+    return dict(raw_model) if isinstance(raw_model, Mapping) else None
 
 
 def _video_model_legacy(video_id: str, config: Mapping[str, Any]) -> dict[str, Any]:
@@ -5242,11 +5557,17 @@ class Spider(Spider):
             # 兜底: 本地 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
             meta, eps = _app_episode_detail(sid, config)
         if eps:
-            # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, vid)
+            # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, 播放id)。
+            # 播放 id 里带上该集真实的 content_type（对齐 node 的 hgPlayId），
+            # 否则进程重载后表里缺项会退化成 1，1004 那类剧取流必空。
             pairs = []
+            order = []
             for e in eps:
                 title, _, ep = str(e).partition("$")
-                pairs.append((title, ep.replace(EPISODE_PREFIX, "")))
+                vid = ep.replace(EPISODE_PREFIX, "")
+                order.append(vid)
+                pairs.append((title, _hg_play_id(vid, _EP_CT.get(vid) or 0)))
+            _remember_series(sid, order)
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
             # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
@@ -5273,7 +5594,22 @@ class Spider(Spider):
         s = p.get("seriesDetail") or {}
         vids = s.get("vid_list") or []
         actors = [str(x.get("nickname")) for x in (s.get("celebrities") or []) if isinstance(x, dict) and x.get("nickname")]
-        pairs = [("第%d集" % (i + 1), str(v)) for i, v in enumerate(vids)]
+        # 官网详情同样带 series 级 content_type，逐集记进表里，别让播放退化成 1
+        try:
+            series_ct = int(s.get("content_type") or 0)
+        except (TypeError, ValueError):
+            series_ct = 0
+        pairs = []
+        order = []
+        for i, v in enumerate(vids):
+            vid = str(v)
+            order.append(vid)
+            if series_ct > 0:
+                _EP_CT[vid] = series_ct
+            pairs.append(("第%d集" % (i + 1), _hg_play_id(vid, series_ct)))
+        if series_ct > 0:
+            _ep_ct_save()
+        _remember_series(sid, order)
         marked = [(title, vid) for title, vid in pairs]
         tiers = None if pairs else []
         play_from, play_url = _build_play(marked, tiers)
@@ -5286,7 +5622,7 @@ class Spider(Spider):
         if raw.startswith("hg_login"):
             return {"parse": 1, "jx": 0, "playUrl": "",
                     "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
-        vid = raw.split("@")[0].strip()
+        vid, ct_hint = _hg_parse_play_id(raw.split("@")[0].strip())
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
         # 正片只有一条路: App 取流(CENC) + 本机解密串流。官网
@@ -5307,7 +5643,7 @@ class Spider(Spider):
             tracks = []
             error = ""
             try:
-                model = _video_model(vid, self._cfg())
+                model = _video_model(vid, self._cfg(), ct_hint=ct_hint)
                 tracks = _cenc_tracks(model)
             except Exception as exc:
                 error = str(exc)[:70]
@@ -5324,7 +5660,12 @@ class Spider(Spider):
                     pairs.append(name)
                     pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
                 _play_log("play %s -> %d 档 (ct=%d)"
-                          % (vid, len(tracks), _hg_content_type(vid)))
+                          % (vid, len(tracks), _hg_content_type(vid, ct_hint)))
+                # 用户开始看这集了：趁这段时间把下一集在后台取好，切集就不撞窗口
+                try:
+                    _prefetch_next(vid, self._cfg())
+                except Exception:
+                    pass
                 return {"parse": 0, "jx": 0, "playUrl": "", "url": pairs,
                         "header": {"User-Agent": UA}}
             _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
