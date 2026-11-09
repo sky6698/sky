@@ -473,14 +473,39 @@ def _router_data(html: str) -> dict[str, Any]:
         raise HongguoPluginError("页面路由数据格式错误")
     return value
 
+def _decode_media_url(text: str) -> str:
+    """把媒体地址规范化：部分条目的 main_url 是 **base64 编码的 URL**。
+
+    实测有的剧返回 `aHR0cHM6Ly92OTUtYmpiLXJlYWRpbmctdmlkZW8ucXpub3ZlbHZvZC5jb20v…`，
+    直接丢给 requests 就是 `Invalid URL` → 本机串流回 502 → 播放器跳集/换线路。
+    这里统一解码，解不出 http(s) 就原样返回。
+    """
+    value = _text(text).strip()
+    if not value or value.startswith("http://") or value.startswith("https://"):
+        return value
+    if len(value) < 16:
+        return value
+    padded = value + "=" * (-len(value) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            decoded = decoder(padded).decode("utf-8", "ignore").strip()
+        except Exception:
+            continue
+        if decoded.startswith("http://") or decoded.startswith("https://"):
+            return decoded
+    return value
+
 def _media_url(item: Mapping[str, Any]) -> str:
-    return _first(
-        item.get("main_url"),
-        item.get("backup_url"),
-        item.get("backup_url_1"),
-        item.get("play_addr"),
-        item.get("url"),
-    )
+    """取可用的媒体地址（顺带解 base64，跳过解不出来的候选）。"""
+    for key in ("main_url", "backup_url", "backup_url_1", "play_addr", "url"):
+        raw = _text(item.get(key)).strip()
+        if not raw:
+            continue
+        fixed = _decode_media_url(raw)
+        if fixed.startswith("http://") or fixed.startswith("https://"):
+            return fixed
+    return _first(item.get("main_url"), item.get("backup_url"),
+                  item.get("backup_url_1"), item.get("play_addr"), item.get("url"))
 
 def _spade_value(item: Mapping[str, Any]) -> str:
     encrypt_info = item.get("encrypt_info")
@@ -1088,6 +1113,10 @@ def _c_build_plan(moov: bytes, base: int, kid: str, spade: str) -> dict:
 def _cenc_get(url: str, start: int, end: int) -> tuple:
     headers = dict(MEDIA_HEADERS)
     headers["Range"] = "bytes=%d-%d" % (start, end)
+    url = _decode_media_url(url)
+    if not url.startswith(("http://", "https://")):
+        # 别拿 base64/相对地址去撞 requests：那会白等 3 轮重试才报错
+        raise HongguoPluginError("媒体地址无效: %s" % url[:40])
     last: Exception | None = None
     for attempt in range(3):
         if attempt:
@@ -1185,13 +1214,46 @@ def _cenc_ctr(buffer: bytearray, base: int, key: bytes, iv: bytes,
     buffer[first - base : last - base] = plain[pad:]
 
 
-def _cenc_plan(src: str, kid: str, spade: str) -> dict:
-    """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
-    cache_key = "%s|%s" % (src, kid)
+_CENC_LOCKS: dict[str, Any] = {}
+_CENC_LOCKS_GUARD = threading.Lock()
+
+
+def _cenc_key_lock(key: str) -> Any:
+    """给每个 src 一把锁：播放器首帧会并发发 2~4 个 Range 请求，
+    没有单飞就会同时去拉 moov、重复解析上万个样本，起播慢且容易被 CDN 限速。"""
+    with _CENC_LOCKS_GUARD:
+        lock = _CENC_LOCKS.get(key)
+        if lock is None:
+            if len(_CENC_LOCKS) > 64:
+                _CENC_LOCKS.clear()
+            lock = threading.Lock()
+            _CENC_LOCKS[key] = lock
+        return lock
+
+
+def _cenc_cached(key: str) -> Any:
     with _CENC_LOCK:
-        hit = _CENC_PLANS.get(cache_key)
+        hit = _CENC_PLANS.get(key)
         if hit and time.time() - hit[0] < _CENC_TTL:
             return hit[1]
+    return None
+
+
+def _cenc_plan(src: str, kid: str, spade: str) -> dict:
+    """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
+    src = _decode_media_url(src)
+    cache_key = "%s|%s" % (src, kid)
+    hit = _cenc_cached(cache_key)
+    if hit is not None:
+        return hit
+    with _cenc_key_lock(cache_key):
+        hit = _cenc_cached(cache_key)      # 排队期间别的线程可能已建好
+        if hit is not None:
+            return hit
+        return _cenc_build_plan(src, kid, spade, cache_key)
+
+
+def _cenc_build_plan(src: str, kid: str, spade: str, cache_key: str) -> dict:
     probe, total = _cenc_get(src, 0, _CENC_PROBE - 1)
     if not total:
         raise HongguoPluginError("媒体总长度未知")
@@ -3626,6 +3688,11 @@ _MODEL_CACHE: dict[str, tuple] = {}
 # 缓存久一点: 每多打一次上游就多烧一个设备号, 且同集重复播放不该再请求
 _MODEL_CACHE_TTL = 900
 _MODEL_CACHE_MAX = 32
+# 分类/搜索列表缓存: 打开源和翻页会重复请求同一批数据, 短 TTL 足够省掉一半等待。
+_LIST_CACHE: dict[str, tuple] = {}
+_LIST_CACHE_TTL = 180
+_LIST_CACHE_MAX = 64
+_LIST_LOCK = threading.Lock()
 # 剧集表: 详情页把每部剧的 vid 顺序记下来, 播放时才能"边看这集边把下集取好"。
 # 上游对同一 IP 的取流有 3 秒级间隔窗口, 用户连播时必然踩到 ——
 # 提前在后台取好下集, 切集就是 0 毫秒命中缓存。
@@ -5220,13 +5287,8 @@ def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
 
 
 def _quality_lines() -> list:
-    """线路栏用的清晰度列表：[(显示名, 档位), ...]，从高到低。
-
-    名字前面带序号（`1·1080P`）是必须的：无名影视会按**线路名字符串**排序，
-    纯 `1080P/720P/…` 排完会变成 1080P、360P、480P、540P、720P。
-    """
-    return [("%d·%sP" % (index, tier), tier)
-            for index, (_, tier) in enumerate(QUALITY_TIERS, 1)]
+    """线路栏用的清晰度列表：[(显示名, 档位), ...]，从高到低。"""
+    return [("%sP" % tier, tier) for _, tier in QUALITY_TIERS]
 
 
 def _build_play(pairs: list, tiers: Any) -> tuple:
@@ -5912,16 +5974,33 @@ class Spider(Spider):
             signed["online_time"] = [online[0]]
         if gender:
             signed["gender"] = gender
+        # 本地直连优先（0.2~0.5s）：8788 签名链路每次都要先注册 profile_token
+        # （1~2s，还可能撞 IP 窗口），只在直连拿不到数据时才兜底。
+        cache_key = json.dumps(["cat", genre, page, sort, gender, theme, epoch, role, online],
+                               ensure_ascii=False, sort_keys=True)
+        hit = _LIST_CACHE.get(cache_key)
+        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
+            return hit[1]
         items = []
         try:
-            items = _hg_signed_category(genre, page, signed)
-        except Exception:
-            items = []
-        if not items:
             items = _app_category_list(genre, page, config, sort=sort, gender=gender,
                                        theme=theme, epoch=epoch, role=role,
                                        online_time=online)
-        return {"page": page, "pagecount": 9999, "limit": len(items), "total": 999999, "list": items}
+        except Exception:
+            items = []
+        if not items:
+            try:
+                items = _hg_signed_category(genre, page, signed)
+            except Exception:
+                items = []
+        result = {"page": page, "pagecount": 9999, "limit": len(items),
+                  "total": 999999, "list": items}
+        if items:
+            with _LIST_LOCK:
+                if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
+                    _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
+                _LIST_CACHE[cache_key] = (time.time(), result)
+        return result
 
     def searchContent(self, key, quick=False, pg="1"):
         try: page = max(1, int(pg))
@@ -5929,14 +6008,21 @@ class Spider(Spider):
         kw = _text(key)[:SEARCH_MAX_KEY]
         if not kw:
             return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
-        # 8788 签名搜索优先（TV 盒直连官网/上游常被拦）；服务不可用时回退官网搜索接口。
+        cache_key = json.dumps(["kw", kw, page], ensure_ascii=False)
+        hit = _LIST_CACHE.get(cache_key)
+        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
+            return hit[1]
+        # 直连搜索优先（官网接口 0.2~0.5s，无需令牌），8788 签名只作兜底。
         j = {}
         try:
-            j = _hg_signed_search(kw, page)
+            j = _search_api(kw, page)
         except Exception:
             j = {}
         if not (j.get("searchList")):
-            j = _search_api(kw, page)
+            try:
+                j = _hg_signed_search(kw, page)
+            except Exception:
+                j = {}
         rows = j.get("searchList") or []
         try: total = int(j.get("totalCount") or 0)
         except (TypeError, ValueError): total = 0
@@ -5956,8 +6042,14 @@ class Spider(Spider):
                 items = []
         else:
             pages = max(1, min(page, _SEARCH_PAGES.get(kw) or page))
-        return {"page": page, "pagecount": pages, "limit": len(items),
-                "total": total or len(items), "list": items}
+        result = {"page": page, "pagecount": pages, "limit": len(items),
+                  "total": total or len(items), "list": items}
+        if items:
+            with _LIST_LOCK:
+                if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
+                    _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
+                _LIST_CACHE[cache_key] = (time.time(), result)
+        return result
 
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
