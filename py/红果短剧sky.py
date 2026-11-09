@@ -4547,11 +4547,15 @@ def _hg_season_plan(sid: str, meta: Mapping, cur_vids: list) -> list:
 
 
 def _build_season_play(seasons: list, cur_sid: str = "") -> tuple:
-    """多季线路：一季一条，线路名「第一季/第二季…」。
+    """多季线路：一季一条。
 
-    顺序 = **当前这一季排第一** + 其余按季号从低到高。
-    壳默认选中第一条线路、默认落到它的第一集，所以从第二季点进来就是
-    第二季在第一条 → 点开直接播第二季，不会被顶回第一季。
+    ★ 两个坑都踩过，所以线路名这样定：
+    1. 壳（无名影视）会**按线路名重新排序**，不是按 vod_play_from 的先后。
+       「第一季」的「一」(U+4E00) 比「十」(U+5341) 小，于是点第十四季进来
+       默认却播第一季。→ 当前季加「★」(U+2605，码位比所有汉字都小)，
+       任何排序规则下都排第一。
+    2. 中文「第十二季」按字符串排会跑到「第二季」前面 → 其余季用零填充
+       「第02季」，排序就是季号顺序。
     """
     rows = [x for x in (seasons or []) if isinstance(x, Mapping)]
     cur_sid = _text(cur_sid).strip()
@@ -4567,11 +4571,17 @@ def _build_season_play(seasons: list, cur_sid: str = "") -> tuple:
         vids = [str(v) for v in (row.get("vids") or []) if str(v)]
         if not vids:
             continue
-        line = "第%s季" % _hg_cn(int(row.get("no") or 0) or 1)
+        try:
+            no = int(row.get("no") or 0)
+        except (TypeError, ValueError):
+            no = 0
+        no = no or 1
         if cur_sid and _text(row.get("sid")) == cur_sid:
-            line = line + " · 当前"
+            line = u"★第%d季" % no
+        else:
+            line = u"第%02d季" % no
         if line in names:
-            line = "%s%d" % (line, len(names) + 1)
+            line = "%s(%d)" % (line, len(names) + 1)
         cts = row.get("cts") if isinstance(row.get("cts"), Mapping) else {}
         parts = []
         for index, vid in enumerate(vids, 1):
@@ -5073,6 +5083,23 @@ def _height_of(meta: Mapping[str, Any]) -> int:
     return height if height > 0 else 0
 
 
+def _gear_height(value: Any) -> int:
+    """从 `gear_des_key` 里取分辨率。
+
+    形如 `0:MP4|1:encrypt|2:bytevc2|4:1080p|5:normal|...`，第 4 段就是清晰度。
+    少数 CDN 响应的 video_meta 是空的（没有 definition/vwidth），但这一段一定在，
+    所以它是比 video_meta 更稳的判据。
+    """
+    for part in _text(value).split("|"):
+        key, sep, val = part.partition(":")
+        if not sep or key.strip() != "4":
+            continue
+        matched = re.search(r"(2160|1440|1080|720|576|540|480|360)", val)
+        if matched:
+            return int(matched.group(1))
+    return 0
+
+
 def _cenc_tracks(model: Any) -> list:
     """从 video_model 收集所有可播放档位（对齐 node 的 hgVideos）。
 
@@ -5096,20 +5123,69 @@ def _cenc_tracks(model: Any) -> list:
         kid = _first(info.get("kid"), value.get("kid"))
         if src and spade and kid:
             meta = value.get("video_meta") if isinstance(value.get("video_meta"), Mapping) else {}
-            height = _height_of(meta)
+            height = _height_of(meta) or _gear_height(value.get("gear_des_key"))
             name = ("%dP" % height) if height else _first(
                 meta.get("definition"), meta.get("quality"), "红果")
             if src not in seen:
                 seen.add(src)
                 found.append((name, {"src": src, "kid": kid,
-                                     "spade": spade, "height": height}))
+                                     "spade": spade, "height": height,
+                                     "size": _int(meta.get("size")),
+                                     "bitrate": _int(meta.get("bitrate")),
+                                     "qtype": _int(value.get("quality_type"))}))
             return
         for item in value.values():
             walk(item)
 
     walk(model)
+    if found and all(not item.get("height") for _, item in found):
+        # 少数 CDN 响应整个 video_meta 是空的（没有 definition/vwidth），
+        # 此时不能靠字段定档 —— 而 video_list 的原顺序是 360→1080 **升序**，
+        # 照原顺序会变成"线路写 1080P、实际播 360p"。依次用
+        # 体积/码率、再退到 quality_type（1=1080、40=360，越小越清晰）排序。
+        ordered = sorted(found, key=lambda p: (int(p[1].get("size") or 0),
+                                              int(p[1].get("bitrate") or 0),
+                                              -int(p[1].get("qtype") or 0)),
+                         reverse=True)
+        rescaled = []
+        for index, (name, item) in enumerate(ordered):
+            tier = QUALITY_TIERS[index][1] if index < len(QUALITY_TIERS) else ""
+            if not tier:
+                rescaled.append((name or "档%d" % (index + 1), item))
+                continue
+            rescaled.append(("%sP" % tier, dict(item, height=int(tier))))
+        found = rescaled
     found.sort(key=lambda pair: pair[1]["height"], reverse=True)
     return found
+
+
+def _pick_track(tracks: list, want: str = "") -> tuple:
+    """按清晰度挑一档：精确命中优先，否则取最接近的（同距时取高的那档）。
+
+    tracks 已是按高度降序的 [(名字, item), ...]，want 是 `1080` 这种档位串。
+    """
+    if not tracks:
+        return "", {}
+    try:
+        target = int(want)
+    except (TypeError, ValueError):
+        target = 0
+    if target <= 0:
+        return tracks[0]
+    best = None
+    best_gap = -1
+    for name, item in tracks:
+        try:
+            height = int(item.get("height") or 0)
+        except (TypeError, ValueError):
+            height = 0
+        gap = abs(height - target)
+        if gap == 0:
+            return name, item
+        # 差距更小，或差距相同但这一档更高（宁可清晰一点也别糊）
+        if best is None or gap < best_gap or (gap == best_gap and height > int(best[1].get("height") or 0)):
+            best, best_gap = (name, item), gap
+    return best or tracks[0]
 
 
 def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
@@ -5143,13 +5219,24 @@ def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
     return tiers
 
 
+def _quality_lines() -> list:
+    """线路栏用的清晰度列表：[(显示名, 档位), ...]，从高到低。
+
+    名字前面带序号（`1·1080P`）是必须的：无名影视会按**线路名字符串**排序，
+    纯 `1080P/720P/…` 排完会变成 1080P、360P、480P、540P、720P。
+    """
+    return [("%d·%sP" % (index, tier), tier)
+            for index, (_, tier) in enumerate(QUALITY_TIERS, 1)]
+
+
 def _build_play(pairs: list, tiers: Any) -> tuple:
     """生成 vod_play_from / vod_play_url。
 
     pairs: [(标题, vid), ...]
-      tiers is None -> 单线路 "红果┃短剧"：播放时**一次取流**就带回全部清晰度，
+      tiers 非空    -> 每档一条线路（线路栏显示清晰度），播放 id 带 `@档位`，
+                       playerContent 只返回那一档地址。
+      tiers is None -> 单线路 "红果┃短剧"：播放时**一次取流**带回全部清晰度，
                        由 playerContent 以 url 数组形式给出（对齐内置 node 源）。
-      tiers 非空    -> 每档一条线路(旧方案，保留兼容)。
       空列表        -> 官网 360p 试看单线路。
     """
     if tiers is None:
@@ -5905,25 +5992,9 @@ class Spider(Spider):
             _remember_series(sid, order)
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
-            # 分季：同专辑的每一季各做一条线路，线路名「第一季/第二季…」，
-            # 顺序严格按季号从小到大（用户要求：显季按低到高排）。
-            seasons = []
-            try:
-                seasons = _hg_season_plan(sid, meta or {}, order)
-            except Exception as exc:
-                _play_log("season plan fail: %s" % str(exc)[:80])
-                seasons = []
-            if seasons:
-                play_from, play_url = _build_season_play(seasons, sid)
-                _play_log("season %s -> %d 季: %s"
-                          % (sid, len(seasons),
-                             "/".join("%s(%d集)" % ("第%s季" % _hg_cn(int(x.get("no") or 1)),
-                                                    len(x.get("vids") or []))
-                                      for x in seasons)))
-            else:
-                # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
-                # 详情页绝不预取, 上游额度按次卡死。
-                play_from, play_url = _build_play(marked, None)
+            # 线路栏显示清晰度（1·1080P / 2·720P / …），每档一条线路。
+            # 详情页绝不预取：一次取流就带回全部档位，真正请求只在播放那一刻发生。
+            play_from, play_url = _build_play(marked, _quality_lines() if marked else [])
             remarks = meta.get("remarks") or ""
             intro = meta.get("intro") or ""
             notes = []
@@ -5961,25 +6032,8 @@ class Spider(Spider):
             _ep_ct_save()
         _remember_series(sid, order)
         marked = [(title, vid) for title, vid in pairs]
-        tiers = None if pairs else []
-        # 官网兜底也带上分季（seriesDetail 里有 season_info.series_group_id）
-        _web_meta = {
-            "title": str(s.get("series_name") or ""),
-            "cover": str(s.get("series_cover") or ""),
-            "intro": str(s.get("series_intro") or ""),
-            "remarks": str(s.get("episode_right_text") or ""),
-            "actors": ",".join(actors),
-        }
-        _fill_season_meta(_web_meta, s)
-        season_rows = []
-        try:
-            season_rows = _hg_season_plan(sid, _web_meta, order)
-        except Exception:
-            season_rows = []
-        if season_rows:
-            play_from, play_url = _build_season_play(season_rows, sid)
-        else:
-            play_from, play_url = _build_play(marked, tiers)
+        # 线路栏显示清晰度（与 App 直连分支一致），不再分季
+        play_from, play_url = _build_play(marked, _quality_lines() if marked else [])
         remarks = str(s.get("episode_right_text") or "")
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
 
@@ -5989,7 +6043,12 @@ class Spider(Spider):
         if raw.startswith("hg_login"):
             return {"parse": 1, "jx": 0, "playUrl": "",
                     "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
-        vid, ct_hint = _hg_parse_play_id(raw.split("@")[0].strip())
+        # 播放 id 形如 base64({vid,content_type}) + "@1080"（后者是线路栏选的档位）
+        body, _, tier_hint = raw.partition("@")
+        tier_hint = tier_hint.strip()
+        if not tier_hint.isdigit():
+            tier_hint = ""
+        vid, ct_hint = _hg_parse_play_id(body.strip())
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
         # 正片只有一条路: App 取流(CENC) + 本机解密串流。官网
@@ -6016,6 +6075,26 @@ class Spider(Spider):
                 error = str(exc)[:70]
                 tracks = []
             if tracks:
+                # 用户开始看这集了：趁这段时间把下一集在后台取好，切集就不撞窗口
+                try:
+                    _prefetch_next(vid, self._cfg())
+                except Exception:
+                    pass
+                if tier_hint:
+                    # 线路栏选的是清晰度 → 只给这一档（命中不了的档位就退到最接近的）
+                    name, item = _pick_track(tracks, tier_hint)
+                    query = urlencode({
+                        "src": item.get("src") or "",
+                        "kid": item.get("kid") or "",
+                        "spade": item.get("spade") or "",
+                        "name": name,
+                    })
+                    _play_log("play %s -> %s 单档 %dP (ct=%d)"
+                              % (vid, name, int(item.get("height") or 0),
+                                 _hg_content_type(vid, ct_hint)))
+                    return {"parse": 0, "jx": 0, "playUrl": "",
+                            "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
+                            "header": {"User-Agent": UA}}
                 pairs = []
                 for name, item in tracks:
                     query = urlencode({
@@ -6028,11 +6107,6 @@ class Spider(Spider):
                     pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
                 _play_log("play %s -> %d 档 (ct=%d)"
                           % (vid, len(tracks), _hg_content_type(vid, ct_hint)))
-                # 用户开始看这集了：趁这段时间把下一集在后台取好，切集就不撞窗口
-                try:
-                    _prefetch_next(vid, self._cfg())
-                except Exception:
-                    pass
                 return {"parse": 0, "jx": 0, "playUrl": "", "url": pairs,
                         "header": {"User-Agent": UA}}
             _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
