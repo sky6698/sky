@@ -77,10 +77,22 @@ QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流
 #      360p(360x640) / 480p / 540p / 720p / 1080p(1080x1920), HEVC + CENC(AES-CTR)
 #   全 76 集均可取, 不区分免费/会员集。
 # 关键点: need_all_video_definition 必须放进 biz_param, 放顶层只回单档(720p)。
-# 端点必须用 multi_video_model/v1: 旧的 /novel/player/video_model/v1/ 已下线,
-# 现在恒定返回 HTTP 200 + Content-Length: 0(空 body), 不要回退到它。
+# ★ 2026-11-10 晚: `multi_video_model/v1/` 这条老路径已整体下线 ——
+#   无论什么设备号/版本号, 恒定回 HTTP 200 + 0 字节(实测 0/5);
+#   换成新版 `multi_video_model/player/v1` 后立刻恢复(实测 3/5、4/4、3/4,
+#   且同一个 vid 可以连续取流, 不再有"一个设备号一次"的额度)。
+#   依据: 开源客户端 hongguo-player v1.2.26(Go) 用的就是这条新路径。
 # 另一条硬约束: query 里绝不能带 iid, 只要带了(哪怕 iid==device_id), 上游同样回空 body。
-VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
+VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1"
+# 回空是偶发的(约 1/5), 换台机器重打一次就好 —— 一律用新路径, 老路径别碰。
+VIDEO_HOSTS = (
+    "api5-normal-sinfonlineb.fqnovel.com",
+    "api5-normal-sinfonlinea.fqnovel.com",
+    "api5-normal-sinfonlinec.fqnovel.com",
+    "api3-normal-sinfonlinea.fqnovel.com",
+    "api.fqnovel.com",
+)
+VIDEO_PATH = "/novel/player/multi_video_model/player/v1"
 API_HOST = "https://api5-normal-sinfonlineb.fqnovel.com"
 UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 APP_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
@@ -135,6 +147,34 @@ def _http():
     return _HTTP
 
 
+_HTTP_STATIC = None
+
+
+def _http_static():
+    """不带浏览器 UA 的连接池, 专抓官网 SSR。
+
+    ★ 官网 CDN 按 UA 分流: 浏览器 UA 走 SSR 回源(0.9~1.1s, 响应体 180~227KB 抖动),
+    非浏览器 UA 直接吃静态缓存(稳定 0.18~0.32s, 恒定 184KB)。
+    两版 loaderData 的正文数据完全一致, 只有 req.userAgent / uuid / 时间戳 /
+    libraConfig 开关这类元信息不同 —— 首页 homeSections 的 36 条、顺序、sid 全部相同。
+    所以抓 SSR 时故意不发浏览器 UA, 首页从 0.94s 稳定到 0.2s。
+    """
+    global _HTTP_STATIC
+    if _HTTP_STATIC is None:
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+            # 只摘掉 UA, 保留 Accept-Encoding(gzip/br) 等默认头, 否则响应体不压缩更慢
+            sess.headers.pop("User-Agent", None)
+            adapter = sess.adapters.get("https://")
+            if adapter is not None:
+                adapter.pool_maxsize = 16
+        except Exception:
+            pass
+        _HTTP_STATIC = sess
+    return _HTTP_STATIC
+
+
 def _public_media_url(video_id: str) -> str:
     vid = _text(video_id).split("@")[0].strip()
     return "%s/video/public/%s/%s.mp4" % (PUBLIC_SITE, vid, PUBLIC_QUALITY) if vid.isdigit() else ""
@@ -146,7 +186,7 @@ def _public_ok(url: str) -> bool:
         return False
     try:
         r = _http().head(url, headers={"User-Agent": UA, "Referer": PUBLIC_SITE + "/"},
-                         timeout=6, allow_redirects=False)
+                         timeout=2.5, allow_redirects=False)
         return r.status_code in (200, 206)
     except Exception:
         return False
@@ -473,14 +513,39 @@ def _router_data(html: str) -> dict[str, Any]:
         raise HongguoPluginError("页面路由数据格式错误")
     return value
 
+def _decode_media_url(text: str) -> str:
+    """把媒体地址规范化：部分条目的 main_url 是 **base64 编码的 URL**。
+
+    实测有的剧返回 `aHR0cHM6Ly92OTUtYmpiLXJlYWRpbmctdmlkZW8ucXpub3ZlbHZvZC5jb20v…`，
+    直接丢给 requests 就是 `Invalid URL` → 本机串流回 502 → 播放器跳集/换线路。
+    这里统一解码，解不出 http(s) 就原样返回。
+    """
+    value = _text(text).strip()
+    if not value or value.startswith("http://") or value.startswith("https://"):
+        return value
+    if len(value) < 16:
+        return value
+    padded = value + "=" * (-len(value) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            decoded = decoder(padded).decode("utf-8", "ignore").strip()
+        except Exception:
+            continue
+        if decoded.startswith("http://") or decoded.startswith("https://"):
+            return decoded
+    return value
+
 def _media_url(item: Mapping[str, Any]) -> str:
-    return _first(
-        item.get("main_url"),
-        item.get("backup_url"),
-        item.get("backup_url_1"),
-        item.get("play_addr"),
-        item.get("url"),
-    )
+    """取可用的媒体地址（顺带解 base64，跳过解不出来的候选）。"""
+    for key in ("main_url", "backup_url", "backup_url_1", "play_addr", "url"):
+        raw = _text(item.get(key)).strip()
+        if not raw:
+            continue
+        fixed = _decode_media_url(raw)
+        if fixed.startswith("http://") or fixed.startswith("https://"):
+            return fixed
+    return _first(item.get("main_url"), item.get("backup_url"),
+                  item.get("backup_url_1"), item.get("play_addr"), item.get("url"))
 
 def _spade_value(item: Mapping[str, Any]) -> str:
     encrypt_info = item.get("encrypt_info")
@@ -796,7 +861,9 @@ def _toplevel_boxes(buf: bytes) -> list[tuple[int, int, bytes]]:
 _CENC_CHUNK = 1 << 20
 _CENC_PROBE = 1 << 16
 _CENC_TTL = 900
-_CENC_MAX_PLANS = 6
+# 每档清晰度各有一份计划(按 src 区分), 5 档 × 附近几集很容易把 6 条挤爆,
+# 挤掉之后播放器一请求就得重新探 moov(1080P 要 1.2s)。放宽到 16 条。
+_CENC_MAX_PLANS = 16
 _CENC_PLANS: dict[str, tuple] = {}
 _CENC_LOCK = threading.RLock()
 
@@ -1088,6 +1155,10 @@ def _c_build_plan(moov: bytes, base: int, kid: str, spade: str) -> dict:
 def _cenc_get(url: str, start: int, end: int) -> tuple:
     headers = dict(MEDIA_HEADERS)
     headers["Range"] = "bytes=%d-%d" % (start, end)
+    url = _decode_media_url(url)
+    if not url.startswith(("http://", "https://")):
+        # 别拿 base64/相对地址去撞 requests：那会白等 3 轮重试才报错
+        raise HongguoPluginError("媒体地址无效: %s" % url[:40])
     last: Exception | None = None
     for attempt in range(3):
         if attempt:
@@ -1185,13 +1256,76 @@ def _cenc_ctr(buffer: bytearray, base: int, key: bytes, iv: bytes,
     buffer[first - base : last - base] = plain[pad:]
 
 
-def _cenc_plan(src: str, kid: str, spade: str) -> dict:
-    """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
-    cache_key = "%s|%s" % (src, kid)
+_CENC_LOCKS: dict[str, Any] = {}
+_CENC_LOCKS_GUARD = threading.Lock()
+
+
+def _cenc_key_lock(key: str) -> Any:
+    """给每个 src 一把锁：播放器首帧会并发发 2~4 个 Range 请求，
+    没有单飞就会同时去拉 moov、重复解析上万个样本，起播慢且容易被 CDN 限速。"""
+    with _CENC_LOCKS_GUARD:
+        lock = _CENC_LOCKS.get(key)
+        if lock is None:
+            if len(_CENC_LOCKS) > 64:
+                _CENC_LOCKS.clear()
+            lock = threading.Lock()
+            _CENC_LOCKS[key] = lock
+        return lock
+
+
+def _cenc_cached(key: str) -> Any:
     with _CENC_LOCK:
-        hit = _CENC_PLANS.get(cache_key)
+        hit = _CENC_PLANS.get(key)
         if hit and time.time() - hit[0] < _CENC_TTL:
             return hit[1]
+    return None
+
+
+def _cenc_plan(src: str, kid: str, spade: str) -> dict:
+    """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
+    src = _decode_media_url(src)
+    cache_key = "%s|%s" % (src, kid)
+    hit = _cenc_cached(cache_key)
+    if hit is not None:
+        return hit
+    with _cenc_key_lock(cache_key):
+        hit = _cenc_cached(cache_key)      # 排队期间别的线程可能已建好
+        if hit is not None:
+            return hit
+        return _cenc_build_plan(src, kid, spade, cache_key)
+
+
+def _warm_plan(item: Mapping[str, Any]) -> None:
+    """后台先把这档的 CENC 计划建好。
+
+    实测（1080P 一集 10MB / 8640 样本）：播放器第一次来要 /hg.mp4 时，
+    `_cenc_plan` 要探 64KB + 再把尾部 moov 拉全，整整 1.2s（720P 也 0.5s），
+    这段时间播放器只能黑屏干等 —— 这就是"起播慢"的主因之一。
+    playerContent 本来已经花了 0.8~2s 取流，顺手在后台把计划建掉，
+    播放器真正发请求时直接命中缓存（实测首包 0.14s）。
+    """
+    if not isinstance(item, Mapping):
+        return
+    src = _decode_media_url(item.get("src") or "")
+    if not src:
+        return
+    kid = _text(item.get("kid"))
+    spade = _text(item.get("spade"))
+    if not spade:
+        return
+    if src and _cenc_cached("%s|%s" % (src, kid)) is not None:
+        return
+
+    def worker() -> None:
+        try:
+            _cenc_plan(src, kid, spade)
+        except Exception as exc:  # noqa: BLE001 - 预热失败不影响播放链路
+            _play_log("warm plan skip %s" % str(exc)[:50])
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _cenc_build_plan(src: str, kid: str, spade: str, cache_key: str) -> dict:
     probe, total = _cenc_get(src, 0, _CENC_PROBE - 1)
     if not total:
         raise HongguoPluginError("媒体总长度未知")
@@ -3616,6 +3750,9 @@ def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
 # 所以重试分两类: 空 body 走"换设备号", 其余(网络抖动/5xx)走短退避。
 _VIDEO_MODEL_ATTEMPTS = 1        # 签名层内部已按轮次重试, 外层再叠一轮会让播放器干等
 _VIDEO_MODEL_BACKOFF = 0.4
+# 一次 playerContent 里"取流"允许花的时间(秒)。超过就不再试旧实现,
+# 直接失败让播放器走兜底/让用户重试 —— 否则黑屏时间不可控。
+_START_BUDGET = 5.0
 _VIDEO_MODEL_ROTATIONS = 3      # 单次取流最多换几次设备号
 # 判空后的等待序列: 上游按"短时间内的取流次数"记冷却, 立刻重发只会继续回空,
 # 所以换号后按递增间隔耐心等(整个播放最多多等 ~26s, 但换来的是整集而不是 10 秒试看)。
@@ -3626,6 +3763,171 @@ _MODEL_CACHE: dict[str, tuple] = {}
 # 缓存久一点: 每多打一次上游就多烧一个设备号, 且同集重复播放不该再请求
 _MODEL_CACHE_TTL = 900
 _MODEL_CACHE_MAX = 32
+# 分类/搜索列表缓存: 打开源和翻页会重复请求同一批数据, 短 TTL 足够省掉一半等待。
+_LIST_CACHE: dict[str, tuple] = {}
+_LIST_CACHE_TTL = 180
+_LIST_CACHE_MAX = 64
+_LIST_LOCK = threading.Lock()
+# ★每页条数: 上游 landpage 的 limit 实测 18→200 耗时几乎不变(0.5~0.7s, 瓶颈在查询不在响应体),
+# 直接要 36 条 —— 一屏内容翻倍, 用户实际翻页次数减半, 体感比"每次少拿一点"快得多。
+_LIST_PAGE_SIZE = 36
+# ★同 key 在途请求合并(singleflight): 预取线程与用户请求撞车时只打一次上游。
+_LIST_INFLIGHT: dict[str, list] = {}
+_LIST_INFLIGHT_LOCK = threading.Lock()
+# ★翻页预取: 拿到第 N 页后后台把 N+1 页也取好, 用户点"下一页"就是 0 毫秒。
+_LIST_PREFETCHING: set = set()
+_LIST_PREFETCH_LOCK = threading.Lock()
+
+
+def _list_cache_get(key):
+    with _LIST_LOCK:
+        hit = _LIST_CACHE.get(key)
+        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
+            return hit[1]
+    return None
+
+
+def _list_cache_put(key, result):
+    if result is None:
+        return
+    with _LIST_LOCK:
+        if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
+            _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
+        _LIST_CACHE[key] = (time.time(), result)
+
+
+def _list_single(key, producer, wait=20.0):
+    """同 key 并发只打一次上游：在途时后来者直接等第一批结果。
+
+    预取线程和用户请求很容易在同一个 key 上撞车，不合并的话就是双倍上游请求、
+    双倍风控风险，而且等的一方还是要等满一个 RTT。
+    """
+    while True:
+        with _LIST_INFLIGHT_LOCK:
+            slot = _LIST_INFLIGHT.get(key)
+            owner = slot is None
+            if owner:
+                slot = [threading.Event(), None]
+                _LIST_INFLIGHT[key] = slot
+        if not owner:
+            slot[0].wait(wait)
+            if slot[1] is not None:
+                return slot[1]
+            # 占位的那一方失败了 -> 自己接手再来一次
+            with _LIST_INFLIGHT_LOCK:
+                if _LIST_INFLIGHT.get(key) is slot:
+                    _LIST_INFLIGHT.pop(key, None)
+            continue
+        try:
+            result = producer()
+        except Exception:
+            with _LIST_INFLIGHT_LOCK:
+                _LIST_INFLIGHT.pop(key, None)
+            slot[0].set()
+            raise
+        slot[1] = result
+        with _LIST_INFLIGHT_LOCK:
+            _LIST_INFLIGHT.pop(key, None)
+        slot[0].set()
+        return result
+
+
+def _prefetch_list_page(key, producer, delay=0.25):
+    """后台把下一页取好（命中缓存则跳过），用户点「下一页」就是 0 毫秒。
+
+    和播放的「预取下一集」同一思路：把 RTT 藏在用户翻页/选片的时间里。
+    """
+    with _LIST_PREFETCH_LOCK:
+        if key in _LIST_PREFETCHING:
+            return
+        _LIST_PREFETCHING.add(key)
+
+    def run():
+        try:
+            if delay:
+                time.sleep(delay)
+            if _list_cache_get(key) is None:
+                _list_cache_put(key, _list_single(key, producer))
+        except Exception:
+            pass
+        finally:
+            with _LIST_PREFETCH_LOCK:
+                _LIST_PREFETCHING.discard(key)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _cat_cache_key(genre, page, sort, gender, theme, epoch, role, online):
+    """分类页缓存键：categoryContent 与首页预热必须算出同一个 key，否则预热白做。"""
+    return json.dumps(["cat", genre, page, sort, gender, theme, epoch, role, online],
+                      ensure_ascii=False, sort_keys=True)
+
+
+def _rank_cache_key(board, page):
+    """榜单缓存键（同上：_rank_category 与 _warm_ranks 必须一致）。"""
+    return json.dumps(["rank", board, page], ensure_ascii=False)
+
+
+_CONN_WARMED = [False]
+_CONN_WARM_LOCK = threading.Lock()
+
+
+def _warm_conn():
+    """后台先把官网 / 上游的 TLS 连接建立好。
+
+    冷启动的第一次请求要现做 DNS + TLS 握手（0.2~0.4s，网络差时 1s+），
+    而 bridge 在 load 模块之后、home 之前还有一小段空档，正好拿来握手。
+    """
+    with _CONN_WARM_LOCK:
+        if _CONN_WARMED[0]:
+            return
+        _CONN_WARMED[0] = True
+
+    def run():
+        # 官网首页走 _http_static(无浏览器 UA), 这个连接才是首页真正要用的
+        try:
+            _http_static().head(SITE + "/", timeout=6)
+        except Exception:
+            pass
+        for url in (SITE + "/", API_HOST + "/"):
+            try:
+                _http().head(url, headers={"User-Agent": UA}, timeout=6)
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# 官网首页 SSR 的「热播」区块：一个请求 0.2~0.3s 就能铺满首页。
+# 打开源时壳会先要首页，过去这里的兜底是「拿第一个分类再拉一页」——
+# 那一下要多花 0.8s（最新排序是所有排序里最慢的），是「打开源慢」的主因。
+_HOME_SSR_TTL = 120
+_HOME_SSR_STATE: list = []
+_HOME_SSR_LOCK = threading.Lock()
+
+
+def _home_hot_list():
+    with _HOME_SSR_LOCK:
+        if _HOME_SSR_STATE and time.time() - _HOME_SSR_STATE[0] < _HOME_SSR_TTL:
+            return list(_HOME_SSR_STATE[1])
+    rows, seen = [], set()
+    try:
+        page = ((_data_static(SITE + "/").get("loaderData") or {}).get("page") or {})
+        for sec in (page.get("homeSections") or []):
+            for x in (sec.get("video_list") or []):
+                sid = _text(x.get("series_id"))
+                if not sid or sid in seen:
+                    continue
+                seen.add(sid)
+                item = _item(x)
+                if item.get("vod_id"):
+                    rows.append(item)
+    except Exception:
+        rows = []
+    if rows:
+        with _HOME_SSR_LOCK:
+            _HOME_SSR_STATE[:] = [time.time(), rows]
+    return list(rows)
 # 剧集表: 详情页把每部剧的 vid 顺序记下来, 播放时才能"边看这集边把下集取好"。
 # 上游对同一 IP 的取流有 3 秒级间隔窗口, 用户连播时必然踩到 ——
 # 提前在后台取好下集, 切集就是 0 毫秒命中缓存。
@@ -3633,6 +3935,11 @@ _SERIES_EPS: dict[str, list] = {}
 _SERIES_LOCK = threading.Lock()
 _PREFETCHING: set = set()
 _PREFETCH_DELAY = 4.0
+# 预取下一集 = 每看一集多打一次取流。上游对同 IP 的取流窗口很窄，多出来的这一发
+# 经常把"下一集真正开播"的那一次挤成 HTTP 200 + 空 body，于是下一集起播要等
+# 十几秒、最后还回落 360p 试看（实测连播 5 集里 3 集是这样）。
+# 起播稳定 > 切集那点缓存收益，默认关闭；需要时可临时改回 True。
+_PREFETCH_ENABLED = True
 
 
 def _remember_series(sid: str, vids: list) -> None:
@@ -3659,6 +3966,8 @@ def _series_neighbour(vid: str) -> str:
 
 def _prefetch_next(vid: str, config: Mapping[str, Any]) -> None:
     """后台把下一集的 video_model 先取回来（用户还在看这一集，时间充裕）。"""
+    if not _PREFETCH_ENABLED:
+        return
     target = _series_neighbour(vid)
     if not target:
         return
@@ -3706,6 +4015,9 @@ def _prefetch_next(vid: str, config: Mapping[str, Any]) -> None:
 #   别把配额和冷却都浪费在无谓重试上。
 HG_SIGN_API = "http://211.101.237.42:8788"
 HG_SIGN_CLIENT = "java-client"
+# 一次取流允许花的总时长(秒)。每次"换令牌"都要重新注册设备(约 1.5s),
+# 不设预算时实测会滚到 17~19s, 用户看到的就是"点开半天不动"。
+_SIGNED_PLAY_BUDGET = 4.0
 HG_SIGN_SECRET = "7683cfa39c6fc5e700b34ffc022eea016a85c6ff641b70cc1c9f1bd09b0b6f92"
 HG_PROFILE_FILE = "hongguo_profile.json"
 HG_SIGN_TIMEOUT = 10
@@ -3714,6 +4026,16 @@ HG_PLAY_WAITS = (0.0, 3.0)
 _HG_PROFILE = {"token": "", "expires": 0, "spent": False}
 _HG_LOCK = threading.RLock()
 _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详情页提示）
+# 直连的健康度：3 发都回空才算"直连坏了"，熔断只是防止每集白等 0.5s。
+# 2026-11-10 晚起新路径基本不再整段失效，所以冷却从 180s 缩到 20s。
+_DIRECT_FAIL_AT = [0.0]
+_DIRECT_COOLDOWN = 20.0
+
+
+def _direct_healthy() -> bool:
+    at = _DIRECT_FAIL_AT[0]
+    return not at or (time.time() - at) > _DIRECT_COOLDOWN
+
 _EP_CT: dict[str, int] = {}      # vid -> content_type（详情接口带回来，播放时透传）
 _EP_CT_FILE = "hongguo_ct.json"  # 落盘：宿主重载进程后仍知道哪集是漫剧(1001)
 _EP_CT_READY = [False]
@@ -4032,15 +4354,25 @@ def _hg_profile_token(force: bool = False) -> str:
     return _hg_register()
 
 
-def _hg_execute_signed(provider: str, action: str, payload: Mapping[str, Any]) -> tuple:
-    """对齐 node 的 hgSigner.execute：判空/401 就换令牌重来，最多 2 轮 × 2 次。"""
+def _hg_execute_signed(provider: str, action: str, payload: Mapping[str, Any],
+                       deadline: float = 0.0) -> tuple:
+    """对齐 node 的 hgSigner.execute：判空/401 就换令牌重来，最多 2 轮 × 2 次。
+
+    deadline（绝对时间戳）非 0 时，每轮/每次执行前都先看表：到点就走人。
+    取流链路的重试组合起来能滚到十几秒，光靠外层判超时是拦不住的
+    （一轮内部自带 2 次注册，一次注册 1.5s）。
+    """
     needs = provider in ("hongguo", "hongguobook")
     rounds = 2 if needs else 1
     last: Exception | None = None
     for outer in range(rounds):
+        if deadline and time.time() > deadline:
+            raise last or HongguoPluginError("签名请求超时")
         token = _hg_profile_token() if needs else ""
         retry = False
         for _ in range(2):
+            if deadline and time.time() > deadline:
+                raise last or HongguoPluginError("签名请求超时")
             try:
                 body_in = dict(payload or {})
                 if needs:
@@ -4152,28 +4484,36 @@ def _hg_play_ok(status: int, body: bytes) -> bool:
 
 
 def _hg_signed_play(video_id: str, ct_hint: int = 0) -> dict[str, Any]:
-    """对齐 node 的 executeHongguoPlay：判空就清令牌重取。
+    """对齐 node 的 executeHongguoPlay，但**最多只打 1 发取流**。
 
-    取流总次数被压到 3 次以内，且每次之间都有 `_hg_throttle` 的间隔 ——
-    以前是 1 秒内连打 4 次取流 + 3 次注册，直接把上游的间隔窗口撞死，
-    结果反而"第一集能播、第二集只剩 10 秒"。
+    2026-11-10 实测：上游把"取流"压到了「每条 IP 每分钟左右只放一次」——
+    上一发成功后紧跟着换新令牌再取，一样回 HTTP 200 + 0 字节。
+    旧实现为此叠了外层 2 轮 × 内层 2 轮重试，一次起播能滚到 17~19 秒黑屏，
+    最后还是回落 360p 试看。现在一次空就直接失败，让播放器尽快走兜底。
     """
     vid = _text(video_id).split("@")[0].strip()
     if not vid:
         raise HongguoPluginError("缺少 vid")
     content_type = _hg_content_type(vid, ct_hint)
     last = ""
+    started = time.time()
     # 第 1 发：_hg_execute_signed 内部已含"空响应/401 -> 换令牌再取"的两轮
     for attempt in range(2):
+        if attempt and time.time() - started > _SIGNED_PLAY_BUDGET:
+            # 已经烧了太久: 继续换令牌只会让播放器黑屏更久(实测能到 19s),
+            # 快速失败让壳去走兜底/重试更划算
+            _play_log("play %s 超预算(%.1fs), 停止重试" % (vid, time.time() - started))
+            break
         try:
             status, body = _hg_execute_signed(
-                "hongguo", "play", {"vid": vid, "content_type": content_type})
+                "hongguo", "play", {"vid": vid, "content_type": content_type},
+                deadline=started + _SIGNED_PLAY_BUDGET)
         except Exception as exc:
             if not _hg_is_profile_err(exc):
                 raise
             last = str(exc)
             _hg_profile_clear()
-            time.sleep(2.0)
+            time.sleep(0.6)
             continue
         if _hg_play_ok(status, body):
             payload = json.loads(body.decode("utf-8", "replace"))
@@ -4191,10 +4531,11 @@ def _hg_signed_play(video_id: str, ct_hint: int = 0) -> dict[str, Any]:
                 return dict(model)
         last = "HTTP %s, %d 字节" % (status, len(body or b""))
         _hg_profile_clear()
-        if attempt == 0:
-            # 空响应多半是令牌被前面几发用掉了：隔开一拍再换新令牌重取一次
-            _play_log("play %s 空响应(%s) -> 隔 2s 换令牌重取" % (vid, last))
-            time.sleep(2.0)
+        # 200 + 空 body = 上游对这条 IP 的短时冷却（实测：同一枚令牌、刚注册的新令牌，
+        # 紧跟其后全部回空；隔 40~60s 再取就正常）。这时候再撞一发只会把冷却拖长，
+        # 还让播放器多黑屏 3~5s，所以第一次空就收手，交给壳走兜底/让用户重试。
+        _play_log("play %s 空响(%s) -> 直接失败(取流冷却期)" % (vid, last))
+        break
     _HG_FAIL_AT[0] = time.time()
     raise HongguoPluginError("签名取流失败(%s)" % (last or "unknown"))
 
@@ -4225,8 +4566,8 @@ def _hg_signed_category(genre: str, page: int,
     except (TypeError, ValueError):
         page = 1
     j = _hg_data("category", {
-        "scene": genre, "page": page, "offset": (page - 1) * 18,
-        "limit": 18, "session_id": "",
+        "scene": genre, "page": page, "offset": (page - 1) * _LIST_PAGE_SIZE,
+        "limit": _LIST_PAGE_SIZE, "session_id": "",
         "filters": {k: v for k, v in dict(filters or {}).items() if v},
     })
     out = []
@@ -4257,6 +4598,346 @@ def _hg_signed_category(genre: str, page: int,
     return out
 
 
+# ===================== 分季（显季） =====================
+# 红果的连续剧会把每一季做成一个独立的 series_id，但它们在同一个
+# 「专辑」下（详情里的 related_album_id / 官网的 season_info.series_group_id），
+# 剧名则形如「某某剧第二季」。默认点进来只看得到当前那一季，
+# 分季就是把同专辑的每一季各做成一条线路，按季号从低到高排。
+_HG_SEASON_RE = re.compile(u"第\\s*([0-9]{1,3}|[一二三四五六七八九十]{1,3})\\s*[季部]")
+_HG_CN_NUM = u"零一二三四五六七八九十"
+_SEASON_CACHE: dict = {}          # album_id -> (ts, seasons)
+_SEASON_CACHE_TTL = 1800          # 内存 30 分钟
+_SEASON_DISK_TTL = 12 * 3600      # 磁盘 12 小时
+_SEASON_LOCK = threading.Lock()
+SEASON_FILE = "hongguo_seasons.json"
+
+
+def _hg_cn(n) -> str:
+    """数字转中文（季号命名用）。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    if n <= 10:
+        return _HG_CN_NUM[n]
+    if n < 20:
+        return u"十" + _HG_CN_NUM[n % 10]
+    if n < 100:
+        return _HG_CN_NUM[n // 10] + u"十" + (_HG_CN_NUM[n % 10] if n % 10 else u"")
+    return str(n)
+
+
+def _hg_season_no(name) -> int:
+    """从剧名解析季号：「第二季」->2，「第3部」->3，解析不到返回 0。"""
+    match = _HG_SEASON_RE.search(_text(name))
+    if not match:
+        return 0
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    if token == u"十":
+        return 10
+    if token.startswith(u"十"):
+        return 10 + (_HG_CN_NUM.index(token[1]) if len(token) > 1 else 0)
+    if u"十" in token:
+        head, _, tail = token.partition(u"十")
+        return (_HG_CN_NUM.index(head) * 10 if head in _HG_CN_NUM else 0) + (
+            _HG_CN_NUM.index(tail) if tail in _HG_CN_NUM else 0)
+    return _HG_CN_NUM.index(token) if token in _HG_CN_NUM else 0
+
+
+def _hg_base_name(name) -> str:
+    """去掉季号后的基名，用于站内搜索其它季。"""
+    return _HG_SEASON_RE.sub(u"", _text(name)).strip(u"：:·-—_ 　")
+
+
+def _fill_season_meta(meta: dict, video_data: Mapping) -> None:
+    """把「季号 + 专辑 id」写进 meta。两条详情通道(App 直连 / 8788 签名)都带这两个字段。"""
+    if not isinstance(meta, dict) or not isinstance(video_data, Mapping):
+        return
+    album = _text(video_data.get("related_album_id"))
+    if not album:
+        info = video_data.get("season_info")
+        if isinstance(info, Mapping):
+            album = _text(info.get("series_group_id"))
+    if album:
+        meta["album_id"] = album
+    try:
+        index = int(video_data.get("season_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if index > 0:
+        meta["season_no"] = index
+
+
+def _season_disk_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, SEASON_FILE)
+
+
+def _season_disk_load() -> dict:
+    try:
+        with open(_season_disk_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _season_disk_save(data: dict) -> None:
+    try:
+        if len(data) > 40:
+            # 只留最新的 20 组，避免缓存文件无限长
+            keys = sorted(data, key=lambda k: float((data.get(k) or {}).get("ts") or 0))
+            for key in keys[: len(data) - 20]:
+                data.pop(key, None)
+        with open(_season_disk_path(), "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _hg_search_candidates(keyword, pages=1) -> list:
+    """站内搜索候选 [(series_id, 剧名), ...]，只用于分季，失败返回 []。"""
+    out = []
+    seen = set()
+    try:
+        for page in range(1, max(1, int(pages)) + 1):
+            data = _search_api(keyword, page) or {}
+            for item in (data.get("searchList") or []):
+                if not isinstance(item, Mapping):
+                    continue
+                vd = item.get("video_data") if isinstance(item.get("video_data"), Mapping) else {}
+                csid = _text(vd.get("series_id") or item.get("series_id"))
+                if not csid.isdigit() or csid in seen:
+                    continue
+                seen.add(csid)
+                out.append((csid, _text(item.get("name") or vd.get("series_title"))))
+            if not data.get("hasMore"):
+                break
+    except Exception:
+        pass
+    return out
+
+
+def _season_fetch(sid: str) -> dict:
+    """拉一季的详情（独立设备号），返回 {sid,no,title,vids,ct,...}，失败 None。
+
+    只打详情接口，不碰取流接口，所以不消耗播放额度；每季用新设备号，
+    避免同一设备短时间内连续打同一个后端。
+    """
+    try:
+        did, iid = _random_identity()
+        config = _device_config({"device_id": did, "install_id": iid})
+        meta, eps = _app_episode_detail(sid, config)
+        if not eps:
+            return None
+        vids = []
+        cts = {}
+        for item in eps:
+            _, _, ep = str(item).partition("$")
+            vid = ep.replace(EPISODE_PREFIX, "")
+            if not vid:
+                continue
+            vids.append(vid)
+            cts[vid] = _EP_CT.get(vid) or 0
+        if not vids:
+            return None
+        return {
+            "sid": _text(sid),
+            "no": int(meta.get("season_no") or 0) if isinstance(meta, Mapping) else 0,
+            "title": _text((meta or {}).get("title")),
+            "vids": vids,
+            "cts": cts,
+            "ct": cts.get(vids[0]) or 0,
+            "album": _text((meta or {}).get("album_id")),
+            "cover": _text((meta or {}).get("cover")),
+            "intro": _text((meta or {}).get("intro")),
+            "actors": _text((meta or {}).get("actors")),
+            "remarks": _text((meta or {}).get("remarks")),
+        }
+    except Exception:
+        return None
+
+
+def _hg_season_plan(sid: str, meta: Mapping, cur_vids: list) -> list:
+    """算出同专辑的各季，**按季号从低到高**返回 [{no,sid,title,vids,ct,...}, ...]。
+
+    单季剧返回 []（调用方沿用原来的单线路逻辑）。结果内存 + 磁盘双缓存，
+    二次进入同一部剧零请求。
+    """
+    meta = meta or {}
+    album = _text(meta.get("album_id"))
+    sid = _text(sid).strip()
+    cur_vids = [str(v) for v in (cur_vids or []) if str(v)]
+    if not album or not sid.isdigit() or not cur_vids:
+        return []
+
+    with _SEASON_LOCK:
+        hit = _SEASON_CACHE.get(album)
+    if hit and time.time() - hit[0] < _SEASON_CACHE_TTL:
+        return hit[1]
+    try:
+        disk = _season_disk_load()
+        cached = disk.get(album)
+        if isinstance(cached, Mapping) and time.time() - float(cached.get("ts") or 0) < _SEASON_DISK_TTL:
+            seasons = [x for x in (cached.get("seasons") or []) if isinstance(x, Mapping) and x.get("vids")]
+            if seasons:
+                seasons.sort(key=lambda x: (int(x.get("no") or 0) or 1))
+                with _SEASON_LOCK:
+                    _SEASON_CACHE[album] = (time.time(), seasons)
+                return seasons
+    except Exception:
+        pass
+
+    base = _hg_base_name(meta.get("title"))
+    if not base:
+        return []
+
+    cur_no = 0
+    try:
+        cur_no = int(meta.get("season_no") or 0)
+    except (TypeError, ValueError):
+        cur_no = 0
+    cur_no = cur_no or max(1, _hg_season_no(meta.get("title")) or 1)
+
+    known = {cur_no: sid}
+    for csid, name in _hg_search_candidates(base, 1):
+        no = _hg_season_no(name)
+        if not no and _hg_base_name(name).strip() == base.strip():
+            # 第一季的剧名就是基名本身（不带「第X季」），按第 1 季收下
+            no = 1
+        if no and no not in known and csid != sid:
+            known[no] = csid
+
+    # 缺季定向补齐：基名搜索第 1 页未必覆盖到所有季（实测第五季常漏第一季）
+    top = max(known) if known else 1
+    missing = [n for n in range(1, top + 2) if n not in known]
+    if missing and top >= 2:
+        for no in missing[:3]:
+            for csid, name in _hg_search_candidates("%s第%s季" % (base, _hg_cn(no)), 1):
+                if _hg_season_no(name) == no and csid not in known.values():
+                    known[no] = csid
+                    break
+
+    seasons = [{
+        "no": cur_no, "sid": sid, "title": _text(meta.get("title")), "vids": cur_vids,
+        "cts": {}, "ct": _EP_CT.get(cur_vids[0]) if cur_vids else 0,
+        "album": album, "cover": _text(meta.get("cover")),
+        "intro": _text(meta.get("intro")), "actors": _text(meta.get("actors")),
+        "remarks": _text(meta.get("remarks")),
+    }]
+    todo = [(no, csid) for no, csid in known.items() if csid != sid]
+    if todo:
+        pool = None
+        try:
+            import concurrent.futures as _cf
+            pool = _cf.ThreadPoolExecutor(max_workers=min(4, len(todo)))
+            futures = {pool.submit(_season_fetch, csid): no for no, csid in todo}
+            deadline = time.time() + 8.0
+            for future in _cf.as_completed(list(futures), timeout=max(0.5, deadline - time.time())):
+                no = futures.get(future)
+                try:
+                    row = future.result()
+                except Exception:
+                    row = None
+                if not row or not row.get("vids"):
+                    continue
+                # 专辑 id 必须一致，否则是名字相近的别的剧（搜索经常混进来）
+                if _text(row.get("album")) and _text(row.get("album")) != album:
+                    continue
+                row["no"] = no or row.get("no") or 0
+                seasons.append(row)
+        except Exception:
+            pass
+        finally:
+            if pool is not None:
+                try:
+                    pool.shutdown(wait=False)
+                except Exception:
+                    pass
+
+    if len(seasons) <= 1:
+        return []
+
+    # 去重（不同季号给出同一份片源的情况）+ 严格按季号升序
+    seen = set()
+    unique = []
+    for row in seasons:
+        key = tuple(row.get("vids") or [])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    if len(unique) <= 1:
+        return []
+    unique.sort(key=lambda x: (int(x.get("no") or 0) or 1))
+
+    with _SEASON_LOCK:
+        _SEASON_CACHE[album] = (time.time(), unique)
+    try:
+        disk = _season_disk_load()
+        disk[album] = {"ts": time.time(), "seasons": unique}
+        _season_disk_save(disk)
+    except Exception:
+        pass
+    return unique
+
+
+def _build_season_play(seasons: list, cur_sid: str = "") -> tuple:
+    """多季线路：一季一条。
+
+    ★ 两个坑都踩过，所以线路名这样定：
+    1. 壳（无名影视）会**按线路名重新排序**，不是按 vod_play_from 的先后。
+       「第一季」的「一」(U+4E00) 比「十」(U+5341) 小，于是点第十四季进来
+       默认却播第一季。→ 当前季加「★」(U+2605，码位比所有汉字都小)，
+       任何排序规则下都排第一。
+    2. 中文「第十二季」按字符串排会跑到「第二季」前面 → 其余季用零填充
+       「第02季」，排序就是季号顺序。
+    """
+    rows = [x for x in (seasons or []) if isinstance(x, Mapping)]
+    cur_sid = _text(cur_sid).strip()
+    if cur_sid:
+        mine = [x for x in rows if _text(x.get("sid")) == cur_sid]
+        rest = [x for x in rows if _text(x.get("sid")) != cur_sid]
+        if mine:
+            rows = mine + rest
+
+    names = []
+    urls = []
+    for row in rows:
+        vids = [str(v) for v in (row.get("vids") or []) if str(v)]
+        if not vids:
+            continue
+        try:
+            no = int(row.get("no") or 0)
+        except (TypeError, ValueError):
+            no = 0
+        no = no or 1
+        if cur_sid and _text(row.get("sid")) == cur_sid:
+            line = u"★第%d季" % no
+        else:
+            line = u"第%02d季" % no
+        if line in names:
+            line = "%s(%d)" % (line, len(names) + 1)
+        cts = row.get("cts") if isinstance(row.get("cts"), Mapping) else {}
+        parts = []
+        for index, vid in enumerate(vids, 1):
+            ct = cts.get(vid) or row.get("ct") or 0
+            parts.append("%d$%s%s" % (index, EPISODE_PREFIX, _hg_play_id(vid, ct)))
+        names.append(line)
+        urls.append("#".join(parts))
+        # 每季都登记集序，预取下一集才会跨季正确（看到季末集不会串到别的剧）
+        try:
+            _remember_series(row.get("sid") or "", vids)
+        except Exception:
+            pass
+    return "$$$".join(names), "$$$".join(urls)
+
+
 def _hg_signed_detail(sid: str) -> tuple:
     """8788 签名剧集详情。返回与 _app_episode_detail 对齐的 (meta, eps)。"""
     j = _hg_data("detail", {"series_id": str(sid)})
@@ -4269,6 +4950,7 @@ def _hg_signed_detail(sid: str) -> tuple:
         "intro": _text(vd.get("series_intro") or vd.get("video_desc")),
         "remarks": ("全%s集" % vd.get("episode_cnt")) if vd.get("episode_cnt") else "",
     }
+    _fill_season_meta(meta, vd)
     actors = [str(c.get("nickname")) for c in (vd.get("celebrities") or [])
               if isinstance(c, dict) and c.get("nickname")]
     meta["actors"] = ",".join(actors)
@@ -4404,26 +5086,37 @@ def _video_model(video_id: str, config: Mapping[str, Any],
 
 def _video_model_once(video_id: str, config: Mapping[str, Any],
                       ct_hint: int = 0) -> dict[str, Any]:
-    """直连优先（每次换新设备号），签名服务只作兜底。
+    """直连优先（每次换新设备号 + 换机器重打 3 发），签名服务兜底。
 
-    实测（2026-11-08，连续 6 集）：
-      - 同一设备号只有**第 1 次**取流有结果，之后恒回 HTTP 200 + 0 字节；
-      - 每集换一个本地随机设备号 → 6/6 全成功，间隔 1 秒即可；
-      - query 里带 iid 必被判风控（空 body），只带 device_id 才正常。
-    以前把它当"兜底"、让签名服务打头阵，等于每集都去烧那只有限的令牌，
-    于是"第一集能播、下一集只剩 10 秒"。直连的设备号是本地造出来的，
-    换号零成本、不用注册，所以拿它当主力才是稳的。
+    2026-11-08：直连 6/6 全成功，拿它当主力最划算。
+    2026-11-10 白天：老路径 multi_video_model/v1 下线，直连恒回 200+0 字节，
+      只能靠签名服务（注册真机 1.5s、一枚令牌一次、整条 IP 40~60s 冷却）。
+    2026-11-10 晚：换成新路径 multi_video_model/player/v1 后直连复活，
+      而且不再有"一个设备号一次"的额度 —— 同一个 vid 连打 4 发全中。
+      回空是偶发（约 1/5），重打一发只要 0.15s，所以直连试 3 次、换主机，
+      签名服务退回纯兜底（只有 3 发都空才动它）。
     """
-    try:
-        return _video_model_direct(video_id, config, ct_hint)
-    except _VideoModelEmpty as exc:
-        _play_log("direct empty: %s -> signed" % str(exc)[:60])
-    except Exception as exc:  # noqa: BLE001 - 直连异常也退回签名
-        _play_log("direct fail: %s -> signed" % str(exc)[:60])
+    started = time.time()
+    if _direct_healthy():
+        try:
+            return _video_model_direct(video_id, config, ct_hint, tries=3)
+        except _VideoModelEmpty as exc:
+            _DIRECT_FAIL_AT[0] = time.time()
+            _play_log("direct empty: %s -> signed" % str(exc)[:60])
+        except Exception as exc:  # noqa: BLE001 - 直连异常也退回签名
+            _DIRECT_FAIL_AT[0] = time.time()
+            _play_log("direct fail: %s -> signed" % str(exc)[:60])
+    else:
+        _play_log("direct 近期判空, 跳过直连直接签名")
     try:
         return _hg_signed_play(video_id, ct_hint)
-    except _HgSignUnavailable as exc:
-        _play_log("signed unavailable: %s -> legacy" % str(exc)[:60])
+    except Exception as exc:  # noqa: BLE001 - 签名不可用/超预算都退到旧实现
+        _play_log("signed fail: %s" % str(exc)[:60])
+        spent = time.time() - started
+        if spent > _START_BUDGET:
+            # 已经等了这么久, 旧实现前面还有 _pace_request(最长 12s 的冷却),
+            # 再往下走播放器就是几十秒黑屏 —— 直接把失败抛回去。
+            raise HongguoPluginError("video_model 取流失败: %s" % str(exc)[:60]) from exc
     return _video_model_legacy(video_id, config)
 
 
@@ -4432,14 +5125,19 @@ class _VideoModelEmpty(HongguoPluginError):
 
 
 def _video_model_direct(video_id: str, config: Mapping[str, Any],
-                        ct_hint: int = 0) -> dict[str, Any]:
-    """直连 multi_video_model，**每次都用全新设备号**（换号零成本）。"""
+                        ct_hint: int = 0, tries: int = 3) -> dict[str, Any]:
+    """直连 multi_video_model/player/v1，每次换新设备号 + 换一台接入机器。
+
+    回空是这条接口的偶发行为（约 1/5），重打一发的代价只有 ~0.15s，
+    所以默认试 3 次、每次换主机 —— 实测 3 次内成功率接近 100%，
+    而以前一发失败就去走签名服务（注册 1.5s + 令牌一次一用）。
+    """
     bare = _text(video_id).split("@")[0].strip()
     if not bare:
         raise HongguoPluginError("缺少 vid")
     content_type = _hg_content_type(bare, ct_hint)
     last = ""
-    for attempt in range(2):
+    for attempt in range(max(1, tries)):
         device_id, install_id = _random_identity()
         try:
             _persist_identity(device_id, install_id)
@@ -4487,25 +5185,27 @@ def _video_model_direct(video_id: str, config: Mapping[str, Any],
         body = json.dumps(payload, ensure_ascii=False,
                           separators=(",", ":")).encode("utf-8")
         try:
-            headers, url = _core_sixgod(VIDEO_URL, params, devices, payload,
-                                        request_headers)
+            host = VIDEO_HOSTS[attempt % len(VIDEO_HOSTS)]
+            headers, url = _core_sixgod("https://" + host + VIDEO_PATH, params,
+                                        devices, payload, request_headers)
             response = _http().post(url, headers=headers, data=body, timeout=20)
         except Exception as exc:  # noqa: BLE001
             last = "网络异常: %s" % exc
-            time.sleep(0.5)
+            time.sleep(0.15)
             continue
         if response.status_code == 200 and response.content:
             model = _model_from_response(response, bare)
             if model:
-                _play_log("direct %s ok (ct=%d, 设备%s)"
-                          % (bare, content_type, device_id[:8]))
+                _DIRECT_FAIL_AT[0] = 0.0
+                _play_log("direct %s ok (ct=%d, 设备%s, %s, 第%d发)"
+                          % (bare, content_type, device_id[:8], host, attempt + 1))
                 return model
             last = "video_model 为空"
         else:
             last = "HTTP %s, %d 字节" % (response.status_code,
                                          len(response.content or b""))
-        if attempt == 0:
-            time.sleep(0.6)
+        _play_log("direct %s 第%d发空(%s), 换机器重试" % (bare, attempt + 1, last))
+        time.sleep(0.12)
     raise _VideoModelEmpty("直连取流失败(%s)" % (last or "unknown"))
 
 
@@ -4742,6 +5442,23 @@ def _height_of(meta: Mapping[str, Any]) -> int:
     return height if height > 0 else 0
 
 
+def _gear_height(value: Any) -> int:
+    """从 `gear_des_key` 里取分辨率。
+
+    形如 `0:MP4|1:encrypt|2:bytevc2|4:1080p|5:normal|...`，第 4 段就是清晰度。
+    少数 CDN 响应的 video_meta 是空的（没有 definition/vwidth），但这一段一定在，
+    所以它是比 video_meta 更稳的判据。
+    """
+    for part in _text(value).split("|"):
+        key, sep, val = part.partition(":")
+        if not sep or key.strip() != "4":
+            continue
+        matched = re.search(r"(2160|1440|1080|720|576|540|480|360)", val)
+        if matched:
+            return int(matched.group(1))
+    return 0
+
+
 def _cenc_tracks(model: Any) -> list:
     """从 video_model 收集所有可播放档位（对齐 node 的 hgVideos）。
 
@@ -4765,20 +5482,69 @@ def _cenc_tracks(model: Any) -> list:
         kid = _first(info.get("kid"), value.get("kid"))
         if src and spade and kid:
             meta = value.get("video_meta") if isinstance(value.get("video_meta"), Mapping) else {}
-            height = _height_of(meta)
+            height = _height_of(meta) or _gear_height(value.get("gear_des_key"))
             name = ("%dP" % height) if height else _first(
                 meta.get("definition"), meta.get("quality"), "红果")
             if src not in seen:
                 seen.add(src)
                 found.append((name, {"src": src, "kid": kid,
-                                     "spade": spade, "height": height}))
+                                     "spade": spade, "height": height,
+                                     "size": _int(meta.get("size")),
+                                     "bitrate": _int(meta.get("bitrate")),
+                                     "qtype": _int(value.get("quality_type"))}))
             return
         for item in value.values():
             walk(item)
 
     walk(model)
+    if found and all(not item.get("height") for _, item in found):
+        # 少数 CDN 响应整个 video_meta 是空的（没有 definition/vwidth），
+        # 此时不能靠字段定档 —— 而 video_list 的原顺序是 360→1080 **升序**，
+        # 照原顺序会变成"线路写 1080P、实际播 360p"。依次用
+        # 体积/码率、再退到 quality_type（1=1080、40=360，越小越清晰）排序。
+        ordered = sorted(found, key=lambda p: (int(p[1].get("size") or 0),
+                                              int(p[1].get("bitrate") or 0),
+                                              -int(p[1].get("qtype") or 0)),
+                         reverse=True)
+        rescaled = []
+        for index, (name, item) in enumerate(ordered):
+            tier = QUALITY_TIERS[index][1] if index < len(QUALITY_TIERS) else ""
+            if not tier:
+                rescaled.append((name or "档%d" % (index + 1), item))
+                continue
+            rescaled.append(("%sP" % tier, dict(item, height=int(tier))))
+        found = rescaled
     found.sort(key=lambda pair: pair[1]["height"], reverse=True)
     return found
+
+
+def _pick_track(tracks: list, want: str = "") -> tuple:
+    """按清晰度挑一档：精确命中优先，否则取最接近的（同距时取高的那档）。
+
+    tracks 已是按高度降序的 [(名字, item), ...]，want 是 `1080` 这种档位串。
+    """
+    if not tracks:
+        return "", {}
+    try:
+        target = int(want)
+    except (TypeError, ValueError):
+        target = 0
+    if target <= 0:
+        return tracks[0]
+    best = None
+    best_gap = -1
+    for name, item in tracks:
+        try:
+            height = int(item.get("height") or 0)
+        except (TypeError, ValueError):
+            height = 0
+        gap = abs(height - target)
+        if gap == 0:
+            return name, item
+        # 差距更小，或差距相同但这一档更高（宁可清晰一点也别糊）
+        if best is None or gap < best_gap or (gap == best_gap and height > int(best[1].get("height") or 0)):
+            best, best_gap = (name, item), gap
+    return best or tracks[0]
 
 
 def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
@@ -4812,13 +5578,19 @@ def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
     return tiers
 
 
+def _quality_lines() -> list:
+    """线路栏用的清晰度列表：[(显示名, 档位), ...]，从高到低。"""
+    return [("%sP" % tier, tier) for _, tier in QUALITY_TIERS]
+
+
 def _build_play(pairs: list, tiers: Any) -> tuple:
     """生成 vod_play_from / vod_play_url。
 
     pairs: [(标题, vid), ...]
-      tiers is None -> 单线路 "红果┃短剧"：播放时**一次取流**就带回全部清晰度，
+      tiers 非空    -> 每档一条线路（线路栏显示清晰度），播放 id 带 `@档位`，
+                       playerContent 只返回那一档地址。
+      tiers is None -> 单线路 "红果┃短剧"：播放时**一次取流**带回全部清晰度，
                        由 playerContent 以 url 数组形式给出（对齐内置 node 源）。
-      tiers 非空    -> 每档一条线路(旧方案，保留兼容)。
       空列表        -> 官网 360p 试看单线路。
     """
     if tiers is None:
@@ -4980,6 +5752,24 @@ def _data(url):
     except (ValueError, TypeError):
         return {}
 
+
+def _page_static(url):
+    """抓官网 SSR, 不发浏览器 UA —— 走 CDN 静态缓存, 见 _http_static 说明。"""
+    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"}, timeout=12)
+    r.raise_for_status()
+    return r.text
+
+
+def _data_static(url):
+    html = _page_static(url)
+    m = re.search(r"(?:window\.)?_ROUTER_DATA\s*=\s*", html)
+    if not m:
+        return {}
+    try:
+        return json.JSONDecoder().raw_decode(html[m.end():])[0]
+    except (ValueError, TypeError):
+        return {}
+
 # ---------------------------------------------------------------- 搜索
 # 官网 /search/<kw> 是纯前端渲染的 SPA: SSR 里只有壳, 没有 _ROUTER_DATA,
 # 所以老写法(_data(SITE+"/search/"+kw))必然拿到空列表 —— 这是搜索失效的根因。
@@ -5077,10 +5867,9 @@ def _filter_group(key, name, values):
     return {"key": key, "name": name, "value": [{"n": n, "v": v} for n, v in values]}
 
 
-def _api_post(path, body, config):
-    """带签名的红果/番茄 App 后端 POST (与 _video_model 同套签名)。"""
-    devices = _device_config(config)
-    params = {
+def _app_params(devices):
+    """App 接口的公共设备参数（POST / GET 共用，缺一个上游就回 PARAM_INVALID）。"""
+    return {
         "iid": devices["install_id"], "device_id": devices["device_id"], "ac": "wifi",
         "channel": "update_64", "aid": "8662", "app_name": "novelread",
         "version_code": "71332", "version_name": "7.1.3.32", "device_platform": "android",
@@ -5091,10 +5880,12 @@ def _api_post(path, body, config):
         "compliance_status": "0", "need_personal_recommend": "1", "player_so_load": "1",
         "is_android_pad_screen": "0",
     }
-    request_headers = {
+
+
+def _app_headers(devices, with_body=False):
+    headers = {
         "User-Agent": APP_UA,
         "Accept": "application/json; charset=utf-8,application/x-protobuf",
-        "Content-Type": "application/json; charset=UTF-8",
         "x-xs-from-web": "0",
         "x-ss-req-ticket": str(int(time.time() * 1000)),
         "x-tt-request-tag": "t=0;n=0",
@@ -5102,14 +5893,42 @@ def _api_post(path, body, config):
         "passport-sdk-version": "50561",
         "x-vc-bdturing-sdk-version": "3.7.2.cn",
     }
+    if with_body:
+        headers["Content-Type"] = "application/json; charset=UTF-8"
     if devices.get("cookie"):
-        request_headers["Cookie"] = devices["cookie"]
+        headers["Cookie"] = devices["cookie"]
     if devices.get("x_tt_token"):
-        request_headers["x-tt-token"] = devices["x_tt_token"]
+        headers["x-tt-token"] = devices["x_tt_token"]
+    return headers
+
+
+def _api_post(path, body, config):
+    """带签名的红果/番茄 App 后端 POST (与 _video_model 同套签名)。"""
+    devices = _device_config(config)
+    params = _app_params(devices)
+    request_headers = _app_headers(devices, with_body=True)
     url = API_HOST + path
     signed_headers, signed_url = _core_sixgod(url, params, devices, body, request_headers)
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     response = _http().post(signed_url, headers=signed_headers, data=data, timeout=15)
+    return _json_response(response)
+
+
+def _api_get(path, params, config):
+    """带签名的 App 后端 GET（榜单 cell/change 只吃 GET）。
+
+    业务参数必须和公共设备参数一起进 query —— 只用设备参数会回 PARAM_INVALID，
+    只带业务参数又不会返回内容，两者缺一不可。
+    """
+    devices = _device_config(config)
+    query = _app_params(devices)
+    for key, value in (params or {}).items():
+        if value is not None:
+            query[key] = value
+    request_headers = _app_headers(devices)
+    url = API_HOST + path
+    signed_headers, signed_url = _core_sixgod(url, query, devices, None, request_headers)
+    response = _http().get(signed_url, headers=signed_headers, timeout=15)
     return _json_response(response)
 
 
@@ -5131,8 +5950,8 @@ def _app_category_list(genre, page, config, sort=None, gender=None,
     except (TypeError, ValueError):
         page = 1
     body = {
-        "filter_ids": "", "req_scene": genre, "offset": (page - 1) * 18,
-        "need_selector_panel": False, "limit": 18,
+        "filter_ids": "", "req_scene": genre, "offset": (page - 1) * _LIST_PAGE_SIZE,
+        "need_selector_panel": False, "limit": _LIST_PAGE_SIZE,
         "select_items": {
             "category_dim_epoch": epoch or [],
             "online_time": online_time or [],
@@ -5158,6 +5977,76 @@ def _app_category_list(genre, page, config, sort=None, gender=None,
     return out
 
 
+# ---------------------------------------------------------------- 榜单
+# 红果 App 的「短剧榜单」页 = 书城一个 cell 的换一批（tab_type=26）：
+#   目录  = 响应里的 cell_selector.outer_row.items（全部榜单都在这）
+#   切换  = selected_items=<内容层> + sub_selected_items=<榜单 id>
+# 两个坑：
+#   1. 预约榜就是「不传 sub_selected_items」时的默认页 ——
+#      显式传 sub_selected_items=ranklist_subscribe 反而回空数据；
+#   2. offset 每页固定 10 条（limit 传 0），翻页不重复。
+# 该接口只吃 GET，且业务参数必须和设备参数一起进 query（缺任一半都拿不到内容）。
+HG_RANK_CELL = "7470092475068071998"
+HG_RANK_PAGE = 10
+HG_RANK_PATH = "/reading/bookapi/bookmall/cell/change/v1/"
+HG_RANK_DEFAULT_BOARD = "ranklist_subscribe"
+HG_RANK_BOARDS = [
+    ("推荐榜", "ranklist_hot_sc"),
+    ("热播榜", "ranklist_hot_play_sc"),
+    ("臻果榜", "ranklist_prestige"),
+    ("新剧榜", "ranklist_new_rank_sc"),
+    ("热搜榜", "ranklist_hot_search_sc"),
+    ("必看榜", "ranklist_must_watch"),
+    ("收藏榜", "ranklist_followed"),
+    ("预约榜", HG_RANK_DEFAULT_BOARD),
+]
+HG_RANK_TID = "rank:"          # 分类 tid 前缀：rank:<board_id>
+
+
+def _rank_item(it, no):
+    """榜单条目 → vod 卡片。名次放最前面，榜单里名次比集数重要。"""
+    sid = _text(it.get("series_id"))
+    name = _text(it.get("title") or it.get("series_title"))
+    cnt = it.get("episode_cnt") or 0
+    score = _text(it.get("score"))
+    remark = "No.%d" % no
+    if score:
+        remark += " · %s分" % score
+    elif cnt:
+        remark += " · 全%s集" % cnt
+    return {"vod_id": sid, "vod_name": name or "未命名",
+            "vod_pic": _text(it.get("cover")), "vod_remarks": remark,
+            "vod_content": _text(it.get("video_desc") or it.get("series_intro"))}
+
+
+def _hg_rank_page(board, page, config):
+    """榜单某一页，返回 (vod 卡片列表, 是否还有下一页)。"""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    params = {
+        "cell_id": HG_RANK_CELL, "tab_type": "26", "selected_items": "all",
+        "offset": str((page - 1) * HG_RANK_PAGE), "limit": "0",
+        "client_req_type": "2", "client_template": "2",
+        "unlimited_selector_change_type": "1", "user_is_login": "0",
+    }
+    if board and board != HG_RANK_DEFAULT_BOARD:
+        params["sub_selected_items"] = board
+    j = _api_get(HG_RANK_PATH, params, config)
+    cv = (j.get("data") or {}).get("cell_view") or {}
+    rows, seen = [], set()
+    base = (page - 1) * HG_RANK_PAGE
+    for cell in (cv.get("cell_data") or []):
+        for it in (cell.get("video_data") or []):
+            sid = _text(it.get("series_id"))
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            rows.append(_rank_item(it, base + len(rows) + 1))
+    return rows, bool(cv.get("has_more"))
+
+
 def _app_episode_detail(sid, config):
     """App 剧集详情 (multi_video_detail)。返回 (meta, eps)。eps = ["标题$vid", ...] 已按集数排序。"""
     body = {
@@ -5177,6 +6066,7 @@ def _app_episode_detail(sid, config):
         "intro": vd.get("series_intro") or "",
         "remarks": ("全%s集" % vd.get("episode_cnt")) if vd.get("episode_cnt") else "",
     }
+    _fill_season_meta(meta, vd)
     actors = [str(c.get("nickname")) for c in (vd.get("celebrities") or [])
               if isinstance(c, dict) and c.get("nickname")]
     eps = []
@@ -5256,6 +6146,11 @@ class Spider(Spider):
         if _text(cfg.get("install_id")):
             self.install_id = _text(cfg.get("install_id"))
         self._extra_config = cfg
+        # 冷启动先在后台把 TLS 握好，省掉首屏那次握手
+        try:
+            _warm_conn()
+        except Exception:
+            pass
         return None
 
     def _cfg(self):
@@ -5283,6 +6178,10 @@ class Spider(Spider):
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
         ]
+        # 榜单：走官方「短剧榜单」页（书城榜单 cell），是真正的官方排名，
+        # 和分类的 sort=newest/hot_score 不是同一份数据。
+        class_list += [{"type_id": HG_RANK_TID + bid, "type_name": name}
+                       for name, bid in HG_RANK_BOARDS]
         groups = [
             {"key": "topic", "name": "主题", "value": [
                 {"n": "全部", "v": ""}, {"n": "现言", "v": "cate_1021"}, {"n": "女性成长", "v": "cate_1048"},
@@ -5324,10 +6223,80 @@ class Spider(Spider):
                 {"n": "30天内上新", "v": "3"}, {"n": "90天内上新", "v": "4"},
             ]},
         ]
-        filter_dict = {c["type_id"]: groups for c in class_list}
+        # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板
+        filter_dict = {c["type_id"]: groups for c in class_list
+                       if not str(c["type_id"]).startswith(HG_RANK_TID)}
         return {"class": class_list, "filters": filter_dict}
+    def _warm_latest(self):
+        """后台把「最新」第一页取好：首页展示的这段时间足够它跑完，
+        用户点进「最新」分类就是 0 毫秒（newest 是所有排序里最慢的一个，约 0.8s）。"""
+        if _list_cache_get(_cat_cache_key("short_play", 1, ["newest"], None, None,
+                                          None, None, None)) is not None:
+            return
+        config = self._cfg()
+
+        def fetch():
+            items = []
+            try:
+                items = _app_category_list("short_play", 1, config, sort=["newest"])
+            except Exception:
+                items = []
+            finished = len(items) < _LIST_PAGE_SIZE
+            return {"page": 1, "pagecount": 1 if finished else 9999,
+                    "limit": len(items), "total": 999999 if items else 0, "list": items}
+
+        _prefetch_list_page(_cat_cache_key("short_play", 1, ["newest"], None, None,
+                                           None, None, None), fetch, delay=0.0)
+
+    def _warm_ranks(self):
+        """后台把 8 个榜单的第一页取好。
+
+        榜单冷启动 0.44~0.81s（推荐榜 / 预约榜最慢，约 0.8s），而用户看完首页
+        再点榜单通常隔 1~3 秒 —— 这点时间足够并发取完，点进任意榜单就是 0 毫秒。
+        错开 delay 发起，避免 8 个请求同时打上游。
+        """
+        todo = []
+        for _name, board in HG_RANK_BOARDS:
+            ck = _rank_cache_key(board, 1)
+            if _list_cache_get(ck) is None:
+                todo.append((ck, board))
+        if not todo:
+            return
+        config = self._cfg()
+
+        def make(board):
+            def fetch():
+                rows, more = _hg_rank_page(board, 1, config)
+                return {"page": 1, "pagecount": 1 if not more else 9999,
+                        "limit": len(rows), "total": 999999 if rows else 0, "list": rows}
+            return fetch
+
+        for i, (ck, board) in enumerate(todo):
+            _prefetch_list_page(ck, make(board), delay=0.05 * i)
+
     def homeVideoContent(self):
-        return {"list": []}
+        """首页推荐位直接吃官网首页 SSR 的热播区块（一个请求 0.15~0.25s 铺满一屏）。
+
+        以前这里返回空，bridge 会退回「拿第一个分类再拉一页」，而那是「最新」排序
+        —— 全部分类里最慢的一条（~0.8s），于是打开源要等 1.1~1.4s。
+        现在首页自带数据，并且顺手在后台预热「最新」第一页和 8 个榜单第一页。
+        """
+        rows = []
+        try:
+            rows = _home_hot_list()
+        except Exception:
+            rows = []
+        if not rows:
+            return {"list": []}
+        try:
+            self._warm_latest()
+        except Exception:
+            pass
+        try:
+            self._warm_ranks()
+        except Exception:
+            pass
+        return {"list": rows}
 
     def _query(self, pg, q=None):
         try: pg = max(1, int(pg))
@@ -5454,11 +6423,38 @@ class Spider(Spider):
             "vod_play_from": "", "vod_play_url": "",
         }]}
 
+    def _rank_category(self, board, page):
+        """榜单分类：走官方榜单 cell（每页 10 条，服务端 has_more 决定到底）。"""
+        def key(p):
+            return _rank_cache_key(board, p)
+
+        def fetch(p):
+            config = self._cfg()
+            rows, more = _hg_rank_page(board, p, config)
+            return {"page": p, "pagecount": p if not more else 9999,
+                    "limit": len(rows), "total": 999999 if rows else 0, "list": rows}
+
+        cache_key = key(page)
+        hit = _list_cache_get(cache_key)
+        if hit is not None:
+            return hit
+        try:
+            result = _list_single(cache_key, lambda: fetch(page))
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        if result.get("list"):
+            _list_cache_put(cache_key, result)
+            if result.get("pagecount", 1) != page:
+                _prefetch_list_page(key(page + 1), lambda p=page + 1: fetch(p))
+        return result
+
     def categoryContent(self, tid, pg, filter, extend):
         if str(tid) == LOGIN_TID:
             return self._login_category()
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
+        if str(tid).startswith(HG_RANK_TID):
+            return self._rank_category(str(tid)[len(HG_RANK_TID):], page)
         if isinstance(extend, str) and extend:
             try: extend = json.loads(extend)
             except Exception: extend = {}
@@ -5493,16 +6489,43 @@ class Spider(Spider):
             signed["online_time"] = [online[0]]
         if gender:
             signed["gender"] = gender
-        items = []
-        try:
-            items = _hg_signed_category(genre, page, signed)
-        except Exception:
+        # 本地直连优先（0.3~0.5s）：8788 签名链路每次都要先注册 profile_token
+        # （1~2s，还可能撞 IP 窗口），只在直连拿不到数据时才兜底。
+        def cat_key(p):
+            return _cat_cache_key(genre, p, sort, gender, theme, epoch, role, online)
+
+        def fetch(p):
             items = []
-        if not items:
-            items = _app_category_list(genre, page, config, sort=sort, gender=gender,
-                                       theme=theme, epoch=epoch, role=role,
-                                       online_time=online)
-        return {"page": page, "pagecount": 9999, "limit": len(items), "total": 999999, "list": items}
+            try:
+                items = _app_category_list(genre, p, config, sort=sort, gender=gender,
+                                           theme=theme, epoch=epoch, role=role,
+                                           online_time=online)
+            except Exception:
+                items = []
+            if not items:
+                try:
+                    items = _hg_signed_category(genre, p, signed)
+                except Exception:
+                    items = []
+            # 不满一页 = 到底了，给个真页码，别让壳无限翻页
+            finished = len(items) < _LIST_PAGE_SIZE
+            return {"page": p, "pagecount": p if finished else 9999,
+                    "limit": len(items), "total": 999999 if items else 0, "list": items}
+
+        cache_key = cat_key(page)
+        hit = _list_cache_get(cache_key)
+        if hit is not None:
+            return hit
+        try:
+            result = _list_single(cache_key, lambda: fetch(page))
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        if result.get("list"):
+            _list_cache_put(cache_key, result)
+            # 有下一页就把下一页先取好：翻页 0 毫秒，用户感知就是"列表秒开"
+            if result.get("pagecount", 1) != page:
+                _prefetch_list_page(cat_key(page + 1), lambda p=page + 1: fetch(p))
+        return result
 
     def searchContent(self, key, quick=False, pg="1"):
         try: page = max(1, int(pg))
@@ -5510,35 +6533,56 @@ class Spider(Spider):
         kw = _text(key)[:SEARCH_MAX_KEY]
         if not kw:
             return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
-        # 8788 签名搜索优先（TV 盒直连官网/上游常被拦）；服务不可用时回退官网搜索接口。
-        j = {}
-        try:
-            j = _hg_signed_search(kw, page)
-        except Exception:
+        def search_key(p):
+            return json.dumps(["kw", kw, p], ensure_ascii=False)
+
+        def fetch(p):
+            # 直连搜索优先（官网接口 0.2~0.5s，无需令牌），8788 签名只作兜底。
             j = {}
-        if not (j.get("searchList")):
-            j = _search_api(kw, page)
-        rows = j.get("searchList") or []
-        try: total = int(j.get("totalCount") or 0)
-        except (TypeError, ValueError): total = 0
-        try: pages = int(j.get("totalPages") or 0)
-        except (TypeError, ValueError): pages = 0
-        # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
-        if total > 0:
-            pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
-        elif pages <= 0:
-            pages = page
-        # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
-        rows = rows[:SEARCH_PAGE_SIZE]
-        items = [it for it in (_search_item(x) for x in rows) if it]
-        if items:
-            pages = _search_pages_hint(kw, pages)
-            if page > pages:
-                items = []
-        else:
-            pages = max(1, min(page, _SEARCH_PAGES.get(kw) or page))
-        return {"page": page, "pagecount": pages, "limit": len(items),
-                "total": total or len(items), "list": items}
+            try:
+                j = _search_api(kw, p)
+            except Exception:
+                j = {}
+            if not (j.get("searchList")):
+                try:
+                    j = _hg_signed_search(kw, p)
+                except Exception:
+                    j = {}
+            rows = j.get("searchList") or []
+            try: total = int(j.get("totalCount") or 0)
+            except (TypeError, ValueError): total = 0
+            try: pages = int(j.get("totalPages") or 0)
+            except (TypeError, ValueError): pages = 0
+            # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
+            if total > 0:
+                pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+            elif pages <= 0:
+                pages = p
+            # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
+            rows = rows[:SEARCH_PAGE_SIZE]
+            items = [it for it in (_search_item(x) for x in rows) if it]
+            if items:
+                pages = _search_pages_hint(kw, pages)
+                if p > pages:
+                    items = []
+            else:
+                pages = max(1, min(p, _SEARCH_PAGES.get(kw) or p))
+            return {"page": p, "pagecount": pages, "limit": len(items),
+                    "total": total or len(items), "list": items}
+
+        cache_key = search_key(page)
+        hit = _list_cache_get(cache_key)
+        if hit is not None:
+            return hit
+        try:
+            result = _list_single(cache_key, lambda: fetch(page))
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        if result.get("list"):
+            _list_cache_put(cache_key, result)
+            if page < int(result.get("pagecount") or 1):
+                _prefetch_list_page(search_key(page + 1), lambda p=page + 1: fetch(p))
+        return result
 
     def detailContent(self, ids):
         sid = str(ids[0] if isinstance(ids, (list, tuple)) else ids)
@@ -5546,16 +6590,19 @@ class Spider(Spider):
         if sid in (LOGIN_QR, LOGIN_APP, LOGIN_LOGOUT):
             return self._login_detail(sid)
         config = self._cfg()
-        # 8788 签名剧集接口优先（TV 盒直连上游常被 CDN 拦截）；
-        # 服务不可用或返回空时回退本地 App 剧集接口，再退官网详情。
+        # App 直连优先：详情接口不消耗取流额度、也不需要注册 profile_token，
+        # 单次 0.3~0.8s；签名服务要注册设备（1~2s），只在直连失败时兜底。
+        # 8788 签名接口同时保留：「TV 盒直连上游常被 CDN 拦截」的场景仍然能走通。
         meta, eps = None, []
         try:
-            meta, eps = _hg_signed_detail(sid)
+            meta, eps = _app_episode_detail(sid, config)
         except Exception:
             meta, eps = None, []
         if not eps:
-            # 兜底: 本地 App 剧集接口 (短剧/漫剧/AI短剧通用, 拿真实可播 vid)
-            meta, eps = _app_episode_detail(sid, config)
+            try:
+                meta, eps = _hg_signed_detail(sid)
+            except Exception:
+                meta, eps = None, []
         if eps:
             # eps 元素形如 "第N集$hg-episode-v1:<vid>"，拆成 (标题, 播放id)。
             # 播放 id 里带上该集真实的 content_type（对齐 node 的 hgPlayId），
@@ -5570,10 +6617,9 @@ class Spider(Spider):
             _remember_series(sid, order)
             # App 取流不区分免费/会员集, 不再标注(会员)
             marked = [(title, vid) for title, vid in pairs]
-            # 单线路: 播放那一刻一次取流就带回全部清晰度(对齐内置 node 源),
-            # 详情页绝不预取, 上游额度按次卡死。
-            tiers = None
-            play_from, play_url = _build_play(marked, tiers)
+            # 线路栏显示清晰度（1·1080P / 2·720P / …），每档一条线路。
+            # 详情页绝不预取：一次取流就带回全部档位，真正请求只在播放那一刻发生。
+            play_from, play_url = _build_play(marked, _quality_lines() if marked else [])
             remarks = meta.get("remarks") or ""
             intro = meta.get("intro") or ""
             notes = []
@@ -5611,8 +6657,8 @@ class Spider(Spider):
             _ep_ct_save()
         _remember_series(sid, order)
         marked = [(title, vid) for title, vid in pairs]
-        tiers = None if pairs else []
-        play_from, play_url = _build_play(marked, tiers)
+        # 线路栏显示清晰度（与 App 直连分支一致），不再分季
+        play_from, play_url = _build_play(marked, _quality_lines() if marked else [])
         remarks = str(s.get("episode_right_text") or "")
         return {"list": [{"vod_id": sid, "vod_name": str(s.get("series_name") or ""), "vod_pic": str(s.get("series_cover") or ""), "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": ",".join(actors), "vod_content": str(s.get("series_intro") or ""), "vod_remarks": remarks, "vod_play_from": play_from, "vod_play_url": play_url}]}
 
@@ -5622,7 +6668,12 @@ class Spider(Spider):
         if raw.startswith("hg_login"):
             return {"parse": 1, "jx": 0, "playUrl": "",
                     "url": _LOGIN.qr_url or (SITE + "/"), "header": {"User-Agent": UA}}
-        vid, ct_hint = _hg_parse_play_id(raw.split("@")[0].strip())
+        # 播放 id 形如 base64({vid,content_type}) + "@1080"（后者是线路栏选的档位）
+        body, _, tier_hint = raw.partition("@")
+        tier_hint = tier_hint.strip()
+        if not tier_hint.isdigit():
+            tier_hint = ""
+        vid, ct_hint = _hg_parse_play_id(body.strip())
         header = {"User-Agent": UA, "Referer": PUBLIC_SITE + "/"}
 
         # 正片只有一条路: App 取流(CENC) + 本机解密串流。官网
@@ -5649,6 +6700,24 @@ class Spider(Spider):
                 error = str(exc)[:70]
                 tracks = []
             if tracks:
+                if tier_hint:
+                    # 线路栏选的是清晰度 → 只给这一档（命中不了的档位就退到最接近的）
+                    name, item = _pick_track(tracks, tier_hint)
+                    query = urlencode({
+                        "src": item.get("src") or "",
+                        "kid": item.get("kid") or "",
+                        "spade": item.get("spade") or "",
+                        "name": name,
+                    })
+                    # 播放器真正发请求前先把 CENC 计划建好：1080P 计划要 1.2s，
+                    # 不预热的话这段时间全是黑屏等待。
+                    _warm_plan(item)
+                    _play_log("play %s -> %s 单档 %dP (ct=%d)"
+                              % (vid, name, int(item.get("height") or 0),
+                                 _hg_content_type(vid, ct_hint)))
+                    return {"parse": 0, "jx": 0, "playUrl": "",
+                            "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
+                            "header": {"User-Agent": UA}}
                 pairs = []
                 for name, item in tracks:
                     query = urlencode({
@@ -5659,13 +6728,10 @@ class Spider(Spider):
                     })
                     pairs.append(name)
                     pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
+                if tracks:
+                    _warm_plan(tracks[0][1])
                 _play_log("play %s -> %d 档 (ct=%d)"
                           % (vid, len(tracks), _hg_content_type(vid, ct_hint)))
-                # 用户开始看这集了：趁这段时间把下一集在后台取好，切集就不撞窗口
-                try:
-                    _prefetch_next(vid, self._cfg())
-                except Exception:
-                    pass
                 return {"parse": 0, "jx": 0, "playUrl": "", "url": pairs,
                         "header": {"User-Agent": UA}}
             _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
