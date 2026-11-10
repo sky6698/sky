@@ -3693,6 +3693,156 @@ _LIST_CACHE: dict[str, tuple] = {}
 _LIST_CACHE_TTL = 180
 _LIST_CACHE_MAX = 64
 _LIST_LOCK = threading.Lock()
+# ★每页条数: 上游 landpage 的 limit 实测 18→200 耗时几乎不变(0.5~0.7s, 瓶颈在查询不在响应体),
+# 直接要 36 条 —— 一屏内容翻倍, 用户实际翻页次数减半, 体感比"每次少拿一点"快得多。
+_LIST_PAGE_SIZE = 36
+# ★同 key 在途请求合并(singleflight): 预取线程与用户请求撞车时只打一次上游。
+_LIST_INFLIGHT: dict[str, list] = {}
+_LIST_INFLIGHT_LOCK = threading.Lock()
+# ★翻页预取: 拿到第 N 页后后台把 N+1 页也取好, 用户点"下一页"就是 0 毫秒。
+_LIST_PREFETCHING: set = set()
+_LIST_PREFETCH_LOCK = threading.Lock()
+
+
+def _list_cache_get(key):
+    with _LIST_LOCK:
+        hit = _LIST_CACHE.get(key)
+        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
+            return hit[1]
+    return None
+
+
+def _list_cache_put(key, result):
+    if result is None:
+        return
+    with _LIST_LOCK:
+        if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
+            _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
+        _LIST_CACHE[key] = (time.time(), result)
+
+
+def _list_single(key, producer, wait=20.0):
+    """同 key 并发只打一次上游：在途时后来者直接等第一批结果。
+
+    预取线程和用户请求很容易在同一个 key 上撞车，不合并的话就是双倍上游请求、
+    双倍风控风险，而且等的一方还是要等满一个 RTT。
+    """
+    while True:
+        with _LIST_INFLIGHT_LOCK:
+            slot = _LIST_INFLIGHT.get(key)
+            owner = slot is None
+            if owner:
+                slot = [threading.Event(), None]
+                _LIST_INFLIGHT[key] = slot
+        if not owner:
+            slot[0].wait(wait)
+            if slot[1] is not None:
+                return slot[1]
+            # 占位的那一方失败了 -> 自己接手再来一次
+            with _LIST_INFLIGHT_LOCK:
+                if _LIST_INFLIGHT.get(key) is slot:
+                    _LIST_INFLIGHT.pop(key, None)
+            continue
+        try:
+            result = producer()
+        except Exception:
+            with _LIST_INFLIGHT_LOCK:
+                _LIST_INFLIGHT.pop(key, None)
+            slot[0].set()
+            raise
+        slot[1] = result
+        with _LIST_INFLIGHT_LOCK:
+            _LIST_INFLIGHT.pop(key, None)
+        slot[0].set()
+        return result
+
+
+def _prefetch_list_page(key, producer, delay=0.25):
+    """后台把下一页取好（命中缓存则跳过），用户点「下一页」就是 0 毫秒。
+
+    和播放的「预取下一集」同一思路：把 RTT 藏在用户翻页/选片的时间里。
+    """
+    with _LIST_PREFETCH_LOCK:
+        if key in _LIST_PREFETCHING:
+            return
+        _LIST_PREFETCHING.add(key)
+
+    def run():
+        try:
+            if delay:
+                time.sleep(delay)
+            if _list_cache_get(key) is None:
+                _list_cache_put(key, _list_single(key, producer))
+        except Exception:
+            pass
+        finally:
+            with _LIST_PREFETCH_LOCK:
+                _LIST_PREFETCHING.discard(key)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _cat_cache_key(genre, page, sort, gender, theme, epoch, role, online):
+    """分类页缓存键：categoryContent 与首页预热必须算出同一个 key，否则预热白做。"""
+    return json.dumps(["cat", genre, page, sort, gender, theme, epoch, role, online],
+                      ensure_ascii=False, sort_keys=True)
+
+
+_CONN_WARMED = [False]
+_CONN_WARM_LOCK = threading.Lock()
+
+
+def _warm_conn():
+    """后台先把官网 / 上游的 TLS 连接建立好。
+
+    冷启动的第一次请求要现做 DNS + TLS 握手（0.2~0.4s，网络差时 1s+），
+    而 bridge 在 load 模块之后、home 之前还有一小段空档，正好拿来握手。
+    """
+    with _CONN_WARM_LOCK:
+        if _CONN_WARMED[0]:
+            return
+        _CONN_WARMED[0] = True
+
+    def run():
+        for url in (SITE + "/", API_HOST + "/"):
+            try:
+                _http().head(url, headers={"User-Agent": UA}, timeout=6)
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# 官网首页 SSR 的「热播」区块：一个请求 0.2~0.3s 就能铺满首页。
+# 打开源时壳会先要首页，过去这里的兜底是「拿第一个分类再拉一页」——
+# 那一下要多花 0.8s（最新排序是所有排序里最慢的），是「打开源慢」的主因。
+_HOME_SSR_TTL = 120
+_HOME_SSR_STATE: list = []
+_HOME_SSR_LOCK = threading.Lock()
+
+
+def _home_hot_list():
+    with _HOME_SSR_LOCK:
+        if _HOME_SSR_STATE and time.time() - _HOME_SSR_STATE[0] < _HOME_SSR_TTL:
+            return list(_HOME_SSR_STATE[1])
+    rows, seen = [], set()
+    try:
+        page = ((_data(SITE + "/").get("loaderData") or {}).get("page") or {})
+        for sec in (page.get("homeSections") or []):
+            for x in (sec.get("video_list") or []):
+                sid = _text(x.get("series_id"))
+                if not sid or sid in seen:
+                    continue
+                seen.add(sid)
+                item = _item(x)
+                if item.get("vod_id"):
+                    rows.append(item)
+    except Exception:
+        rows = []
+    if rows:
+        with _HOME_SSR_LOCK:
+            _HOME_SSR_STATE[:] = [time.time(), rows]
+    return list(rows)
 # 剧集表: 详情页把每部剧的 vid 顺序记下来, 播放时才能"边看这集边把下集取好"。
 # 上游对同一 IP 的取流有 3 秒级间隔窗口, 用户连播时必然踩到 ——
 # 提前在后台取好下集, 切集就是 0 毫秒命中缓存。
@@ -4292,8 +4442,8 @@ def _hg_signed_category(genre: str, page: int,
     except (TypeError, ValueError):
         page = 1
     j = _hg_data("category", {
-        "scene": genre, "page": page, "offset": (page - 1) * 18,
-        "limit": 18, "session_id": "",
+        "scene": genre, "page": page, "offset": (page - 1) * _LIST_PAGE_SIZE,
+        "limit": _LIST_PAGE_SIZE, "session_id": "",
         "filters": {k: v for k, v in dict(filters or {}).items() if v},
     })
     out = []
@@ -5611,8 +5761,8 @@ def _app_category_list(genre, page, config, sort=None, gender=None,
     except (TypeError, ValueError):
         page = 1
     body = {
-        "filter_ids": "", "req_scene": genre, "offset": (page - 1) * 18,
-        "need_selector_panel": False, "limit": 18,
+        "filter_ids": "", "req_scene": genre, "offset": (page - 1) * _LIST_PAGE_SIZE,
+        "need_selector_panel": False, "limit": _LIST_PAGE_SIZE,
         "select_items": {
             "category_dim_epoch": epoch or [],
             "online_time": online_time or [],
@@ -5737,6 +5887,11 @@ class Spider(Spider):
         if _text(cfg.get("install_id")):
             self.install_id = _text(cfg.get("install_id"))
         self._extra_config = cfg
+        # 冷启动先在后台把 TLS 握好，省掉首屏那次握手
+        try:
+            _warm_conn()
+        except Exception:
+            pass
         return None
 
     def _cfg(self):
@@ -5807,8 +5962,45 @@ class Spider(Spider):
         ]
         filter_dict = {c["type_id"]: groups for c in class_list}
         return {"class": class_list, "filters": filter_dict}
+    def _warm_latest(self):
+        """后台把「最新」第一页取好：首页展示的这段时间足够它跑完，
+        用户点进「最新」分类就是 0 毫秒（newest 是所有排序里最慢的一个，约 0.8s）。"""
+        if _list_cache_get(_cat_cache_key("short_play", 1, ["newest"], None, None,
+                                          None, None, None)) is not None:
+            return
+        config = self._cfg()
+
+        def fetch():
+            items = []
+            try:
+                items = _app_category_list("short_play", 1, config, sort=["newest"])
+            except Exception:
+                items = []
+            finished = len(items) < _LIST_PAGE_SIZE
+            return {"page": 1, "pagecount": 1 if finished else 9999,
+                    "limit": len(items), "total": 999999 if items else 0, "list": items}
+
+        _prefetch_list_page(_cat_cache_key("short_play", 1, ["newest"], None, None,
+                                           None, None, None), fetch, delay=0.0)
+
     def homeVideoContent(self):
-        return {"list": []}
+        """首页推荐位直接吃官网首页 SSR 的热播区块（一个请求 0.2~0.3s 铺满一屏）。
+
+        以前这里返回空，bridge 会退回「拿第一个分类再拉一页」，而那是「最新」排序
+        —— 全部分类里最慢的一条（~0.8s），于是打开源要等 1.1~1.4s。
+        """
+        rows = []
+        try:
+            rows = _home_hot_list()
+        except Exception:
+            rows = []
+        if not rows:
+            return {"list": []}
+        try:
+            self._warm_latest()
+        except Exception:
+            pass
+        return {"list": rows}
 
     def _query(self, pg, q=None):
         try: pg = max(1, int(pg))
@@ -5974,32 +6166,42 @@ class Spider(Spider):
             signed["online_time"] = [online[0]]
         if gender:
             signed["gender"] = gender
-        # 本地直连优先（0.2~0.5s）：8788 签名链路每次都要先注册 profile_token
+        # 本地直连优先（0.3~0.5s）：8788 签名链路每次都要先注册 profile_token
         # （1~2s，还可能撞 IP 窗口），只在直连拿不到数据时才兜底。
-        cache_key = json.dumps(["cat", genre, page, sort, gender, theme, epoch, role, online],
-                               ensure_ascii=False, sort_keys=True)
-        hit = _LIST_CACHE.get(cache_key)
-        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
-            return hit[1]
-        items = []
-        try:
-            items = _app_category_list(genre, page, config, sort=sort, gender=gender,
-                                       theme=theme, epoch=epoch, role=role,
-                                       online_time=online)
-        except Exception:
+        def cat_key(p):
+            return _cat_cache_key(genre, p, sort, gender, theme, epoch, role, online)
+
+        def fetch(p):
             items = []
-        if not items:
             try:
-                items = _hg_signed_category(genre, page, signed)
+                items = _app_category_list(genre, p, config, sort=sort, gender=gender,
+                                           theme=theme, epoch=epoch, role=role,
+                                           online_time=online)
             except Exception:
                 items = []
-        result = {"page": page, "pagecount": 9999, "limit": len(items),
-                  "total": 999999, "list": items}
-        if items:
-            with _LIST_LOCK:
-                if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
-                    _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
-                _LIST_CACHE[cache_key] = (time.time(), result)
+            if not items:
+                try:
+                    items = _hg_signed_category(genre, p, signed)
+                except Exception:
+                    items = []
+            # 不满一页 = 到底了，给个真页码，别让壳无限翻页
+            finished = len(items) < _LIST_PAGE_SIZE
+            return {"page": p, "pagecount": p if finished else 9999,
+                    "limit": len(items), "total": 999999 if items else 0, "list": items}
+
+        cache_key = cat_key(page)
+        hit = _list_cache_get(cache_key)
+        if hit is not None:
+            return hit
+        try:
+            result = _list_single(cache_key, lambda: fetch(page))
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        if result.get("list"):
+            _list_cache_put(cache_key, result)
+            # 有下一页就把下一页先取好：翻页 0 毫秒，用户感知就是"列表秒开"
+            if result.get("pagecount", 1) != page:
+                _prefetch_list_page(cat_key(page + 1), lambda p=page + 1: fetch(p))
         return result
 
     def searchContent(self, key, quick=False, pg="1"):
@@ -6008,47 +6210,55 @@ class Spider(Spider):
         kw = _text(key)[:SEARCH_MAX_KEY]
         if not kw:
             return {"page": page, "pagecount": 1, "limit": 0, "total": 0, "list": []}
-        cache_key = json.dumps(["kw", kw, page], ensure_ascii=False)
-        hit = _LIST_CACHE.get(cache_key)
-        if hit and time.time() - hit[0] < _LIST_CACHE_TTL:
-            return hit[1]
-        # 直连搜索优先（官网接口 0.2~0.5s，无需令牌），8788 签名只作兜底。
-        j = {}
-        try:
-            j = _search_api(kw, page)
-        except Exception:
+        def search_key(p):
+            return json.dumps(["kw", kw, p], ensure_ascii=False)
+
+        def fetch(p):
+            # 直连搜索优先（官网接口 0.2~0.5s，无需令牌），8788 签名只作兜底。
             j = {}
-        if not (j.get("searchList")):
             try:
-                j = _hg_signed_search(kw, page)
+                j = _search_api(kw, p)
             except Exception:
                 j = {}
-        rows = j.get("searchList") or []
-        try: total = int(j.get("totalCount") or 0)
-        except (TypeError, ValueError): total = 0
-        try: pages = int(j.get("totalPages") or 0)
-        except (TypeError, ValueError): pages = 0
-        # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
-        if total > 0:
-            pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
-        elif pages <= 0:
-            pages = page
-        # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
-        rows = rows[:SEARCH_PAGE_SIZE]
-        items = [it for it in (_search_item(x) for x in rows) if it]
-        if items:
-            pages = _search_pages_hint(kw, pages)
-            if page > pages:
-                items = []
-        else:
-            pages = max(1, min(page, _SEARCH_PAGES.get(kw) or page))
-        result = {"page": page, "pagecount": pages, "limit": len(items),
-                  "total": total or len(items), "list": items}
-        if items:
-            with _LIST_LOCK:
-                if len(_LIST_CACHE) >= _LIST_CACHE_MAX:
-                    _LIST_CACHE.pop(next(iter(_LIST_CACHE)), None)
-                _LIST_CACHE[cache_key] = (time.time(), result)
+            if not (j.get("searchList")):
+                try:
+                    j = _hg_signed_search(kw, p)
+                except Exception:
+                    j = {}
+            rows = j.get("searchList") or []
+            try: total = int(j.get("totalCount") or 0)
+            except (TypeError, ValueError): total = 0
+            try: pages = int(j.get("totalPages") or 0)
+            except (TypeError, ValueError): pages = 0
+            # 上游 totalPages 偶发不稳, 以 totalCount 推算为准; 两者都没有就退化成单页
+            if total > 0:
+                pages = max(1, (total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE)
+            elif pages <= 0:
+                pages = p
+            # 越界页: 上游会给 502 或退化的空壳数据, 一律按"到底了"处理, 避免壳无限翻页
+            rows = rows[:SEARCH_PAGE_SIZE]
+            items = [it for it in (_search_item(x) for x in rows) if it]
+            if items:
+                pages = _search_pages_hint(kw, pages)
+                if p > pages:
+                    items = []
+            else:
+                pages = max(1, min(p, _SEARCH_PAGES.get(kw) or p))
+            return {"page": p, "pagecount": pages, "limit": len(items),
+                    "total": total or len(items), "list": items}
+
+        cache_key = search_key(page)
+        hit = _list_cache_get(cache_key)
+        if hit is not None:
+            return hit
+        try:
+            result = _list_single(cache_key, lambda: fetch(page))
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        if result.get("list"):
+            _list_cache_put(cache_key, result)
+            if page < int(result.get("pagecount") or 1):
+                _prefetch_list_page(search_key(page + 1), lambda p=page + 1: fetch(p))
         return result
 
     def detailContent(self, ids):
