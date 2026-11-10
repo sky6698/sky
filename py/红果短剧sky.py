@@ -135,34 +135,6 @@ def _http():
     return _HTTP
 
 
-_HTTP_STATIC = None
-
-
-def _http_static():
-    """不带浏览器 UA 的连接池, 专抓官网 SSR。
-
-    ★ 官网 CDN 按 UA 分流: 浏览器 UA 走 SSR 回源(0.9~1.1s, 响应体 180~227KB 抖动),
-    非浏览器 UA 直接吃静态缓存(稳定 0.18~0.32s, 恒定 184KB)。
-    两版 loaderData 的正文数据完全一致, 只有 req.userAgent / uuid / 时间戳 /
-    libraConfig 开关这类元信息不同 —— 首页 homeSections 的 36 条、顺序、sid 全部相同。
-    所以抓 SSR 时故意不发浏览器 UA, 首页从 0.94s 稳定到 0.2s。
-    """
-    global _HTTP_STATIC
-    if _HTTP_STATIC is None:
-        sess = requests.Session()
-        try:
-            sess.trust_env = False
-            # 只摘掉 UA, 保留 Accept-Encoding(gzip/br) 等默认头, 否则响应体不压缩更慢
-            sess.headers.pop("User-Agent", None)
-            adapter = sess.adapters.get("https://")
-            if adapter is not None:
-                adapter.pool_maxsize = 16
-        except Exception:
-            pass
-        _HTTP_STATIC = sess
-    return _HTTP_STATIC
-
-
 def _public_media_url(video_id: str) -> str:
     vid = _text(video_id).split("@")[0].strip()
     return "%s/video/public/%s/%s.mp4" % (PUBLIC_SITE, vid, PUBLIC_QUALITY) if vid.isdigit() else ""
@@ -3816,41 +3788,6 @@ def _cat_cache_key(genre, page, sort, gender, theme, epoch, role, online):
                       ensure_ascii=False, sort_keys=True)
 
 
-def _rank_cache_key(board, page):
-    """榜单缓存键（同上：_rank_category 与 _warm_ranks 必须一致）。"""
-    return json.dumps(["rank", board, page], ensure_ascii=False)
-
-
-_CONN_WARMED = [False]
-_CONN_WARM_LOCK = threading.Lock()
-
-
-def _warm_conn():
-    """后台先把官网 / 上游的 TLS 连接建立好。
-
-    冷启动的第一次请求要现做 DNS + TLS 握手（0.2~0.4s，网络差时 1s+），
-    而 bridge 在 load 模块之后、home 之前还有一小段空档，正好拿来握手。
-    """
-    with _CONN_WARM_LOCK:
-        if _CONN_WARMED[0]:
-            return
-        _CONN_WARMED[0] = True
-
-    def run():
-        # 官网首页走 _http_static(无浏览器 UA), 这个连接才是首页真正要用的
-        try:
-            _http_static().head(SITE + "/", timeout=6)
-        except Exception:
-            pass
-        for url in (SITE + "/", API_HOST + "/"):
-            try:
-                _http().head(url, headers={"User-Agent": UA}, timeout=6)
-            except Exception:
-                pass
-
-    threading.Thread(target=run, daemon=True).start()
-
-
 # 官网首页 SSR 的「热播」区块：一个请求 0.2~0.3s 就能铺满首页。
 # 打开源时壳会先要首页，过去这里的兜底是「拿第一个分类再拉一页」——
 # 那一下要多花 0.8s（最新排序是所有排序里最慢的），是「打开源慢」的主因。
@@ -3865,7 +3802,7 @@ def _home_hot_list():
             return list(_HOME_SSR_STATE[1])
     rows, seen = [], set()
     try:
-        page = ((_data_static(SITE + "/").get("loaderData") or {}).get("page") or {})
+        page = ((_data(SITE + "/").get("loaderData") or {}).get("page") or {})
         for sec in (page.get("homeSections") or []):
             for x in (sec.get("video_list") or []):
                 sid = _text(x.get("series_id"))
@@ -5648,24 +5585,6 @@ def _data(url):
     except (ValueError, TypeError):
         return {}
 
-
-def _page_static(url):
-    """抓官网 SSR, 不发浏览器 UA —— 走 CDN 静态缓存, 见 _http_static 说明。"""
-    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"}, timeout=12)
-    r.raise_for_status()
-    return r.text
-
-
-def _data_static(url):
-    html = _page_static(url)
-    m = re.search(r"(?:window\.)?_ROUTER_DATA\s*=\s*", html)
-    if not m:
-        return {}
-    try:
-        return json.JSONDecoder().raw_decode(html[m.end():])[0]
-    except (ValueError, TypeError):
-        return {}
-
 # ---------------------------------------------------------------- 搜索
 # 官网 /search/<kw> 是纯前端渲染的 SPA: SSR 里只有壳, 没有 _ROUTER_DATA,
 # 所以老写法(_data(SITE+"/search/"+kw))必然拿到空列表 —— 这是搜索失效的根因。
@@ -5763,9 +5682,10 @@ def _filter_group(key, name, values):
     return {"key": key, "name": name, "value": [{"n": n, "v": v} for n, v in values]}
 
 
-def _app_params(devices):
-    """App 接口的公共设备参数（POST / GET 共用，缺一个上游就回 PARAM_INVALID）。"""
-    return {
+def _api_post(path, body, config):
+    """带签名的红果/番茄 App 后端 POST (与 _video_model 同套签名)。"""
+    devices = _device_config(config)
+    params = {
         "iid": devices["install_id"], "device_id": devices["device_id"], "ac": "wifi",
         "channel": "update_64", "aid": "8662", "app_name": "novelread",
         "version_code": "71332", "version_name": "7.1.3.32", "device_platform": "android",
@@ -5776,12 +5696,10 @@ def _app_params(devices):
         "compliance_status": "0", "need_personal_recommend": "1", "player_so_load": "1",
         "is_android_pad_screen": "0",
     }
-
-
-def _app_headers(devices, with_body=False):
-    headers = {
+    request_headers = {
         "User-Agent": APP_UA,
         "Accept": "application/json; charset=utf-8,application/x-protobuf",
+        "Content-Type": "application/json; charset=UTF-8",
         "x-xs-from-web": "0",
         "x-ss-req-ticket": str(int(time.time() * 1000)),
         "x-tt-request-tag": "t=0;n=0",
@@ -5789,42 +5707,14 @@ def _app_headers(devices, with_body=False):
         "passport-sdk-version": "50561",
         "x-vc-bdturing-sdk-version": "3.7.2.cn",
     }
-    if with_body:
-        headers["Content-Type"] = "application/json; charset=UTF-8"
     if devices.get("cookie"):
-        headers["Cookie"] = devices["cookie"]
+        request_headers["Cookie"] = devices["cookie"]
     if devices.get("x_tt_token"):
-        headers["x-tt-token"] = devices["x_tt_token"]
-    return headers
-
-
-def _api_post(path, body, config):
-    """带签名的红果/番茄 App 后端 POST (与 _video_model 同套签名)。"""
-    devices = _device_config(config)
-    params = _app_params(devices)
-    request_headers = _app_headers(devices, with_body=True)
+        request_headers["x-tt-token"] = devices["x_tt_token"]
     url = API_HOST + path
     signed_headers, signed_url = _core_sixgod(url, params, devices, body, request_headers)
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     response = _http().post(signed_url, headers=signed_headers, data=data, timeout=15)
-    return _json_response(response)
-
-
-def _api_get(path, params, config):
-    """带签名的 App 后端 GET（榜单 cell/change 只吃 GET）。
-
-    业务参数必须和公共设备参数一起进 query —— 只用设备参数会回 PARAM_INVALID，
-    只带业务参数又不会返回内容，两者缺一不可。
-    """
-    devices = _device_config(config)
-    query = _app_params(devices)
-    for key, value in (params or {}).items():
-        if value is not None:
-            query[key] = value
-    request_headers = _app_headers(devices)
-    url = API_HOST + path
-    signed_headers, signed_url = _core_sixgod(url, query, devices, None, request_headers)
-    response = _http().get(signed_url, headers=signed_headers, timeout=15)
     return _json_response(response)
 
 
@@ -5871,76 +5761,6 @@ def _app_category_list(genre, page, config, sort=None, gender=None,
             "vod_remarks": "全%s集" % cnt if cnt else "",
         })
     return out
-
-
-# ---------------------------------------------------------------- 榜单
-# 红果 App 的「短剧榜单」页 = 书城一个 cell 的换一批（tab_type=26）：
-#   目录  = 响应里的 cell_selector.outer_row.items（全部榜单都在这）
-#   切换  = selected_items=<内容层> + sub_selected_items=<榜单 id>
-# 两个坑：
-#   1. 预约榜就是「不传 sub_selected_items」时的默认页 ——
-#      显式传 sub_selected_items=ranklist_subscribe 反而回空数据；
-#   2. offset 每页固定 10 条（limit 传 0），翻页不重复。
-# 该接口只吃 GET，且业务参数必须和设备参数一起进 query（缺任一半都拿不到内容）。
-HG_RANK_CELL = "7470092475068071998"
-HG_RANK_PAGE = 10
-HG_RANK_PATH = "/reading/bookapi/bookmall/cell/change/v1/"
-HG_RANK_DEFAULT_BOARD = "ranklist_subscribe"
-HG_RANK_BOARDS = [
-    ("推荐榜", "ranklist_hot_sc"),
-    ("热播榜", "ranklist_hot_play_sc"),
-    ("臻果榜", "ranklist_prestige"),
-    ("新剧榜", "ranklist_new_rank_sc"),
-    ("热搜榜", "ranklist_hot_search_sc"),
-    ("必看榜", "ranklist_must_watch"),
-    ("收藏榜", "ranklist_followed"),
-    ("预约榜", HG_RANK_DEFAULT_BOARD),
-]
-HG_RANK_TID = "rank:"          # 分类 tid 前缀：rank:<board_id>
-
-
-def _rank_item(it, no):
-    """榜单条目 → vod 卡片。名次放最前面，榜单里名次比集数重要。"""
-    sid = _text(it.get("series_id"))
-    name = _text(it.get("title") or it.get("series_title"))
-    cnt = it.get("episode_cnt") or 0
-    score = _text(it.get("score"))
-    remark = "No.%d" % no
-    if score:
-        remark += " · %s分" % score
-    elif cnt:
-        remark += " · 全%s集" % cnt
-    return {"vod_id": sid, "vod_name": name or "未命名",
-            "vod_pic": _text(it.get("cover")), "vod_remarks": remark,
-            "vod_content": _text(it.get("video_desc") or it.get("series_intro"))}
-
-
-def _hg_rank_page(board, page, config):
-    """榜单某一页，返回 (vod 卡片列表, 是否还有下一页)。"""
-    try:
-        page = max(1, int(page))
-    except (TypeError, ValueError):
-        page = 1
-    params = {
-        "cell_id": HG_RANK_CELL, "tab_type": "26", "selected_items": "all",
-        "offset": str((page - 1) * HG_RANK_PAGE), "limit": "0",
-        "client_req_type": "2", "client_template": "2",
-        "unlimited_selector_change_type": "1", "user_is_login": "0",
-    }
-    if board and board != HG_RANK_DEFAULT_BOARD:
-        params["sub_selected_items"] = board
-    j = _api_get(HG_RANK_PATH, params, config)
-    cv = (j.get("data") or {}).get("cell_view") or {}
-    rows, seen = [], set()
-    base = (page - 1) * HG_RANK_PAGE
-    for cell in (cv.get("cell_data") or []):
-        for it in (cell.get("video_data") or []):
-            sid = _text(it.get("series_id"))
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            rows.append(_rank_item(it, base + len(rows) + 1))
-    return rows, bool(cv.get("has_more"))
 
 
 def _app_episode_detail(sid, config):
@@ -6042,11 +5862,6 @@ class Spider(Spider):
         if _text(cfg.get("install_id")):
             self.install_id = _text(cfg.get("install_id"))
         self._extra_config = cfg
-        # 冷启动先在后台把 TLS 握好，省掉首屏那次握手
-        try:
-            _warm_conn()
-        except Exception:
-            pass
         return None
 
     def _cfg(self):
@@ -6074,10 +5889,6 @@ class Spider(Spider):
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
         ]
-        # 榜单：走官方「短剧榜单」页（书城榜单 cell），是真正的官方排名，
-        # 和分类的 sort=newest/hot_score 不是同一份数据。
-        class_list += [{"type_id": HG_RANK_TID + bid, "type_name": name}
-                       for name, bid in HG_RANK_BOARDS]
         groups = [
             {"key": "topic", "name": "主题", "value": [
                 {"n": "全部", "v": ""}, {"n": "现言", "v": "cate_1021"}, {"n": "女性成长", "v": "cate_1048"},
@@ -6119,9 +5930,7 @@ class Spider(Spider):
                 {"n": "30天内上新", "v": "3"}, {"n": "90天内上新", "v": "4"},
             ]},
         ]
-        # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板
-        filter_dict = {c["type_id"]: groups for c in class_list
-                       if not str(c["type_id"]).startswith(HG_RANK_TID)}
+        filter_dict = {c["type_id"]: groups for c in class_list}
         return {"class": class_list, "filters": filter_dict}
     def _warm_latest(self):
         """后台把「最新」第一页取好：首页展示的这段时间足够它跑完，
@@ -6144,38 +5953,11 @@ class Spider(Spider):
         _prefetch_list_page(_cat_cache_key("short_play", 1, ["newest"], None, None,
                                            None, None, None), fetch, delay=0.0)
 
-    def _warm_ranks(self):
-        """后台把 8 个榜单的第一页取好。
-
-        榜单冷启动 0.44~0.81s（推荐榜 / 预约榜最慢，约 0.8s），而用户看完首页
-        再点榜单通常隔 1~3 秒 —— 这点时间足够并发取完，点进任意榜单就是 0 毫秒。
-        错开 delay 发起，避免 8 个请求同时打上游。
-        """
-        todo = []
-        for _name, board in HG_RANK_BOARDS:
-            ck = _rank_cache_key(board, 1)
-            if _list_cache_get(ck) is None:
-                todo.append((ck, board))
-        if not todo:
-            return
-        config = self._cfg()
-
-        def make(board):
-            def fetch():
-                rows, more = _hg_rank_page(board, 1, config)
-                return {"page": 1, "pagecount": 1 if not more else 9999,
-                        "limit": len(rows), "total": 999999 if rows else 0, "list": rows}
-            return fetch
-
-        for i, (ck, board) in enumerate(todo):
-            _prefetch_list_page(ck, make(board), delay=0.05 * i)
-
     def homeVideoContent(self):
-        """首页推荐位直接吃官网首页 SSR 的热播区块（一个请求 0.15~0.25s 铺满一屏）。
+        """首页推荐位直接吃官网首页 SSR 的热播区块（一个请求 0.2~0.3s 铺满一屏）。
 
         以前这里返回空，bridge 会退回「拿第一个分类再拉一页」，而那是「最新」排序
         —— 全部分类里最慢的一条（~0.8s），于是打开源要等 1.1~1.4s。
-        现在首页自带数据，并且顺手在后台预热「最新」第一页和 8 个榜单第一页。
         """
         rows = []
         try:
@@ -6186,10 +5968,6 @@ class Spider(Spider):
             return {"list": []}
         try:
             self._warm_latest()
-        except Exception:
-            pass
-        try:
-            self._warm_ranks()
         except Exception:
             pass
         return {"list": rows}
@@ -6319,38 +6097,11 @@ class Spider(Spider):
             "vod_play_from": "", "vod_play_url": "",
         }]}
 
-    def _rank_category(self, board, page):
-        """榜单分类：走官方榜单 cell（每页 10 条，服务端 has_more 决定到底）。"""
-        def key(p):
-            return _rank_cache_key(board, p)
-
-        def fetch(p):
-            config = self._cfg()
-            rows, more = _hg_rank_page(board, p, config)
-            return {"page": p, "pagecount": p if not more else 9999,
-                    "limit": len(rows), "total": 999999 if rows else 0, "list": rows}
-
-        cache_key = key(page)
-        hit = _list_cache_get(cache_key)
-        if hit is not None:
-            return hit
-        try:
-            result = _list_single(cache_key, lambda: fetch(page))
-        except Exception:
-            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
-        if result.get("list"):
-            _list_cache_put(cache_key, result)
-            if result.get("pagecount", 1) != page:
-                _prefetch_list_page(key(page + 1), lambda p=page + 1: fetch(p))
-        return result
-
     def categoryContent(self, tid, pg, filter, extend):
         if str(tid) == LOGIN_TID:
             return self._login_category()
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
-        if str(tid).startswith(HG_RANK_TID):
-            return self._rank_category(str(tid)[len(HG_RANK_TID):], page)
         if isinstance(extend, str) and extend:
             try: extend = json.loads(extend)
             except Exception: extend = {}
@@ -6412,10 +6163,7 @@ class Spider(Spider):
         hit = _list_cache_get(cache_key)
         if hit is not None:
             return hit
-        try:
-            result = _list_single(cache_key, lambda: fetch(page))
-        except Exception:
-            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        result = _list_single(cache_key, lambda: fetch(page))
         if result.get("list"):
             _list_cache_put(cache_key, result)
             # 有下一页就把下一页先取好：翻页 0 毫秒，用户感知就是"列表秒开"
@@ -6470,10 +6218,7 @@ class Spider(Spider):
         hit = _list_cache_get(cache_key)
         if hit is not None:
             return hit
-        try:
-            result = _list_single(cache_key, lambda: fetch(page))
-        except Exception:
-            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+        result = _list_single(cache_key, lambda: fetch(page))
         if result.get("list"):
             _list_cache_put(cache_key, result)
             if page < int(result.get("pagecount") or 1):
