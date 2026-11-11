@@ -82,7 +82,8 @@ QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流
 #   换成新版 `multi_video_model/player/v1` 后立刻恢复(实测 3/5、4/4、3/4,
 #   且同一个 vid 可以连续取流, 不再有"一个设备号一次"的额度)。
 #   依据: 开源客户端 hongguo-player v1.2.26(Go) 用的就是这条新路径。
-# 另一条硬约束: query 里绝不能带 iid, 只要带了(哪怕 iid==device_id), 上游同样回空 body。
+# 2026-11-11 更正: 旧注释"query 里不能带 iid"是 x-argus 还在用占位值时的误判。
+# 真签名打通后实测: query 带 iid 完全正常(官方 App 自己就带)。回空与 iid 无关。
 VIDEO_URL = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1"
 # 回空是偶发的(约 1/5), 换台机器重打一次就好 —— 一律用新路径, 老路径别碰。
 VIDEO_HOSTS = (
@@ -3545,25 +3546,291 @@ def _gen_medusa(url: str, url_params: Mapping[str, Any], devices: Mapping[str, A
     version_or = b"".join((int.from_bytes(version[i:i + 4], "little") ^ khronos).to_bytes(4, "little") for i in range(0, 20, 4))
     return base64.b64encode(version_or + hash_bytes[:2] + (256).to_bytes(2, "little") + mixed).decode()
 
+# ------------------------------------------------------- Argus / Ladon 真签名
+# ★ 2026-11-11 定性（推翻此前全部推断）：播放接口真正校验的是 x-argus（551 封装）
+#   与 x-ladon 的**真签名**。旧实现把 base64(khronos) 当占位值填进去，服务端就恒定
+#   返回 HTTP 200 + Content-Length: 0，这才是"只有最低清晰度 / 只播 10 秒"的真正根因，
+#   与 MedusaV5 改版、与本机出口 IP 风控都无关。
+#   证据：雷电模拟器里 hongguoTV v0.11.1 正在正常播 1080P（时长 143 秒）。
+#   用 MITM 抓到它的成功请求：x-argus 234 字符、x-ladon 44 字符；
+#   而失败的三次 x-argus 只有 8 字符（base64(ts) 占位）。换成真签名后立即 200+24KB。
+#   算法逐行移植自 hongguoTV 的 Argus.kt（Simon-64/96 + AES-CBC + protobuf）。
+_ARGUS_SIGN_KEY = bytes.fromhex("fc78e0a9657a0c748ce51559903ccf03510e51d3cff232d71343e88a321c5304")
+_ARGUS_AES_KEY = bytes.fromhex("d31e3718288a1027baab59f146a09a9c")
+_ARGUS_AES_IV = bytes.fromhex("ea180a0336ed352fcd24e4d50018ae54")
+_ARGUS_MAGIC = bytes([0xF2, 0xF7, 0xFC, 0xFF, 0xF2, 0xF7, 0xFC, 0xFF])
+_ARGUS_TAIL = bytes([0xEA, 0xFB, 0x2C, 0xFE, 0x85, 0x68, 0x51, 0x91, 0x54])
+_ARGUS_LICENSE_ID = 1611921764
+_ARGUS_SIMON_Z = 0x3DC94C3A046D678B
+_M64 = (1 << 64) - 1
+
+
+def _aes_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    """AES/CBC/NoPadding 加密（Argus 551 末尾一步）。"""
+    if not data:
+        return b""
+    if AES_BACKEND == "cryptography":
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+        return encryptor.update(data) + encryptor.finalize()
+    if AES_BACKEND == "pycryptodome":
+        return CryptoAES.new(key, CryptoAES.MODE_CBC, iv).encrypt(data)
+    raise HongguoPluginError("缺少 AES 实现：需要 cryptography 或 pycryptodome")
+
+
+def _rol64(x: int, n: int) -> int:
+    x &= _M64
+    n &= 63
+    return ((x << n) | (x >> (64 - n))) & _M64 if n else x
+
+
+def _ror64(x: int, n: int) -> int:
+    x &= _M64
+    n &= 63
+    return ((x >> n) | (x << (64 - n))) & _M64 if n else x
+
+
+def _argus_sm3(raw: bytes) -> bytes:
+    return SM3(raw).digest()
+
+
+class _ArgusPb:
+    """有序 protobuf 编码（字段顺序会影响签名，不能用 dict）。"""
+
+    def __init__(self) -> None:
+        self.fields: list[tuple[int, int, int, int]] = []
+        self.blobs: list[bytes] = []
+
+    def varint(self, tag: int, value: int) -> "_ArgusPb":
+        self.fields.append((tag, 0, value & _M64, -1))
+        return self
+
+    def _blob(self, tag: int, raw: bytes) -> "_ArgusPb":
+        self.blobs.append(raw)
+        self.fields.append((tag, 2, 0, len(self.blobs) - 1))
+        return self
+
+    def utf8(self, tag: int, text: str) -> "_ArgusPb":
+        return self._blob(tag, text.encode("utf-8"))
+
+    def raw(self, tag: int, raw: bytes) -> "_ArgusPb":
+        return self._blob(tag, raw)
+
+    def nested(self, tag: int, child: "_ArgusPb") -> "_ArgusPb":
+        return self._blob(tag, child.build())
+
+    def build(self) -> bytes:
+        out = bytearray()
+
+        def put(v: int) -> None:
+            v &= _M64
+            while v >= 0x80:
+                out.append((v & 0x7F) | 0x80)
+                v >>= 7
+            out.append(v)
+
+        for tag, wire, value, index in self.fields:
+            put((tag << 3) | wire)
+            if wire == 0:
+                put(value)
+            else:
+                blob = self.blobs[index]
+                put(len(blob))
+                out.extend(blob)
+        return bytes(out)
+
+
+def _simon_key_expansion(seed: list[int]) -> list[int]:
+    key = list(seed) + [0] * 68
+    for i in range(4, 72):
+        tmp = _ror64(key[i - 1], 3) ^ key[i - 3]
+        tmp ^= _ror64(tmp, 1)
+        bit = (_ARGUS_SIMON_Z >> ((i - 4) % 62)) & 1
+        key[i] = ((~key[i - 4]) & _M64) ^ tmp ^ bit ^ 3
+    return key
+
+
+def _simon_encrypt_block(x_in: int, y_in: int, key: list[int]) -> tuple[int, int]:
+    x, y = x_in & _M64, y_in & _M64
+    for round_key in key:
+        prev = y
+        f = _rol64(y, 1) & _rol64(y, 8)
+        y = x ^ f ^ _rol64(y, 2) ^ round_key
+        x = prev
+    return x & _M64, y & _M64
+
+
+def _argus_simon_encrypt(payload: bytes) -> bytes:
+    seed = [int.from_bytes(_ARGUS_SIGN_KEY[i * 8:(i + 1) * 8], "little") for i in range(4)]
+    key = _simon_key_expansion(seed)
+    length = len(payload) // 16 * 16
+    out = bytearray(length)
+    for i in range(length // 16):
+        block = payload[i * 16:(i + 1) * 16]
+        x, y = _simon_encrypt_block(
+            int.from_bytes(block[0:8], "little"),
+            int.from_bytes(block[8:16], "little"), key)
+        out[i * 16:i * 16 + 8] = (x & _M64).to_bytes(8, "little")
+        out[i * 16 + 8:i * 16 + 16] = (y & _M64).to_bytes(8, "little")
+    return bytes(out)
+
+
+def _pkcs7_align(buf: bytearray) -> bytearray:
+    pad = 16 - len(buf) % 16
+    buf.extend(bytes([pad]) * pad)
+    return buf
+
+
+def _argus_sign(query: str, stub_hex: str, khronos: int, aid: int,
+                device_id: str, install_id: str, rand_field: int) -> str:
+    """生成 551 封装的 x-argus。"""
+    body_hash = _argus_sm3(bytes(16))[:6] if not stub_hex else _argus_sm3(bytes.fromhex(stub_hex))[:6]
+    query_bytes = query.encode("utf-8")
+    query_hash = _argus_sm3(query_bytes)[:6] if query else _argus_sm3(bytes(16))[:6]
+
+    bean = _ArgusPb()
+    bean.varint(1, 1077940818)
+    bean.varint(2, 2)
+    bean.varint(3, rand_field & 0xFFFFFFFF)
+    bean.utf8(4, str(aid or 1967))
+    bean.utf8(5, device_id)
+    bean.utf8(6, str(_ARGUS_LICENSE_ID))
+    bean.utf8(7, _query_param(query, "version_name") or "")
+    bean.utf8(8, "v04.04.05-ov-android")
+    bean.varint(9, 134744640)
+    bean.raw(10, bytes(8))
+    bean.varint(11, 0)
+    bean.varint(12, (khronos << 1) & 0xFFFFFFFF)
+    bean.raw(13, body_hash)
+    bean.raw(14, query_hash)
+    bean.nested(15, _ArgusPb().varint(1, 1).varint(2, 1).varint(3, 1).varint(7, 0xC792ECCC))
+    bean.utf8(16, install_id)
+    bean.utf8(20, "none")
+    bean.varint(21, 738)
+    bean.nested(23, _ArgusPb().utf8(1, "NX551J").varint(2, 8196).varint(4, 0x80E0D800))
+    bean.varint(25, 2)
+
+    aligned = _pkcs7_align(bytearray(bean.build()))
+    encrypted_pb = _argus_simon_encrypt(bytes(aligned))
+
+    framed = _ARGUS_MAGIC + encrypted_pb + _ARGUS_TAIL
+    mixed = bytearray(len(framed))
+    mixed[0:8] = _ARGUS_MAGIC
+    for i in range(8, len(framed)):
+        mixed[i] = framed[i] ^ _ARGUS_MAGIC[i % 8]
+    mixed.reverse()
+    padded = _pkcs7_align(bytearray(mixed) + b"ao")
+    cipher = _aes_cbc_encrypt(_ARGUS_AES_KEY, _ARGUS_AES_IV, bytes(padded))
+    return base64.b64encode(bytes([0xF2, 0x81]) + cipher).decode()
+
+
+def _ladon_expand_table(md5_hex: str) -> list[int]:
+    table = bytearray(288)
+    src = md5_hex.encode()
+    table[0:min(32, len(src))] = src[0:min(32, len(src))]
+    b0 = int.from_bytes(table[0:8], "little")
+    b8 = int.from_bytes(table[8:16], "little")
+    queue = [int.from_bytes(table[16:24], "little"), int.from_bytes(table[24:32], "little")]
+    for i in range(34):
+        x8 = (_ror64(b8, 8) + b0) & _M64
+        x8 ^= i
+        queue.append(x8)
+        x8 ^= _rol64(b0, 3)
+        for j in range(8):
+            table[(i + 1) * 8 + j] = (x8 >> (j * 8)) & 0xFF
+        b0 = x8
+        b8 = queue.pop(0)
+    return [int.from_bytes(table[i * 8:(i + 1) * 8], "little") for i in range(36)]
+
+
+def _ladon_encrypt_block(table: list[int], data: bytes, at: int) -> bytes:
+    d0 = int.from_bytes(data[at:at + 8], "little")
+    d1 = int.from_bytes(data[at + 8:at + 16], "little")
+    for i in range(34):
+        d1 = (table[i] ^ ((d0 + _ror64(d1, 8)) & _M64)) & _M64
+        d0 = (d1 ^ _rol64(d0, 3)) & _M64
+    return (d0 & _M64).to_bytes(8, "little") + (d1 & _M64).to_bytes(8, "little")
+
+
+def _ladon_encrypt(khronos: int, license_id: int, aid: int, random_bytes: bytes) -> str:
+    """生成 x-ladon（34 轮 ARX 自定义分组密码）。"""
+    plain = "%d-%d-%d" % (khronos, license_id, aid)
+    md5_hex = hashlib.md5(random_bytes + str(aid).encode()).hexdigest()
+    table = _ladon_expand_table(md5_hex)
+    size = len(plain)
+    new_size = size + (16 - size % 16)
+    buf = bytearray([new_size - size]) * new_size
+    buf[0:size] = plain.encode()
+    out = bytearray(new_size)
+    for i in range(new_size // 16):
+        out[i * 16:i * 16 + 16] = _ladon_encrypt_block(table, bytes(buf), i * 16)
+    return base64.b64encode(random_bytes + bytes(out)).decode()
+
+
+def _query_param(query: str, name: str) -> str | None:
+    """按 Go url.Values.Get 语义取 query 参数。"""
+    for part in query.split("&"):
+        eq = part.find("=")
+        key = part if eq < 0 else part[:eq]
+        if key == name:
+            return "" if eq < 0 else part[eq + 1:]
+    return None
+
+
+def _signing_body_bytes(data: Any, data_type: str | None = None) -> bytes:
+    """取出真正参与签名的请求体字节。"""
+    if not data:
+        return b""
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    if data_type and "json" in str(data_type).lower():
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def _core_sixgod(url: str, params: Mapping[str, Any], devices: Mapping[str, Any], data: Any, header: Mapping[str, Any]) -> tuple[dict[str, str], str]:
     data_type = str(header.get("content-type", header.get("Content-Type", "")))
     xg_rand = random.randint(0, 0xFFFF)
     encrypted_url, url_params = _get_params_encrypturl(url, params, devices)
     khronos = int(time.time())
     encoded_query = _url_encode(url_params)
+    # ★ 必须是真签名：占位值会让上游恒定回 HTTP 200 + 0 字节。
+    try:
+        _aid = int(str(devices.get("aid") or 8662))
+    except (TypeError, ValueError):
+        _aid = 8662
+    _did = str(devices.get("device_id") or url_params.get("device_id") or "")
+    _iid = str(devices.get("install_id") or devices.get("iid") or "")
+    _body_raw = _signing_body_bytes(data, data_type)
+    _stub_hex = hashlib.md5(_body_raw).hexdigest() if _body_raw else ""
     values = {
         "khronos": str(khronos),
-        "ladon": base64.b64encode(khronos.to_bytes(4, "big")).decode(),
-        "argus": base64.b64encode(khronos.to_bytes(4, "little")).decode(),
-        "gorgon": _encrypt_gorgon(data, encoded_query, khronos, xg_rand, data_type),
-        "helios": _encrypt_helios(khronos, 0),
-        "medusa": _gen_medusa(encrypted_url, url_params, devices, data, khronos, data_type),
+        "ladon": _ladon_encrypt(khronos, _ARGUS_LICENSE_ID, _aid,
+                                bytes(random.getrandbits(8) for _ in range(4))),
+        # App 的 PlayerSigner 里 install_id 固定传空串，保持一致
+        "argus": _argus_sign(encoded_query, _stub_hex, khronos, _aid, _did, "",
+                             random.randint(0, 0x7FFFFFFF)),
+        "gorgon": "",
+        "helios": "",
+        "medusa": "",
     }
+    # ★ 播放取流只认 x-argus / x-ladon / x-ss-stub 三个头。
+    #   2026-11-11 实测同一 query/body：去掉 medusa+gorgon+helios → 200 + 24KB；
+    #   带上这三个 → 200 + 0 字节。此前"上游改版"的判断全是被这条掩盖的。
+    _slim = ("/player/" in url) or ("video_model" in url)
+    if not _slim:
+        values["gorgon"] = _encrypt_gorgon(data, encoded_query, khronos, xg_rand, data_type)
+        values["helios"] = _encrypt_helios(khronos, 0)
+        values["medusa"] = _gen_medusa(encrypted_url, url_params, devices, data, khronos, data_type)
     signs = {
         "x-ladon": values["ladon"], "x-khronos": values["khronos"],
-        "x-argus": values["argus"], "x-gorgon": values["gorgon"],
-        "x-helios": values["helios"], "x-medusa": values["medusa"],
+        "x-argus": values["argus"],
     }
+    if not _slim:
+        signs["x-gorgon"] = values["gorgon"]
+        signs["x-helios"] = values["helios"]
+        signs["x-medusa"] = values["medusa"]
     if data:
         signs["x-ss-stub"] = _json_body_md5(data, data_type)
     result_headers = {str(key).lower(): str(value) for key, value in header.items()}
@@ -3588,7 +3855,8 @@ _DEVICE_BURN_MAX = 32
 # 连带把整个 IP 的取流接口封掉(实测封掉后连全新设备号也一直回空 body), 得不偿失。
 _DEVICE_ROTATE_LIMIT = 8
 _DEVICE_ROTATE_WINDOW = 3600
-_REQUEST_GAP = 0.8              # 取流请求之间的最小间隔(秒), 避免连发被判空
+_REQUEST_GAP = 0.15             # 取流请求之间的最小间隔(秒)。
+# 历史上因 x-argus 占位值必然回空, 才把间隔拉到 0.8s 试图规避; 真签名打通后无需再等。
 _THROTTLE_UNTIL = [0.0]         # 上游回空后的全局冷却时间点
 _THROTTLE_PENALTY = 2.0         # 判空一次 -> 全局冷却再加长的秒数(上限 _THROTTLE_MAX)
 _THROTTLE_MAX = 12.0
@@ -4028,8 +4296,30 @@ _HG_LOCK = threading.RLock()
 _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详情页提示）
 # 直连的健康度：3 发都回空才算"直连坏了"，熔断只是防止每集白等 0.5s。
 # 2026-11-10 晚起新路径基本不再整段失效，所以冷却从 180s 缩到 20s。
+# 2026-11-11 上游换签名（MedusaV5）后旧签名全被拒：连续 2 次整轮失败就进
+# 15 分钟静默期，期间直接走试看兜底，避免播放器反复黑屏 + 给上游刷无效请求。
 _DIRECT_FAIL_AT = [0.0]
 _DIRECT_COOLDOWN = 20.0
+_SIG_BREAKER = {"until": 0.0, "strikes": 0}
+_SIG_BREAKER_STRIKES = 2
+_SIG_BREAKER_SECONDS = 900.0
+
+
+def _sig_breaker_active() -> bool:
+    return time.time() < _SIG_BREAKER["until"]
+
+
+def _sig_breaker_strike() -> None:
+    _SIG_BREAKER["strikes"] += 1
+    if _SIG_BREAKER["strikes"] >= _SIG_BREAKER_STRIKES and not _sig_breaker_active():
+        _SIG_BREAKER["until"] = time.time() + _SIG_BREAKER_SECONDS
+        _play_log("取流连续 %d 轮全失败 -> 静默 %d 分钟, 期间直接走兜底"
+                  % (_SIG_BREAKER["strikes"], int(_SIG_BREAKER_SECONDS // 60)))
+
+
+def _sig_breaker_reset() -> None:
+    _SIG_BREAKER["strikes"] = 0
+    _SIG_BREAKER["until"] = 0.0
 
 
 def _direct_healthy() -> bool:
@@ -5097,9 +5387,16 @@ def _video_model_once(video_id: str, config: Mapping[str, Any],
       签名服务退回纯兜底（只有 3 发都空才动它）。
     """
     started = time.time()
+    if _sig_breaker_active():
+        # 2026-11-11：红果把播放接口的签名换成 MedusaV5，旧签名（含 8788 服务）
+        # 一律被拒、恒回 200+0 字节。这时再按 3 发直连 + 2 轮注册去撞，
+        # 只是让播放器多黑屏 5 秒并继续给上游送无效请求（有可能延长封禁）。
+        raise HongguoPluginError("取流接口签名已变更，暂不重试")
     if _direct_healthy():
         try:
-            return _video_model_direct(video_id, config, ct_hint, tries=3)
+            model = _video_model_direct(video_id, config, ct_hint, tries=3)
+            _sig_breaker_reset()
+            return model
         except _VideoModelEmpty as exc:
             _DIRECT_FAIL_AT[0] = time.time()
             _play_log("direct empty: %s -> signed" % str(exc)[:60])
@@ -5109,10 +5406,17 @@ def _video_model_once(video_id: str, config: Mapping[str, Any],
     else:
         _play_log("direct 近期判空, 跳过直连直接签名")
     try:
-        return _hg_signed_play(video_id, ct_hint)
+        model = _hg_signed_play(video_id, ct_hint)
+        _sig_breaker_reset()
+        return model
     except Exception as exc:  # noqa: BLE001 - 签名不可用/超预算都退到旧实现
         _play_log("signed fail: %s" % str(exc)[:60])
+        _sig_breaker_strike()
         spent = time.time() - started
+        if _sig_breaker_active():
+            # 本轮正好踩到熔断线：旧实现还要先吃 _pace_request 的冷却，
+            # 直接抛回去让上层立刻走兜底，别再让用户盯着黑屏。
+            raise HongguoPluginError("video_model 取流失败: %s" % str(exc)[:60]) from exc
         if spent > _START_BUDGET:
             # 已经等了这么久, 旧实现前面还有 _pace_request(最长 12s 的冷却),
             # 再往下走播放器就是几十秒黑屏 —— 直接把失败抛回去。
