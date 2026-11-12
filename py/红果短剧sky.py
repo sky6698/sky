@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
+import urllib.request
 import requests
 try:
     from cryptography.hazmat.primitives import hashes
@@ -71,7 +72,7 @@ EPISODE_PREFIX = "hg-episode-v1:"
 # 选集 id 编码为 "第N集$hg-episode-v1:<vid>@<档位>"，播放时按档位就近降级。
 QUALITY_TIERS = (("超清", "1080"), ("高清", "720"), ("标准", "540"), ("流畅", "480"), ("极速", "360"))
 # 取流端点(实测 2026-10-13, 游客设备/无 cookie 无 token 即可用):
-#   POST /novel/player/video_model/v1/  body={"video_id":"<vid>",
+#   POST /novel/player/multi_video_model/player/v1  body={"video_id":"<vid>",
 #        "biz_param":{"need_all_video_definition":true}}
 #   -> code=0, data.video_model.video_list 返回 5 档:
 #      360p(360x640) / 480p / 540p / 720p / 1080p(1080x1920), HEVC + CENC(AES-CTR)
@@ -113,13 +114,18 @@ PLAY_LINE = "红果┃短剧"
 PLAY_LINE_PREVIEW = "红果┃试看360p"
 
 # ---------------------------------------------------------------- 账号登录
-# 红果官网自身挂着番茄小说 passport 网关(aid=2503), 扫码登录流程:
-#   get_qrcode 拿 token+二维码 -> 用「抖音/番茄小说/红果」APP 扫码并确认
+# 红果官网自身挂着番茄小说 passport 网关, 扫码登录流程:
+#   get_qrcode 拿 token+二维码 -> 用「红果短剧」App 扫码并确认
 #   -> check_qrconnect 轮询到 confirmed -> 跟随 redirect_url 收割 sessionid 等 cookie。
 # 登录态落盘(hongguo_account.json)后注入 App 接口(cookie + x-tt-token),
 # 用于解锁 >360p 的受保护流; 未登录时自动只用官网 360p 公开直链。
-PASSPORT_AID = "2503"
-PASSPORT_SDK = "3.0.16"
+#
+# aid/SDK 对齐官网前端实际用的 513755 / 3.4.10(参照 hongguoTV 的 WebLogin):
+#   旧值 2503/3.0.16 也能出码, 但 qrcode_index_url 落到通用的 reading.snssdk.com
+#   sdk-next 页, 手机扫完可能跳不到红果绑定流程; 513755 直接给
+#   reading_offline/novelread/page/scan-code.html, 与红果 App 一致。
+PASSPORT_AID = "513755"
+PASSPORT_SDK = "3.4.10"
 LOGIN_TID = "hg_login"
 LOGIN_QR = "hg_login:qr"
 LOGIN_APP = "hg_login:app"
@@ -127,8 +133,29 @@ LOGIN_LOGOUT = "hg_login:logout"
 LOGIN_TITLE = "登录"
 ACCOUNT_NAME = "hongguo_account.json"
 _QR_TTL_FALLBACK = 240          # 服务端 expire_time 缺失时的二维码有效期兜底(秒)
-_QR_POLL_ROUNDS = 4             # 进详情页时同步轮询次数
+_QR_POLL_ROUNDS = 6             # 进详情页时同步轮询次数
 _QR_POLL_INTERVAL = 1.2         # 每次轮询间隔(秒)
+QR_DIALOG_ID = "hg_login_qr"    # 原生扫码小窗的 dialog id
+
+# ---------------------------------------------------------------- 账号云数据
+# 观看记录 / 收藏 / 预约三类数据都在 api5-normal-sinfonlinea.fqnovel.com,
+# 签名与取流同一套(x-argus/x-ladon/x-ss-stub), 额外只多一个 Cookie 头。
+# 已实测: 不带 Cookie 时 code=0 + 空列表(匿名), 带登录 Cookie 才回真实数据。
+ACC_HOST = "https://api5-normal-sinfonlinea.fqnovel.com"
+ACC_HOSTS = (
+    "https://api5-normal-sinfonlinea.fqnovel.com",
+    "https://api5-normal-sinfonlineb.fqnovel.com",
+)
+MINE_TID = "hg_mine"            # 我的(账号 / 登录入口)
+HIST_TID = "hg_hist"            # 观看记录
+FAV_TID = "hg_fav"              # 我的收藏
+RESV_TID = "hg_resv"            # 我的预约
+_ACC_CACHE: dict[str, tuple] = {}
+_ACC_CACHE_TTL = 45             # 账号列表缓存(秒): 云数据变化慢, 少打上游
+_ACC_LOCK = threading.RLock()
+# 真正代表"已登录"的 cookie; passport_csrf_token 之类匿名 cookie 不算
+_SESSION_COOKIE_KEYS = ("sessionid", "sessionid_ss", "sid_tt", "sid_guard", "sid_ucp_v1")
+
 
 _HTTP = None
 
@@ -217,12 +244,15 @@ class _HongguoLogin:
     """扫码登录状态机 + 凭证落盘(线程安全)。模块级单例见 _LOGIN。
 
     二维码内容就是服务端下发的 qrcode_index_url(含 token, uc_sdk=scan-auth),
-    手机用「抖音 / 番茄小说 / 红果」APP 扫它 -> APP 内点确认 -> 本端轮询到 confirmed,
+    手机用「红果短剧」App 扫它 -> APP 内点确认 -> 本端轮询到 confirmed,
     再跟随 redirect_url 收割 sessionid 等 cookie 落盘。
     """
 
     def __init__(self):
         self._lock = threading.RLock()
+        self._make_lock = threading.Lock()   # 并发补码只放一个线程去请求
+        self._fail_at = 0.0                  # 上次取码失败时刻(节流用)
+        self._fail_msg = ""
         self._sess = None
         self.token = ""
         self.qr_b64 = ""
@@ -234,6 +264,11 @@ class _HongguoLogin:
         self.cookies = {}
         self.user = {}
         self._loaded = False
+        self._checked_at = 0.0
+        self.last_raw = {}
+        self.scanned_at = 0.0        # 首次检测到「已扫码待确认」的时刻
+        self._poll_lock = threading.Lock()
+        self._poll_at = 0.0          # 上一次真正问服务端的时间(节流用)
 
     # ---------------------------------------------------------- 落盘
 
@@ -247,10 +282,20 @@ class _HongguoLogin:
         return os.path.join(base, ACCOUNT_NAME)
 
     def load(self):
+        """读登录凭证。
+
+        首次读盘后 `_loaded` 就置真；但如果此刻还没有凭证，
+        之后仍会每 3 秒重看一次文件 —— 扫码登录完成时会直接写盘，
+        这样源不用重启就能拿到登录态（进程内模块只加载一次，不能只读一次）。
+        """
         with self._lock:
-            if self._loaded:
+            now = time.time()
+            if self._loaded and self.cookies:
+                return
+            if self._loaded and (now - self._checked_at) < 3.0:
                 return
             self._loaded = True
+            self._checked_at = now
             try:
                 with open(self._path(), encoding="utf-8") as fh:
                     data = json.load(fh)
@@ -284,13 +329,21 @@ class _HongguoLogin:
                 os.remove(self._path())
             except OSError:
                 pass
+        # 账号云数据(记录/收藏/预约)全部失效，别把上一个号的数据留在缓存里
+        try:
+            _acc_cache_clear()
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- 凭证
 
     def logged_in(self):
         self.load()
         with self._lock:
-            return bool(self.cookies)
+            if any(self.cookies.get(k) for k in _SESSION_COOKIE_KEYS):
+                return True
+            # 兜底: 个别账号只下发 uid_tt, 拿不到 sessionid 系列, 有用户资料也算登录态
+            return bool(self.cookies) and bool(self.user.get("uid"))
 
     def cookie_header(self):
         self.load()
@@ -320,16 +373,43 @@ class _HongguoLogin:
         if self._sess is None:
             sess = requests.Session()
             sess.headers.update({"User-Agent": UA, "Referer": SITE + "/"})
+            # 官网是境内直连站点, 别让本机 http_proxy 劫持扫码/轮询这类回环敏感请求
+            try:
+                sess.trust_env = False
+            except Exception:
+                pass
             self._sess = sess
         return self._sess
 
     @staticmethod
     def _params(extra=None):
         p = {"aid": PASSPORT_AID, "language": "zh", "account_sdk_source": "web",
-             "passport_jssdk_version": PASSPORT_SDK, "passport_jssdk_type": "normal"}
+             "passport_jssdk_version": PASSPORT_SDK, "passport_jssdk_type": "normal",
+             "is_from_ttaccountsdk": "1"}
         if extra:
             p.update(extra)
         return p
+
+    def _csrf(self):
+        """官网 passport 要求把 csrf cookie 同时放进 x-tt-passport-csrf-token 头。"""
+        try:
+            jar = self._session().cookies
+            for key in ("passport_csrf_token", "passport_csrf_token_default"):
+                value = jar.get(key)
+                if value:
+                    return str(value)
+        except Exception:
+            pass
+        return ""
+
+    def _pg(self, path, extra=None, timeout=20, allow_redirects=False):
+        headers = {}
+        csrf = self._csrf()
+        if csrf:
+            headers["x-tt-passport-csrf-token"] = csrf
+        return self._session().get(SITE + path, params=self._params(extra),
+                                   headers=headers or None, timeout=timeout,
+                                   allow_redirects=allow_redirects)
 
     def new_qrcode(self, force=False):
         """生成二维码; 未过期且未确认的 token 直接复用, 免得重进详情页把二维码刷掉。"""
@@ -337,16 +417,25 @@ class _HongguoLogin:
             fresh = (time.time() - self.created) < (self.expire or _QR_TTL_FALLBACK)
             if not force and self.token and self.qr_bytes and fresh:
                 return True
-        resp = self._session().get(
-            SITE + "/passport/web/get_qrcode/",
-            params=self._params({"next": SITE + "/", "need_logo": "true"}), timeout=20)
-        data = (resp.json() or {}).get("data") or {}
-        if data.get("error_code") or not data.get("token"):
-            raise HongguoPluginError(
-                "二维码获取失败: %s" % (data.get("description") or data.get("error_code")))
-        raw = b""
+        resp = self._pg("/passport/web/get_qrcode/",
+                        {"next": SITE + "/", "need_logo": "true"}, timeout=20)
         try:
-            raw = base64.b64decode(data.get("qrcode") or "")
+            payload = resp.json() or {}
+        except Exception as exc:
+            raise HongguoPluginError("二维码接口返回非 JSON(HTTP %s)" % resp.status_code) from exc
+        data = payload.get("data") or {}
+        if payload.get("message") not in (None, "", "success") or data.get("error_code") \
+                or not data.get("token"):
+            raise HongguoPluginError(
+                "二维码获取失败: %s" % (data.get("description") or data.get("error_code")
+                                     or payload.get("message") or "未知原因"))
+        raw = b""
+        encoded = str(data.get("qrcode") or "")
+        # 服务端两种格式都出现过: 裸 base64 / data:image/png;base64,xxx
+        if "base64," in encoded:
+            encoded = encoded.split("base64,", 1)[1]
+        try:
+            raw = base64.b64decode(encoded)
         except Exception:
             raw = b""
         prompt = ""
@@ -359,72 +448,145 @@ class _HongguoLogin:
             prompt = ""
         with self._lock:
             self.token = str(data.get("token"))
-            self.qr_b64 = str(data.get("qrcode") or "")
+            self.qr_b64 = base64.b64encode(raw).decode("ascii") if raw else ""
             self.qr_bytes = raw or self.qr_bytes
             self.qr_url = str(data.get("qrcode_index_url") or "")
-            self.prompt_text = prompt or "请使用「抖音 / 番茄小说」APP 扫码并在手机上确认"
+            # ★ 这个码是 passport 的「身份验证」码，用**红果短剧 App**扫（老版 App/第三方壳会报"未识别"）；
+            #   服务端 prompt 写的是"请使用抖音 APP 扫码验证"，实测红果 App 能扫，故不采用服务端文案。
+            self.prompt_text = "请用「红果短剧」App 扫一扫，然后在手机上确认登录"
             self.created = time.time()
+            # ★ 换新码必须清掉「已扫码」的标记：旧实现从不重置 scanned_at，
+            #   一旦某次检测到 scanned，awaiting_confirm() 会在 240 秒内一直为真，
+            #   于是 qr_fresh() 恒真、png_now() 拒绝补码 —— 过期废码被锁死在页面上。
+            self.scanned_at = 0.0
+            # expire_time 是**绝对时间戳**(秒)，不是时长；实测有效期只有 ~55 秒，
+            # 所以这里统一折算成剩余秒数，UI 据此决定何时刷新。
             try:
-                self.expire = int(data.get("expire_time") or 0)
+                expire_at = int(data.get("expire_time") or 0)
             except Exception:
-                self.expire = 0
+                expire_at = 0
+            if expire_at > 1_000_000_000:
+                self.expire = max(expire_at - int(time.time()), 0)
+            else:
+                self.expire = expire_at if 0 < expire_at <= 600 else 0
         return True
 
     def check(self):
-        """轮询一次扫码状态; confirmed 时收割 cookie 并落盘。"""
+        """轮询一次扫码状态; confirmed 时收割 cookie 并落盘。
+
+        官方 status 是数字串(3=已确认, 5=过期/拒绝), 也有文字形式, 这里统一归一化成
+        new / scanned / confirmed / expired 四态给 UI 用。
+        """
         with self._lock:
             token = self.token
         if not token:
             return {"status": "none"}
         try:
-            resp = self._session().get(
-                SITE + "/passport/web/check_qrconnect/",
-                params=self._params({"next": "/", "token": token}), timeout=15)
-            data = (resp.json() or {}).get("data") or {}
+            resp = self._pg("/passport/web/check_qrconnect/",
+                            {"next": SITE + "/", "token": token}, timeout=15)
+            payload = resp.json() or {}
+            data = payload.get("data") or {}
+            # 留着原始返回: "手机点了确认但本端没反应"这类问题只能看服务端到底说了什么
+            self.last_raw = {"http": resp.status_code, "payload": payload}
         except Exception as exc:
+            self.last_raw = {"error": repr(exc)[:160]}
             return {"status": "error", "message": str(exc)[:60]}
         if data.get("error_code"):
-            with self._lock:
-                if self.token == token:
-                    self.token = ""
-                    self.qr_bytes = b""
+            self._drop_qr(token)
             return {"status": "expired", "error_code": data.get("error_code")}
-        status = str(data.get("status") or "new")
-        if status in ("confirmed", "complete", "success") or data.get("redirect_url"):
-            self._harvest(data.get("redirect_url"))
-            return {"status": "confirmed", "user": self.display()}
-        return {"status": status}
+        state = str(data.get("status") or "new").strip().lower()
+        redirect = str(data.get("redirect_url") or "")
+        if state in ("5", "4", "expired", "cancel", "canceled", "refuse", "refused"):
+            self._drop_qr(token)
+            return {"status": "expired"}
+        if state in ("3", "confirmed", "complete", "success") or redirect:
+            self._harvest(redirect)
+            if self.logged_in():
+                return {"status": "confirmed", "user": self.display()}
+            return {"status": "error", "message": "手机已确认, 但没换到登录态, 请重新扫码"}
+        if state in ("1", "2", "scanned", "scan", "waiting_confirm", "confirm"):
+            if not self.scanned_at:
+                self.scanned_at = time.time()
+            return {"status": "scanned"}
+        return {"status": "new"}
+
+    def awaiting_confirm(self, window=240.0):
+        """已经扫过了、只在等手机点确认。
+
+        ★ 这时候**绝不能换码**：换 token 会让手机上那个"确认"作废，
+        用户看起来就是"我点了确认，电视端没反应"。二维码本身只有 ~53 秒，
+        而扫码+确认经常超过它，所以必须给这段等待单独延长。
+        """
+        if not self.scanned_at:
+            return False
+        if self.logged_in():
+            return False
+        return (time.time() - self.scanned_at) < window
+
+    def _drop_qr(self, token):
+        """只废掉 token，**保留最后一帧图**。
+
+        旧实现连 qr_bytes 一起清空，于是「过期 → 清图」和「宿主来拉图」之间
+        就出现空窗，端点回 404 "no qrcode"，宿主直接把这段字渲染出来了。
+        png_now() 会按 token/有效期判断要不要补新码，旧图留着只作兜底显示。
+        """
+        with self._lock:
+            if self.token == token:
+                self.token = ""
+                self.qr_b64 = ""
 
     def _harvest(self, redirect_url):
-        """跟随 redirect 收割 cookie(与取二维码同一个 session), 再取昵称。"""
+        """跟随 redirect 收割 cookie(与取二维码同一个 session), 再取用户资料。"""
         sess = self._session()
-        try:
-            if redirect_url:
-                sess.get(redirect_url, timeout=20, allow_redirects=True)
-        except Exception:
-            pass
+        if redirect_url:
+            try:
+                target = redirect_url
+                if target.startswith("/"):
+                    target = SITE + target
+                if target.startswith(("https://", "http://")):
+                    sess.get(target, timeout=20, allow_redirects=True)
+            except Exception:
+                pass
         try:
             cookies = {k: v for k, v in sess.cookies.get_dict().items() if v}
         except Exception:
             cookies = {}
-        user = {}
+        if cookies:
+            with self._lock:
+                self.cookies = dict(cookies)
+        # 换了账号 -> 记录/收藏/预约缓存必须清空
         try:
-            resp = sess.get(SITE + "/passport/account/info/v2/",
-                            params=self._params(), timeout=15)
-            info = (resp.json() or {}).get("data") or {}
-            name = info.get("name") or info.get("screen_name") or info.get("nickname")
-            if name:
-                user = {"name": str(name),
-                        "avatar": str(info.get("avatar_url") or info.get("avatar") or "")}
+            _acc_cache_clear()
         except Exception:
             pass
+        profile = self._fetch_profile()
         with self._lock:
-            if cookies:
-                self.cookies = cookies
-            self.user = user
+            if profile:
+                self.user = profile
             self.token = ""
             self.qr_bytes = b""
+            self.qr_b64 = ""
         self.save()
+
+    def _fetch_profile(self):
+        """优先用 App 账号接口(带登录 Cookie)取 uid/昵称, 失败退回官网 account/info。"""
+        try:
+            info = _acc_profile() or {}
+        except Exception:
+            info = {}
+        if info.get("uid") or info.get("name"):
+            return info
+        try:
+            resp = self._pg("/passport/account/info/v2/", {"next": SITE + "/"}, timeout=15)
+            data = (resp.json() or {}).get("data") or {}
+            name = data.get("name") or data.get("screen_name") or data.get("nickname")
+            if name:
+                return {"uid": str(data.get("user_id") or data.get("uid") or ""),
+                        "name": str(name),
+                        "avatar": str(data.get("avatar_url") or data.get("avatar") or "")}
+        except Exception:
+            pass
+        return {}
 
     # ---------------------------------------------------------- 二维码图片
 
@@ -432,8 +594,211 @@ class _HongguoLogin:
         with self._lock:
             return self.qr_bytes or b""
 
+    def qr_fresh(self):
+        if self.awaiting_confirm():
+            # 已扫码等确认: 图还能用就继续用, 只靠"换不换码"这一个开关保护这次确认
+            with self._lock:
+                return bool(self.qr_bytes) and bool(self.token)
+        with self._lock:
+            return bool(self.qr_bytes) and bool(self.token) and \
+                (time.time() - self.created) < (self.expire or _QR_TTL_FALLBACK)
+
+    def png_now(self, make=True, force=False):
+        """取当前二维码 PNG；手头没有(或已过期)就**现场补一张**。
+
+        ★ 这是当初「点扫码登录跳网页显示 no qrcode」的根因：
+        宿主加载列表封面 / 详情页海报时就会来拉 `/login/qr.png`，
+        而那时从没走过 `new_qrcode()`（第一次进「我的」尤为典型），
+        旧实现直接回 404 文本，宿主把 "no qrcode" 当图片渲染到网页里。
+        现在改为按需补码，并且失败也回一张占位图，绝不再吐纯文本。
+
+        force=True 用于自助页面倒计时快到点时强制换新码（旧码马上就废，换掉更划算）。
+        """
+        if not force and self.qr_fresh():
+            return self.qr_bytes_now(), ""
+        if not make:
+            return self.qr_bytes_now(), ""
+        # 已扫待确认: 就算调用方要求换码也不换, 否则手机上的"确认"会对着一个失效 token
+        if self.awaiting_confirm() and self.qr_bytes_now():
+            return self.qr_bytes_now(), ""
+        with self._make_lock:
+            if not force and self.qr_fresh():           # 双检: 并发请求只让一个去要码
+                return self.qr_bytes_now(), ""
+            now = time.time()
+            if self._fail_msg and (now - self._fail_at) < 4.0:
+                return self.qr_bytes_now(), self._fail_msg   # 刚失败过, 别把宿主拖死
+            try:
+                self.new_qrcode(force=True)
+            except Exception as exc:
+                self._fail_at = time.time()
+                self._fail_msg = str(exc)[:120]
+                return self.qr_bytes_now(), self._fail_msg
+            if self.qr_fresh():
+                self._fail_msg = ""
+                return self.qr_bytes_now(), ""
+            self._fail_at = time.time()
+            self._fail_msg = "二维码接口没返回图片"
+            return self.qr_bytes_now(), self._fail_msg
+
+    def poll_once(self, min_interval=1.2):
+        """给 HTTP 端点用的节流轮询。
+
+        ★ 这是「手机确认了但本端还在倒计时」的根因：
+        `/login/state` 以前只回本地快照（token 剩余秒数），**从不问服务端**。
+        网页里没有人调用 check()，于是 status 永远停在 new，
+        手机点了确认也不会变——因为根本没人在等那个确认。
+        现在状态端点自己也轮询，多标签页并发时只放一个出去。
+        """
+        now = time.time()
+        with self._poll_lock:
+            if now - self._poll_at < min_interval:
+                return None
+            self._poll_at = now
+        try:
+            return self.check()
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:80]}
+
+    def debug_state(self):
+        """诊断快照: /login/state 用, 方便在宿主进程里确认二维码到底有没有生成。
+
+        顺带**真的去问一次服务端**（poll_once 节流），否则网页永远发现不了"手机已确认"。
+        """
+        self.load()
+        status = "new"
+        message = ""
+        if self.token and not self.logged_in():
+            result = self.poll_once()
+            if result:
+                status = str(result.get("status") or "new")
+                message = str(result.get("message") or "") or str(result.get("error_code") or "")
+            elif self.scanned_at:
+                status = "scanned"          # 节流命中: 沿用"已扫过"的事实, 别把提示打回 new
+        with self._lock:
+            left = 0
+            if self.token:
+                left = int((self.expire or _QR_TTL_FALLBACK) - (time.time() - self.created))
+            return {
+                "logged": self.logged_in(),
+                "user": self.user.get("name") or "",
+                "token": (self.token[:8] + "…") if self.token else "",
+                "qr_bytes": len(self.qr_bytes),
+                "left": max(left, 0),
+                "cookies": len(self.cookies),
+                "status": status if not self.logged_in() else "confirmed",
+                "message": message,
+                "scanned": bool(self.scanned_at),
+                "last_error": self._fail_msg,
+                "last_raw": self.last_raw,
+            }
+
 
 _LOGIN = _HongguoLogin()
+
+
+# ---------------------------------------------------------------- 宿主原生 UI
+# 无名影视 bridge 的 /hook/ui 协议（汽水音乐扫码登录用的同一条通道）：
+#   POST dialog{id,dialog,title,texts,images[纯base64 PNG],buttons} -> 原生小窗
+#   POST dismiss{dialog} 关窗, POST toast{msg} 轻提示
+# 扫码登录借此弹窗：二维码直接显示在电视上，手机扫完自动关窗并提示。
+def _bridge_port() -> int:
+    try:
+        import base.spider as _bs
+        return int(getattr(_bs, "PROXY_PORT", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _ui_send(event, timeout=3.0) -> bool:
+    port = _bridge_port()
+    if not port:
+        return False
+    try:
+        data = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d/hook/ui" % port, data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return getattr(response, "status", 200) == 200
+    except Exception:
+        return False
+
+
+def _ui_toast(message) -> bool:
+    try:
+        return _ui_send({"kind": "toast", "msg": str(message)})
+    except Exception:
+        return False
+
+
+def _ui_show_qr(image, note=""):
+    texts = ["用手机「红果短剧」App 扫一扫（老版/第三方壳会报\"未识别\"）",
+             "扫完在手机上点「确认登录」，本窗口会自动关闭",
+             "登录后可同步观看记录、收藏与预约"]
+    if note:
+        texts.insert(0, note)
+    return _ui_send({
+        "kind": "dialog", "id": QR_DIALOG_ID, "dialog": QR_DIALOG_ID,
+        "title": "扫码登录红果短剧", "texts": texts,
+        "images": [image], "buttons": [],
+    })
+
+
+def _ui_qr_window(force=True) -> bool:
+    """弹原生扫码小窗；手机确认后自动关窗 + Toast。宿主不支持时返回 False。
+
+    这个码的有效期只有 ~55 秒（服务端 expire_time 是绝对时间戳），
+    过期后自动换新码重新弹窗，最多刷新 5 轮，免得用户还没掏出手机就失效。
+    """
+    if _LOGIN.logged_in():
+        user = _LOGIN.display()
+        _ui_toast("已登录" + ((" · " + user.get("name", "")) if user.get("name") else ""))
+        return True
+    try:
+        _LOGIN.new_qrcode(force=force)
+    except Exception as exc:
+        _ui_toast("二维码获取失败: %s" % str(exc)[:60])
+        return False
+    image = _LOGIN.qr_b64
+    if not image:
+        return False
+    if not _ui_show_qr(image):
+        return False
+
+    def watcher():
+        refreshes = 0
+        while True:
+            time.sleep(2.0)
+            try:
+                state = str((_LOGIN.check() or {}).get("status"))
+            except Exception:
+                state = ""
+            if _LOGIN.logged_in():
+                _acc_cache_clear()
+                _ui_send({"kind": "dismiss", "dialog": QR_DIALOG_ID})
+                user = _LOGIN.display()
+                _ui_toast("红果登录成功" + ((" · " + user.get("name", "")) if user.get("name") else ""))
+                return
+            if state in ("expired", "none"):
+                refreshes += 1
+                if refreshes > 5:
+                    _ui_send({"kind": "dismiss", "dialog": QR_DIALOG_ID})
+                    _ui_toast("二维码多次过期，请重新点「扫码登录」")
+                    return
+                try:
+                    _LOGIN.new_qrcode(force=True)
+                    fresh = _LOGIN.qr_b64
+                except Exception:
+                    fresh = ""
+                if not fresh:
+                    _ui_send({"kind": "dismiss", "dialog": QR_DIALOG_ID})
+                    _ui_toast("二维码刷新失败，请重新点「扫码登录」")
+                    return
+                _ui_show_qr(fresh, "二维码已刷新为最新，请重新扫这一张")
+
+    threading.Thread(target=watcher, name="hg-login-qr", daemon=True).start()
+    return True
+
 
 
 
@@ -547,6 +912,26 @@ def _media_url(item: Mapping[str, Any]) -> str:
             return fixed
     return _first(item.get("main_url"), item.get("backup_url"),
                   item.get("backup_url_1"), item.get("play_addr"), item.get("url"))
+
+def _media_alts(item: Mapping[str, Any]) -> list:
+    """同一档的备用节点地址（main 403 时用来自动换 CDN，不用重新取流）。"""
+    out = []
+
+    def push(raw):
+        fixed = _decode_media_url(_text(raw))
+        if fixed.startswith(("http://", "https://")) and fixed not in out:
+            out.append(fixed)
+
+    for key in ("backup_url", "backup_url_1", "backup_url_2", "back_url"):
+        push(item.get(key))
+    addr = item.get("play_addr")
+    if isinstance(addr, Mapping):
+        for key in ("backup_url", "backup_url_1", "backup_url_2"):
+            push(addr.get(key))
+        for raw in (addr.get("url_list") or []):
+            push(raw)
+    return out
+
 
 def _spade_value(item: Mapping[str, Any]) -> str:
     encrypt_info = item.get("encrypt_info")
@@ -1153,6 +1538,80 @@ def _c_build_plan(moov: bytes, base: int, kid: str, spade: str) -> dict:
     }
 
 
+def _host_of(url: str) -> str:
+    try:
+        return urlparse(_decode_media_url(url)).netloc or url[:32]
+    except Exception:
+        return url[:32]
+
+
+# ── 备用节点表 ────────────────────────────────────────────────────────────────
+# video_model 里每一档都带 main_url + backup_url(+backup_url_1)，两者指向**不同 CDN 节点**
+# （如 v95-bjb-mc-reading-video / v5-bd-daily-reading-video）。
+# 上游 CDN 会在一段时间窗内对某个具体 URL 回 403（几分钟后自愈，复现不了），
+# 以前的做法是同一个坏 URL 死重试 3 次 —— 必然全败，整集就"废了"，
+# 只能靠用户手动切线路换 path 才恢复。这里把同档地址编成"家族"，403 就地换节点。
+_MEDIA_FAMILY: dict[str, list] = {}     # 任一成员 -> 全家族成员
+_MEDIA_PREF: dict[str, tuple] = {}      # 坏地址 -> (可用地址, 时间)；TTL 内优先用它
+_MEDIA_VID: dict[str, str] = {}         # 媒体地址 -> vid（全线失败时用来作废 model 缓存）
+_MEDIA_LOCK = threading.Lock()
+_MEDIA_MAX = 240
+_MEDIA_ALT_TTL = 300.0
+# 这些状态码是**确定性拒绝**，同一地址再打没有意义，直接换节点
+_MEDIA_BLOCK_CODES = frozenset((401, 403, 404, 410, 451))
+
+
+def _media_register(src: Any, alts: Any = None, vid: str = "") -> None:
+    """把同档的多个 CDN 地址登记成一个家族，互为备用。"""
+    members = []
+    for raw in [src] + list(alts or []):
+        fixed = _decode_media_url(_text(raw))
+        if fixed.startswith(("http://", "https://")) and fixed not in members:
+            members.append(fixed)
+    if not members:
+        return
+    family = list(members)
+    with _MEDIA_LOCK:
+        for item in members:
+            for peer in (_MEDIA_FAMILY.get(item) or []):
+                if peer not in family:
+                    family.append(peer)
+        family = family[:8]
+        for item in family:
+            _MEDIA_FAMILY[item] = list(family)
+        if vid:
+            for item in members:
+                _MEDIA_VID[item] = vid
+        if len(_MEDIA_FAMILY) > _MEDIA_MAX:
+            for key in list(_MEDIA_FAMILY)[: len(_MEDIA_FAMILY) - _MEDIA_MAX]:
+                _MEDIA_FAMILY.pop(key, None)
+                _MEDIA_PREF.pop(key, None)
+                _MEDIA_VID.pop(key, None)
+
+
+def _media_candidates(url: str) -> list:
+    """候选地址顺序：TTL 内上次可用的 → 原地址 → 同家族其它节点。"""
+    now = time.time()
+    out = [url]
+    with _MEDIA_LOCK:
+        pref = _MEDIA_PREF.get(url)
+        if pref and now - pref[1] < _MEDIA_ALT_TTL and pref[0] != url:
+            out = [pref[0], url]
+        for peer in (_MEDIA_FAMILY.get(url) or []):
+            if peer not in out:
+                out.append(peer)
+    return out
+
+
+def _media_promote(bad: str, good: str) -> None:
+    """换节点成功：TTL 内后续分片直接用能用的那个，省掉一次必然失败。"""
+    with _MEDIA_LOCK:
+        _MEDIA_PREF[bad] = (good, time.time())
+        if len(_MEDIA_PREF) > _MEDIA_MAX:
+            for key in list(_MEDIA_PREF)[: len(_MEDIA_PREF) - _MEDIA_MAX]:
+                _MEDIA_PREF.pop(key, None)
+
+
 def _cenc_get(url: str, start: int, end: int) -> tuple:
     headers = dict(MEDIA_HEADERS)
     headers["Range"] = "bytes=%d-%d" % (start, end)
@@ -1161,31 +1620,53 @@ def _cenc_get(url: str, start: int, end: int) -> tuple:
         # 别拿 base64/相对地址去撞 requests：那会白等 3 轮重试才报错
         raise HongguoPluginError("媒体地址无效: %s" % url[:40])
     last: Exception | None = None
-    for attempt in range(3):
-        if attempt:
-            time.sleep(0.4 * attempt)
-        try:
-            response = _http().get(url, headers=headers, timeout=45)
-        except requests.RequestException as error:
-            last = error
-            continue
-        if response.status_code not in (200, 206):
-            last = HongguoPluginError("媒体分片 HTTP %s" % response.status_code)
-            continue
-        body = response.content or b""
-        if not body:
-            last = HongguoPluginError("媒体分片为空")
-            continue
-        total = 0
-        content_range = response.headers.get("Content-Range") or ""
-        if "/" in content_range:
-            tail = content_range.rsplit("/", 1)[1].strip()
-            if tail.isdigit():
-                total = int(tail)
-        if not total:
-            length = response.headers.get("Content-Length") or ""
-            total = int(length) if length.isdigit() else 0
-        return body, total
+    candidates = _media_candidates(url)
+    for candidate in candidates:
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.4 * attempt)
+            try:
+                response = _http().get(candidate, headers=headers, timeout=45)
+            except requests.RequestException as error:
+                last = error
+                continue
+            code = response.status_code
+            if code not in (200, 206):
+                last = HongguoPluginError("媒体分片 HTTP %s" % code)
+                # 403/404 这类是节点级拒绝，重试同一地址不会变好 → 立刻换节点
+                if code in _MEDIA_BLOCK_CODES:
+                    break
+                continue
+            body = response.content or b""
+            if not body:
+                last = HongguoPluginError("媒体分片为空")
+                break
+            total = 0
+            content_range = response.headers.get("Content-Range") or ""
+            if "/" in content_range:
+                tail = content_range.rsplit("/", 1)[1].strip()
+                if tail.isdigit():
+                    total = int(tail)
+            if not total:
+                length = response.headers.get("Content-Length") or ""
+                total = int(length) if length.isdigit() else 0
+            if candidate != url:
+                # 换节点成功：以后同一段直接走它，别每片都先撞一次 403
+                _media_promote(url, candidate)
+                _play_log("media alt ok %s -> %s @%d"
+                          % (_host_of(url), _host_of(candidate), start))
+            return body, total
+    # 全线失败：把该 vid 的 model 缓存作废，下次播放会重新取流（换签名/换节点），
+    # 否则一份坏 URL 会在 _MODEL_CACHE 里锁满 15 分钟。
+    vid = ""
+    with _MEDIA_LOCK:
+        vid = _MEDIA_VID.get(url) or ""
+        for candidate in candidates:
+            vid = vid or _MEDIA_VID.get(candidate) or ""
+    if vid:
+        _MODEL_CACHE.pop(vid, None)
+        _play_log("model invalidate vid=%s 媒体地址全线失败 hosts=%s"
+                  % (vid, ",".join(_host_of(item) for item in candidates)[:80]))
     raise last or HongguoPluginError("媒体分片请求失败")
 
 
@@ -1193,7 +1674,20 @@ def _cenc_iter(plan: dict, start: int, end: int):
     cursor = start
     while cursor <= end:
         stop = min(cursor + _CENC_CHUNK - 1, end)
-        raw, _ = _cenc_get(plan["src"], cursor, stop)
+        try:
+            raw, _ = _cenc_get(plan["src"], cursor, stop)
+        except Exception as exc:
+            # ★ 播放**中途**分片失败以前一条日志都不写，用户只看到"卡住/跳集"，
+            #   我在日志里永远查不到。这里把 vid/区间/节点/原因全打出来。
+            _play_log("cenc stream FAIL at %d-%d/%s host=%s vid=%s %s"
+                      % (cursor, stop, plan.get("total") or "?",
+                         _host_of(plan["src"]), plan.get("vid") or "?",
+                         str(exc)[:70]))
+            try:
+                exc._hg_logged = True
+            except Exception:
+                pass
+            raise
         if not raw:
             raise HongguoPluginError("媒体分片为空")
         buffer = bytearray(raw)
@@ -1282,9 +1776,23 @@ def _cenc_cached(key: str) -> Any:
     return None
 
 
-def _cenc_plan(src: str, kid: str, spade: str) -> dict:
+def _plan_vid(src: str, vid: str = "") -> str:
+    """给计划补一个 vid，只为日志和"坏地址作废 model"用。"""
+    if vid:
+        return vid
+    with _MEDIA_LOCK:
+        return _MEDIA_VID.get(src) or ""
+
+
+def _cenc_plan(src: str, kid: str, spade: str,
+               vid: str = "", alts: Any = None) -> dict:
     """取一次 moov、建一次计划；同一 src 后续 Range 请求全部复用。"""
     src = _decode_media_url(src)
+    if alts or vid:
+        # 就算没有备用节点，也要把 vid 和地址绑定起来：
+        # 全线失败时靠它作废 model 缓存。
+        _media_register(src, alts, vid)
+    vid = _plan_vid(src, vid)
     cache_key = "%s|%s" % (src, kid)
     hit = _cenc_cached(cache_key)
     if hit is not None:
@@ -1293,7 +1801,7 @@ def _cenc_plan(src: str, kid: str, spade: str) -> dict:
         hit = _cenc_cached(cache_key)      # 排队期间别的线程可能已建好
         if hit is not None:
             return hit
-        return _cenc_build_plan(src, kid, spade, cache_key)
+        return _cenc_build_plan(src, kid, spade, cache_key, vid)
 
 
 def _warm_plan(item: Mapping[str, Any]) -> None:
@@ -1312,6 +1820,9 @@ def _warm_plan(item: Mapping[str, Any]) -> None:
         return
     kid = _text(item.get("kid"))
     spade = _text(item.get("spade"))
+    # 备用节点要**同步**登记：播放器可能立刻就来要流，
+    # 后台线程慢一步就会先撞上 403。
+    _media_register(src, item.get("alts"), _text(item.get("vid")))
     if not spade:
         return
     if src and _cenc_cached("%s|%s" % (src, kid)) is not None:
@@ -1319,14 +1830,15 @@ def _warm_plan(item: Mapping[str, Any]) -> None:
 
     def worker() -> None:
         try:
-            _cenc_plan(src, kid, spade)
+            _cenc_plan(src, kid, spade, _text(item.get("vid")), item.get("alts"))
         except Exception as exc:  # noqa: BLE001 - 预热失败不影响播放链路
             _play_log("warm plan skip %s" % str(exc)[:50])
 
     threading.Thread(target=worker, daemon=True).start()
 
 
-def _cenc_build_plan(src: str, kid: str, spade: str, cache_key: str) -> dict:
+def _cenc_build_plan(src: str, kid: str, spade: str, cache_key: str,
+                     vid: str = "") -> dict:
     probe, total = _cenc_get(src, 0, _CENC_PROBE - 1)
     if not total:
         raise HongguoPluginError("媒体总长度未知")
@@ -1348,11 +1860,12 @@ def _cenc_build_plan(src: str, kid: str, spade: str, cache_key: str) -> dict:
         raise HongguoPluginError("未找到 moov 盒")
     plan = _c_build_plan(moov, moov_at, kid, spade)
     plan["src"] = src
+    plan["vid"] = vid
     plan["total"] = total
     plan["created"] = time.time()
-    _play_log("cenc plan 样本=%d 补丁=%d 总长=%d kid=%s"
+    _play_log("cenc plan 样本=%d 补丁=%d 总长=%d host=%s vid=%s kid=%s"
               % (len(plan["samples"]), len(plan["patches"]), total,
-                 ",".join(plan["kids"])[:16]))
+                 _host_of(src), vid or "?", ",".join(plan["kids"])[:16]))
     with _CENC_LOCK:
         if len(_CENC_PLANS) >= _CENC_MAX_PLANS:
             _CENC_PLANS.pop(next(iter(_CENC_PLANS)), None)
@@ -1389,6 +1902,120 @@ def _parse_range(value: str, total: int) -> Any:
     return start, end
 
 
+_PLACEHOLDER_PNG = b""
+
+
+def _placeholder_png(w: int = 320, h: int = 320) -> bytes:
+    """无码可发时回一张纯色占位图。
+
+    宿主(无名影视/影视仓)拿到图片地址后是当 <img> 或 WebView 直接渲染的，
+    回 404 + 文本 "no qrcode" 的观感就是网页里蹦出一行字 —— 用户看到的正是这个。
+    这里只画浅灰底 + 深灰边框，保证"至少是张图"，错误原因走 /login/state。
+    """
+    global _PLACEHOLDER_PNG
+    if _PLACEHOLDER_PNG:
+        return _PLACEHOLDER_PNG
+    bg, fg = b"\xf5\xf5\xf5", b"\xd8\xd8\xd8"
+    rows = bytearray()
+    for y in range(h):
+        rows.append(0)                       # 每行 filter=None
+        if y < 2 or y >= h - 2:
+            rows.extend(fg * w)
+        else:
+            rows.extend(fg * 2 + bg * (w - 4) + fg * 2)
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)   # 8bit RGB
+    _PLACEHOLDER_PNG = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+                        + chunk(b"IDAT", zlib.compress(bytes(rows), 6))
+                        + chunk(b"IEND", b""))
+    return _PLACEHOLDER_PNG
+
+
+def _esc(text) -> str:
+    return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _login_qr_page() -> bytes:
+    """浏览器/WebView 顶层打开时回的自助页面。
+
+    二维码只有 ~52 秒，静态图根本来不及；这个页面每 2 秒看一次状态，
+    快过期就自己换图，登录成功后直接显示昵称，不用回 App 刷新。
+    """
+    prompt = _esc(_LOGIN.prompt_text or "请用「红果短剧」App 扫一扫，然后在手机上确认登录")
+    page = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>红果短剧 · 扫码登录</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;
+justify-content:center;background:#f2f3f5;color:#1a1a1a;font:16px/1.6 -apple-system,
+"Segoe UI","Microsoft YaHei",sans-serif;padding:20px}
+.card{background:#fff;border-radius:18px;padding:26px 22px 22px;max-width:420px;width:100%;
+box-shadow:0 10px 34px rgba(0,0,0,.10);text-align:center}
+h1{font-size:19px;margin:0 0 4px;font-weight:600}
+.tip{color:#666;font-size:14px;margin:0 0 16px}
+.qrbox{width:100%;aspect-ratio:1;background:#fff;border:1px solid #ececec;border-radius:14px;
+display:flex;align-items:center;justify-content:center;overflow:hidden}
+.qrbox img{width:100%;height:100%;object-fit:contain;display:block}
+.qrbox.ok{display:none}
+.st{margin:14px 0 0;font-size:14px;color:#0a7d55;font-weight:600}
+.st.warn{color:#c2410c}
+.step{color:#8a8a8a;font-size:13px;margin:10px 0 0;line-height:1.7}
+.step b{color:#1a1a1a}
+.done{display:none;padding:26px 6px}
+.done.show{display:block}
+.done .ico{font-size:44px;line-height:1}
+.done .nm{font-size:17px;font-weight:600;margin:10px 0 4px}
+.done .sub{color:#777;font-size:14px}
+</style></head><body>
+<div class="card">
+  <h1>红果短剧 · 扫码登录</h1>
+  <p class="tip">__PROMPT__</p>
+  <div class="qrbox" id="box"><img id="qr" src="/login/qr.png?img=1" alt="登录二维码"></div>
+  <div class="done" id="done"><div class="ico">✅</div>
+    <div class="nm" id="who">已登录</div>
+    <div class="sub">可以关掉本页，回到 App 刷新「我的」查看同步数据</div></div>
+  <p class="st" id="st">正在加载二维码…</p>
+  <p class="step">用手机 <b>红果短剧</b> App 扫一扫 → 手机上点「确认登录」<br>
+  页面每 2 秒自动查一次状态，确认后这里会直接显示昵称</p>
+</div>
+<script>
+var img=document.getElementById('qr'),st=document.getElementById('st'),
+    box=document.getElementById('box'),done=document.getElementById('done'),who=document.getElementById('who');
+var busy=false;
+function reload(fresh){img.src='/login/qr.png?img=1'+(fresh?'&fresh=1':'')+'&t='+Date.now();}
+function tick(){
+  fetch('/login/state?t='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+    if(s.logged){
+      box.style.display='none';done.className='done show';
+      who.textContent='已登录：'+(s.user||'红果用户');st.textContent='';st.className='st';
+      return;
+    }
+    var left=s.left||0;
+    if(s.status==='scanned'){
+      st.className='st';st.textContent='已扫码，请在手机上点「确认登录」';
+      setTimeout(tick,1500);return;
+    }
+    if(s.status==='confirmed'&&!s.logged){
+      st.className='st warn';st.textContent=s.message||'手机已确认，正在换登录态…';
+      setTimeout(tick,1500);return;
+    }
+    if(left<=2&&!busy){busy=true;reload(true);setTimeout(function(){busy=false;},2000);}
+    if(left<=2){st.className='st warn';st.textContent='二维码即将过期，正在换新…';}
+    else{st.className='st';st.textContent='二维码 '+left+' 秒后自动换新，随时扫都有效';}
+    setTimeout(tick,2000);
+  }).catch(function(){setTimeout(tick,3000);});
+}
+setTimeout(tick,800);
+</script></body></html>"""
+    return page.replace("__PROMPT__", prompt).encode("utf-8")
+
+
 class _StreamHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "hg-stream"
@@ -1407,15 +2034,53 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
-    def _serve_login_qr(self, body: bool) -> None:
-        data = _LOGIN.qr_bytes_now()
-        if not data:
-            self._fail(404, b"no qrcode")
+    def _serve_login_qr(self, body: bool, query=None) -> None:
+        """二维码端点：永远回点有用的东西。
+
+        - `?img=1` / `<img>` 之类的图片请求 → PNG（没有就现场补码）
+        - 浏览器/WebView 顶层打开(Accept 含 text/html) → 自动换码的自助页面
+        旧实现在"宿主先于详情页来拉封面图"时回 404 + 文本 `no qrcode`，
+        宿主把这行字当图片渲染，用户看到的就是「跳网页显示 no qrcode」。
+        """
+        query = query or {}
+        want_img = bool(query.get("img"))
+        accept = str(self.headers.get("Accept") or "")
+        if not want_img and "text/html" in accept.lower():
+            page = _login_qr_page()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if body:
+                try:
+                    self.wfile.write(page)
+                except OSError:
+                    self.close_connection = True
             return
+        try:
+            data, error = _LOGIN.png_now(force=bool(query.get("fresh")))
+        except Exception as exc:
+            data, error = b"", str(exc)[:80]
+        if not data:
+            link = _LOGIN.qr_url or ""
+            if link and not want_img:
+                self.send_response(302)
+                self.send_header("Location", "https://api.qrserver.com/v1/create-qr-code/"
+                                             "?size=360x360&margin=8&data=" + quote(link, safe=""))
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                return
+            data = _placeholder_png()
+            if error:
+                _play_log("login qr fallback: %s" % error)
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
         if not body:
@@ -1424,6 +2089,110 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except OSError:
             self.close_connection = True
+
+    def _serve_login_state(self, body: bool) -> None:
+        """诊断端点: curl 127.0.0.1:<流端口>/login/state 看二维码生成情况。"""
+        try:
+            payload = json.dumps(_LOGIN.debug_state(), ensure_ascii=False).encode("utf-8")
+        except Exception as exc:
+            payload = json.dumps({"error": str(exc)[:100]}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if body:
+            try:
+                self.wfile.write(payload)
+            except OSError:
+                self.close_connection = True
+
+    def _serve_danmaku(self, body: bool, query=None) -> None:
+        """本机弹幕端点: /hg_dm?vid=..&sid=..&fmt=xml|json。
+
+        壳子(或任何播放器)按 playerContent 里给的地址来拉, 默认回 B 站 XML。
+        取数在后台线程跑, 这里最多等 _DM_WAIT 秒 —— 等不到就先回已取到的部分,
+        宁可少几条也不能让播放器卡在"加载弹幕"上。
+        """
+        query = query or {}
+        vid = _text((query.get("vid") or [""])[0]).strip()
+        sid = _text((query.get("sid") or [""])[0]).strip()
+        fmt = _text((query.get("fmt") or ["xml"])[0]).strip().lower() or "xml"
+        did = _text((query.get("did") or [""])[0]).strip()
+        if not vid.isdigit():
+            self._fail(400, b"missing vid")
+            return
+        req_vid = vid
+        sid = sid or _dm_series_of(req_vid)
+        # ★ 切集后壳子仍来拉**首次进播放页那个 URL**, 直接按 URL 的 vid 取数
+        #   就会一直是上一集弹幕。改判为「最近一次 /hg.mp4 实际起播的集」:
+        #   同剧、且该流请求在 10 分钟内才认, 避免串到别的剧或旧会话。
+        try:
+            with _DM_LOCK:
+                if _DM_LAST_REQ.get("vid") != req_vid:
+                    _DM_LAST_REQ["vid"] = req_vid
+                    _DM_STREAM["vid"] = ""
+                    _DM_STREAM["t"] = 0.0
+                cur_vid = str(_DM_STREAM.get("vid") or "")
+                cur_at = float(_DM_STREAM.get("t") or 0.0)
+            if (cur_vid.isdigit() and cur_vid != req_vid
+                    and time.time() - cur_at < 600):
+                cur_sid = _dm_series_of(cur_vid) or sid
+                if cur_sid and (not sid or cur_sid == sid):
+                    vid, sid = cur_vid, cur_sid
+        except Exception:
+            pass
+        _DM_HIT[vid] = time.time()
+        # 已有结果(哪怕只是上次取到的部分)就只等一小会, 别让播放器卡在"加载弹幕"
+        known = _dm_state(vid)
+        wait = 1.5 if (known and known.get("items")) else _DM_WAIT
+        state = _dm_get(vid, sid, did or _dm_device_id(), wait=wait)
+        rows = _dm_rows(state.get("items") or [])
+        if fmt == "json":
+            data, ctype = _dm_to_json(rows), "application/json; charset=utf-8"
+        else:
+            data, ctype = _dm_to_xml(vid, rows), "text/xml; charset=utf-8"
+        ua = _text(self.headers.get("User-Agent") or "-")[:24]
+        _play_log("dm hit req=%s use=%s sid=%s fmt=%s rows=%d err=%s ua=%s"
+                  % (req_vid, vid, sid or "-", fmt, len(rows),
+                     state.get("error") or "-", ua))
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not body:
+            return
+        try:
+            self.wfile.write(data)
+        except OSError:
+            self.close_connection = True
+
+    def _serve_danmaku_state(self, body: bool) -> None:
+        """诊断端点: /hg_dm/state 看每集弹幕取数情况。"""
+        with _DM_LOCK:
+            cache = {k: {"rows": len(v.get("items") or []),
+                         "age": round(time.time() - float(v.get("t") or 0), 1),
+                         "error": v.get("error") or ""}
+                     for k, v in list(_DM_CACHE.items())[-20:]}
+            stream = {"vid": _DM_STREAM.get("vid") or "",
+                      "age": round(time.time() - float(_DM_STREAM.get("t") or 0), 1)}
+        payload = json.dumps({"enabled": _DM_ENABLED, "host": _DM_HOST,
+                              "series_known": len(_DM_SERIES),
+                              "hits": len(_DM_HIT), "stream": stream, "cache": cache},
+                             ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if body:
+            try:
+                self.wfile.write(payload)
+            except OSError:
+                self.close_connection = True
 
     def do_HEAD(self) -> None:  # noqa: N802 - 标准库回调命名
         self._serve(body=False)
@@ -1436,7 +2205,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
         route = parsed.path
         # 登录二维码: 详情页 vod_pic 指到本机这个端点, 无需外网图床
         if route.rstrip("/").endswith("/login/qr.png"):
-            self._serve_login_qr(body)
+            self._serve_login_qr(body, parse_qs(parsed.query))
+            return
+        if route.rstrip("/").endswith("/login/state"):
+            self._serve_login_state(body)
+            return
+        # 弹幕: playerContent 里下发的地址指到这里(B 站 XML / JSON)
+        if route.rstrip("/").endswith("/hg_dm/state"):
+            self._serve_danmaku_state(body)
+            return
+        if route.rstrip("/").endswith("/hg_dm"):
+            self._serve_danmaku(body, parse_qs(parsed.query))
             return
         if not route.endswith(".mp4"):
             self._fail(404, b"not found")
@@ -1445,13 +2224,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
         src = (query.get("src") or [""])[0]
         kid = (query.get("kid") or [""])[0]
         spade = (query.get("spade") or query.get("spade_a") or [""])[0]
+        vid = (query.get("vid") or [""])[0]
         if not src or not spade:
             self._fail(400, b"missing src/spade")
             return
+        # 每集起播都会打到这里, 记下当前集供弹幕端点动态改判(切集不换弹幕 URL)
+        _dm_mark_stream(vid)
         try:
-            plan = _cenc_plan(src, kid, spade)
+            plan = _cenc_plan(src, kid, spade, vid)
         except Exception as exc:
-            _play_log("cenc plan FAIL %s" % str(exc)[:80])
+            _play_log("cenc plan FAIL host=%s %s" % (_host_of(src), str(exc)[:80]))
             self._fail(502, b"media session failed")
             return
         total = int(plan["total"])
@@ -1480,8 +2262,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         except Exception as exc:
-            _play_log("cenc stream FAIL %s" % str(exc)[:80])
+            if not getattr(exc, "_hg_logged", False):
+                _play_log("cenc stream FAIL %s" % str(exc)[:80])
             self.close_connection = True
+
+
+class _StreamServer(ThreadingHTTPServer):
+    """★ Windows 的 SO_REUSEADDR 语义与 Linux 不同：它允许**重复绑定已占用端口**，
+    于是第二个进程(比如调试脚本/重启后残留的旧进程)也能 bind 上去，
+    连接被谁接走就变成随机 —— 表现为封面图时好时坏、播放偶发 502。
+    这里关掉 reuse，占用时直接失败并顺延到下一个端口，行为可预期。
+    """
+    allow_reuse_address = False
+    daemon_threads = True
 
 
 def _start_stream_server() -> int:
@@ -1490,7 +2283,7 @@ def _start_stream_server() -> int:
             return int(_STREAM_STATE["port"])
         for port in range(_STREAM_PORT_RANGE[0], _STREAM_PORT_RANGE[1]):
             try:
-                server = ThreadingHTTPServer(("127.0.0.1", port), _StreamHandler)
+                server = _StreamServer(("127.0.0.1", port), _StreamHandler)
             except OSError:
                 continue
             server.daemon_threads = True
@@ -3840,6 +4633,788 @@ def _core_sixgod(url: str, params: Mapping[str, Any], devices: Mapping[str, Any]
     result_headers["x-tt-dt"] = str(devices.get("x_tt_dt", ""))
     return result_headers, encrypted_url
 
+# ---------------------------------------------------------------- 账号云数据
+# 观看记录 / 收藏 / 预约：与取流同一套签名(x-argus/x-ladon/x-ss-stub)，只多一个 Cookie。
+# 已实测：不带 Cookie 时三类接口都回 code=0 + 空列表（匿名态），
+# 带登录 Cookie 才回真实数据 —— 所以"同步"的前提就是扫码登录成功。
+def _acc_cache_clear() -> None:
+    with _ACC_LOCK:
+        _ACC_CACHE.clear()
+
+
+def _acc_cached(key, ttl, fetch):
+    """账号列表短缓存：云数据变化慢，来回切分类不该每次都打上游。空结果不缓存。"""
+    now = time.time()
+    with _ACC_LOCK:
+        hit = _ACC_CACHE.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    value = fetch()
+    if value:
+        with _ACC_LOCK:
+            _ACC_CACHE[key] = (time.time(), value)
+            if len(_ACC_CACHE) > 24:
+                for old in sorted(_ACC_CACHE, key=lambda k: _ACC_CACHE[k][0])[:8]:
+                    _ACC_CACHE.pop(old, None)
+    return value
+
+
+def _acc_int(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _acc_stamp(value) -> int:
+    """秒/毫秒混着来：小于 1e10 的当秒处理。"""
+    number = _acc_int(value)
+    if 1 <= number <= 9999999999:
+        number *= 1000
+    return max(number, 0)
+
+
+def _acc_clock(ms: int) -> str:
+    if not ms:
+        return ""
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(ms / 1000.0))
+    except Exception:
+        return ""
+
+
+def _acc_clean_url(value) -> str:
+    text = _text(value)
+    if text.startswith("//"):
+        text = "https:" + text
+    elif text.startswith("http://"):
+        text = "https://" + text[len("http://"):]
+    return text
+
+
+def _acc_badge(row) -> str:
+    if not isinstance(row, Mapping):
+        return ""
+    for key in ("episode_cnt", "episode_count", "drama_chapter_number"):
+        count = _acc_int(row.get(key))
+        if count > 0:
+            return "全 %d 集" % count
+    return ""
+
+
+def _acc_tags(row) -> str:
+    schema = row.get("category_schema") if isinstance(row, Mapping) else None
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except Exception:
+            return _text((row or {}).get("category"))
+    if isinstance(schema, list):
+        names = [_text(item.get("name")) for item in schema[:5] if isinstance(item, Mapping)]
+        return " · ".join(name for name in names if name)
+    return ""
+
+
+def _acc_devices() -> dict[str, str]:
+    """账号接口用的设备身份；cookie 必须来自扫码登录，否则上游只给匿名空列表。"""
+    cookie = _LOGIN.cookie_header()
+    if not cookie:
+        raise HongguoPluginError("未登录")
+    device_id, install_id = _current_device()
+    if not device_id or not install_id:
+        device_id, install_id = _random_identity()
+    devices = _device_config({"device_id": device_id, "install_id": install_id})
+    devices["cookie"] = cookie
+    token = _LOGIN.app_token()
+    if token:
+        devices["x_tt_token"] = token
+    return devices
+
+
+def _acc_call(path, params=None, body=None, gzip_body=False, timeout=15):
+    """带 Cookie + 真签名请求账号接口；空响应/网络错误换主机重试一次。"""
+    devices = _acc_devices()
+    query = _app_params(devices)
+    for key, value in (params or {}).items():
+        if value is not None:
+            query[key] = value
+    headers = _app_headers(devices, with_body=body is not None)
+    payload = None
+    if body is not None:
+        raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if gzip_body:
+            payload = gzip.compress(raw)
+            headers["Content-Encoding"] = "gzip"
+        else:
+            payload = raw
+    last_error: BaseException | None = None
+    for host in ACC_HOSTS:
+        try:
+            signed_headers, signed_url = _core_sixgod(host + path, query, devices,
+                                                      payload, headers)
+            if payload is None:
+                response = _http().get(signed_url, headers=signed_headers, timeout=timeout)
+            else:
+                response = _http().post(signed_url, headers=signed_headers,
+                                        data=payload, timeout=timeout)
+            if response.status_code == 200 and not response.content:
+                last_error = HongguoPluginError("账号接口返回空响应，请稍后重试或重新登录")
+                continue
+            result = _json_response(response)
+        except HongguoPluginError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:
+            last_error = exc
+            continue
+        if not isinstance(result, Mapping):
+            last_error = HongguoPluginError("账号接口返回格式异常")
+            continue
+        code = result.get("code")
+        if code not in (0, "0", None):
+            raise HongguoPluginError("账号接口不可用(%s %s)，请重新登录或稍后重试"
+                                     % (code, _text(result.get("message"))))
+        return result
+    if isinstance(last_error, HongguoPluginError):
+        raise last_error
+    raise HongguoPluginError("账号接口请求失败") from last_error
+
+
+def _acc_multi_detail(ids) -> dict[str, dict]:
+    """剧集资料批量补全（标题/封面/简介/集数）。失败不影响主列表。"""
+    ids = [str(i) for i in (ids or []) if str(i).isdigit()]
+    if not ids:
+        return {}
+    result = _acc_call("/reading/bookapi/multi-detail/v1/",
+                       {"book_id": ",".join(ids), "book_type": "2"})
+    rows = result.get("data")
+    if isinstance(rows, Mapping):
+        rows = rows.get("book_data") or rows.get("books") or []
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        sid = _text(row.get("book_id") or row.get("series_id"))
+        if not sid.isdigit():
+            continue
+        out[sid] = {
+            "title": _text(row.get("book_name") or row.get("series_title")),
+            "cover": _acc_clean_url(row.get("thumb_url") or row.get("cover_url")),
+            "intro": _text(row.get("abstract") or row.get("series_intro")),
+            "badge": _acc_badge(row),
+            "tags": _acc_tags(row),
+        }
+    return out
+
+
+def _acc_profile() -> dict[str, str]:
+    def fetch():
+        result = _acc_call("/reading/user/info/v1/")
+        data = result.get("data")
+        if not isinstance(data, Mapping):
+            return {}
+        uid = _text(data.get("biz_user_id") or data.get("user_id") or data.get("uid"))
+        name = _text(data.get("user_name") or data.get("name") or data.get("nickname"))
+        if not uid and not name:
+            return {}
+        return {"uid": uid, "name": name or "红果用户",
+                "avatar": _acc_clean_url(data.get("avatar_url") or data.get("avatar"))}
+    return _acc_cached("profile", 300, fetch)
+
+
+def _acc_history(limit=50):
+    """观看记录：read_progress/list(book_types=2 视频) + multi-detail 补剧名。"""
+    def fetch():
+        result = _acc_call("/reading/bookapi/read_progress/list/v1/",
+                           {"book_types": "2", "limit": str(limit)})
+        rows = result.get("video_data")
+        if not isinstance(rows, list):
+            data = result.get("data")
+            rows = data.get("video_data") if isinstance(data, Mapping) else None
+        rows = rows if isinstance(rows, list) else []
+        progress = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            sid = _text(row.get("series_id") or row.get("book_id"))
+            if not sid.isdigit():
+                continue
+            index = max(_acc_int(row.get("vid_index")) - 1, 0)
+            progress.append({
+                "id": sid,
+                "vid": _text(row.get("vid")),
+                "index": index,
+                "pos": _acc_int(row.get("current_play_time")),
+                "total": _acc_int(row.get("current_total_time")),
+                "at": _acc_stamp(row.get("last_watch_time")),
+                "count": _acc_int(row.get("episode_count")),
+            })
+        progress.sort(key=lambda item: -item["at"])
+        # 上游可能不给剧名，按 id 批量补一次（失败就用 id 兜底）
+        meta = {}
+        try:
+            meta = _acc_multi_detail([item["id"] for item in progress])
+        except Exception:
+            meta = {}
+        out = []
+        for item in progress:
+            info = meta.get(item["id"]) or {}
+            item["title"] = info.get("title") or ""
+            item["cover"] = info.get("cover") or ""
+            item["intro"] = info.get("intro") or ""
+            if info.get("badge") and not item["count"]:
+                item["count"] = _acc_int(info["badge"].replace("全", "").replace("集", "").strip())
+            out.append(item)
+        return out
+    return _acc_cached("history", _ACC_CACHE_TTL, fetch)
+
+
+def _acc_favorites():
+    """收藏：bookshelf/video/info（视频书架，与小说书架不是同一份数据）。"""
+    def fetch():
+        result = _acc_call("/reading/bookapi/bookshelf/video/info/v1/")
+        data = result.get("data")
+        if not isinstance(data, Mapping) or "video_shelf_info" not in data:
+            return []
+        rows = data.get("video_shelf_info") or []
+        if not isinstance(rows, list):
+            return []
+        seen, out = set(), []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            video = row.get("video_data")
+            if not isinstance(video, Mapping):
+                video = row
+            sid = _text(video.get("series_id") or row.get("series_id") or row.get("book_id"))
+            title = _text(row.get("series_title") or video.get("title") or row.get("book_name"))
+            if not sid.isdigit() or not title or sid in seen:
+                continue
+            seen.add(sid)
+            count = (_acc_int(video.get("episode_cnt")) or _acc_int(video.get("episode_count"))
+                     or _acc_int(row.get("episode_cnt")))
+            out.append({
+                "id": sid,
+                "title": title,
+                "cover": _acc_clean_url(row.get("series_cover_url") or video.get("cover")
+                                        or video.get("cover_url") or video.get("thumb_url")
+                                        or row.get("thumb_url")),
+                "intro": _text(row.get("series_intro") or video.get("video_desc")
+                               or row.get("abstract")),
+                "badge": ("全 %d 集" % count) if count > 0 else "",
+                "tags": _acc_tags(row),
+                "at": _acc_stamp(row.get("collect_time")),
+            })
+        out.sort(key=lambda item: -item["at"])
+        return out
+    return _acc_cached("favorites", _ACC_CACHE_TTL, fetch)
+
+
+def _acc_reservations(online=True):
+    """预约：subscribe/list/v0；is_online 区分已上线/待上线两栏（上游是两份数据）。"""
+    def fetch():
+        result = _acc_call("/reading/user/subscribe/list/v0/", {
+            "offset": "0", "limit": "30",
+            "is_online": "true" if online else "false",
+            "tab_type": "13", "subscribe_order_type": "0",
+            "swipe_type": "0", "need_calendar_schema": "false",
+            "subscribe_offset": "0",
+        })
+        data = result.get("data")
+        rows = (data.get("subscribe_items") if isinstance(data, Mapping) else None) or []
+        if not isinstance(rows, list):
+            return []
+        seen, out = set(), []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            video = row.get("subscribe_data")
+            if not isinstance(video, Mapping):
+                video = row.get("video_data")
+            if not isinstance(video, Mapping):
+                video = row
+            sid = _text(video.get("series_id") or row.get("series_id") or row.get("book_id"))
+            title = _text(row.get("series_title") or video.get("title") or row.get("book_name")
+                          or row.get("name"))
+            if not sid.isdigit() or not title or sid in seen:
+                continue
+            flag = row.get("is_online")
+            if isinstance(flag, str):
+                flag = flag.strip().lower() in ("1", "true", "yes")
+            elif flag is not None:
+                flag = bool(flag)
+            if flag is not None and bool(flag) != bool(online):
+                continue
+            seen.add(sid)
+            out.append({
+                "id": sid,
+                "title": title,
+                "cover": _acc_clean_url(row.get("series_cover_url") or video.get("cover")
+                                        or video.get("cover_url") or video.get("thumb_url")),
+                "intro": _text(video.get("video_desc") or row.get("abstract")
+                               or row.get("item_desc")),
+                "badge": _acc_badge(video) or _acc_badge(row) or ("已上线" if online else "待上线"),
+                "text": _text(row.get("expected_rec_text")),
+                "at": _acc_stamp(row.get("schedule_publish_time")),
+            })
+        if online:
+            # 集数缺失的用 multi-detail 补一次；失败就保留"已上线"
+            ids = [item["id"] for item in out if item["badge"] == "已上线"][:30]
+            if ids:
+                try:
+                    meta = _acc_multi_detail(ids)
+                    for item in out:
+                        badge = (meta.get(item["id"]) or {}).get("badge")
+                        if badge:
+                            item["badge"] = badge
+                except Exception:
+                    pass
+        return out
+    return _acc_cached("resv:%d" % (1 if online else 0), _ACC_CACHE_TTL, fetch)
+
+
+# ---------------------------------------------------------------- 弹幕
+# 红果的"弹幕"就是评论接口里带时间轴的那批评论(comment_type=20)。实测(2026-11-12):
+#   POST https://api5-normal-lq.fqnovel.com/novel/commentapi/comment/list/<vid>/v1/?<设备参数>
+#   body: business_param.book_id=<series_id> / start_offset_time=<毫秒窗口起点>
+#         comment_source=601 / comment_type=20 / count<=90 / group_id=<vid> / group_type=30
+#   返回 data.data_list[].comment.expand.offset_time(毫秒) + .common.content.text
+#   extra.next_query_danmaku_list_time = 下一窗起点; 空窗且它 >0 说明已到片尾。
+# 签名与取流同一套: x-argus(551) + x-ladon(34 轮 ARX) + x-ss-stub。
+# 实测这个接口反而**不能**带 gorgon/medusa/helios(与播放取流同一条规律), 故手搓头,
+# 不走 _core_sixgod 那套(免得被 _slim 判据漏掉而多带三个头)。
+#
+# 下发方式对齐壳子自身的内置源(runtime/sky/index.js 里 bilibili 源):
+#   playerContent -> extra.danmaku = "http://127.0.0.1:<port>/hg_dm?...&fmt=xml"
+# 另外同时给 TVBox 标准的顶层 danmaku 列表, 壳子 Dart 侧
+# normalizePlayInfo -> parseDanmakuUrls 会递归收集所有 key 含 danmaku 的值。
+_DM_ENABLED = True
+_DM_HOST = "api5-normal-lq.fqnovel.com"
+_DM_WINDOW_MS = 30000       # 每个取数窗口(毫秒)
+_DM_MAX_WINDOWS = 24        # 24 窗 = 12 分钟, 短剧整集足够
+_DM_PAGE_SIZE = 90          # 上游单页上限, 再大不回更多
+_DM_TTL = 1800              # 弹幕缓存有效期(秒)
+_DM_WAIT = 12.0             # /hg_dm 最多等取数多久(秒), 超时先回已取到的
+_DM_LOCK = threading.RLock()
+_DM_CACHE: dict[str, dict] = {}
+_DM_EVENTS: dict[str, threading.Event] = {}
+_DM_ERR = [""]
+_DM_HIT: dict[str, float] = {}
+# vid -> series_id: 评论接口的 book_id 要的是 series_id, 播放 id 里只有 vid。
+# 详情页走过 _remember_series 时顺手登记, 并且落盘 —— App 重启后从历史记录
+# 直接续播也还能查到(这时 detailContent 没走过, 内存表是空的)。
+_DM_SERIES: dict[str, str] = {}
+_DM_SERIES_OK = [False]
+_DM_SERIES_FILE = "hongguo_series_map.json"
+_DM_SERIES_MAX = 6000
+# ★ 壳子(无名影视)只在**首次进入播放页**解析一次 playerContent 里的
+#   extra.danmaku / danmaku, 之后自动切集(无感切集)复用同一播放器与弹幕控制器,
+#   每集虽会重新 GET 弹幕地址, 但地址仍是第一集那个 vid。实测日志:
+#     play  23:04:34 -> vid A / cenc plan vid A
+#     dm hit 23:05:24 -> vid 上一集 (URL 未变)
+#   所以弹幕端点不能只信 URL 里的 vid, 要以「最近一次 /hg.mp4 实际起播的集」为准:
+#   每集起播都会请求本机流且 query 带 vid, 这是最可靠的当前集信号。
+#   重新进入播放页时 URL 会被重新解析成用户所点那一集, 与流 vid 相同, 不会误判。
+_DM_STREAM: dict = {"vid": "", "t": 0.0, "warm": ""}
+# 上一次 /hg_dm 请求 URL 里的 vid: 它变了就说明壳子**重新解析过弹幕地址**
+# (新播放会话/换剧), 此时旧的流标记必须作废, 否则会把上次的集串过来。
+_DM_LAST_REQ: dict = {"vid": ""}
+
+
+def _dm_series_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, _DM_SERIES_FILE)
+
+
+def _dm_series_load() -> None:
+    if _DM_SERIES_OK[0]:
+        return
+    _DM_SERIES_OK[0] = True
+    try:
+        with open(_dm_series_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            for key, value in list(data.items())[:_DM_SERIES_MAX]:
+                key, value = str(key), str(value)
+                if key.isdigit() and value.isdigit():
+                    _DM_SERIES[key] = value
+    except Exception:
+        pass
+
+
+def _dm_series_save() -> None:
+    try:
+        rows = list(_DM_SERIES.items())[-_DM_SERIES_MAX:]
+        with open(_dm_series_path(), "w", encoding="utf-8") as handle:
+            json.dump(dict(rows), handle, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _dm_remember_series(sid: str, vids: list) -> None:
+    """登记一批 vid 属于哪个 series_id(评论接口的 book_id)。"""
+    sid = _text(sid).strip()
+    if not sid.isdigit() or not vids:
+        return
+    _dm_series_load()
+    changed = False
+    with _DM_LOCK:
+        for one in vids:
+            vid = _text(one).strip()
+            if vid.isdigit() and _DM_SERIES.get(vid) != sid:
+                _DM_SERIES[vid] = sid
+                changed = True
+        if len(_DM_SERIES) > _DM_SERIES_MAX:
+            for key in list(_DM_SERIES)[:-_DM_SERIES_MAX]:
+                _DM_SERIES.pop(key, None)
+    if changed:
+        threading.Thread(target=_dm_series_save, daemon=True).start()
+
+
+def _dm_series_of(vid: str) -> str:
+    """vid -> series_id: 落盘表优先, 其次详情页刚记下的 _SERIES_EPS 反查。"""
+    vid = _text(vid).strip()
+    if not vid:
+        return ""
+    _dm_series_load()
+    sid = _DM_SERIES.get(vid) or ""
+    if sid:
+        return sid
+    try:
+        with _SERIES_LOCK:
+            for key, vids in _SERIES_EPS.items():
+                if vid in vids:
+                    return key
+    except Exception:
+        pass
+    return ""
+
+
+def _dm_mark_stream(vid: str) -> None:
+    """本机 /hg.mp4 收到请求 = 这一集真正起播。记下当前集并后台预热它的弹幕。
+
+    切集时弹幕 GET 通常比起播晚 20 秒左右, 这里提前把取数跑起来,
+    等壳子来拉旧 URL 时基本已有数据, /hg_dm 只需等 1.5s 而不是 12s。
+    """
+    vid = _text(vid).strip()
+    if not _DM_ENABLED or not vid.isdigit():
+        return
+    sid = _dm_series_of(vid)
+    with _DM_LOCK:
+        changed = _DM_STREAM.get("vid") != vid
+        _DM_STREAM["vid"] = vid
+        _DM_STREAM["t"] = time.time()
+        do_warm = bool(changed and sid and _DM_STREAM.get("warm") != vid)
+        if do_warm:
+            _DM_STREAM["warm"] = vid
+    if do_warm:
+        try:
+            _dm_get(vid, sid, _dm_device_id(), wait=0)
+        except Exception:
+            pass
+
+
+def _dm_query(device_id: str) -> str:
+    """评论接口的固定设备参数(对齐红果 App 7.3.9.32 / aid=8662)。"""
+    return (
+        "device_id=%s&ac=wifi&channel=xiaomi_8662_64&aid=8662"
+        "&app_name=novelread&version_code=73932&version_name=7.3.9.32"
+        "&device_platform=android&os=android&ssmix=a&device_type=23127PN0CC"
+        "&device_brand=xiaomi&language=zh&os_api=34&os_version=14"
+        "&manifest_version_code=73932&resolution=1200*2670&dpi=520"
+        "&update_version_code=73932&host_abi=arm64-v8a&dragon_device_type=phone"
+        "&pv_player=73932&compliance_status=0&need_personal_recommend=1"
+        "&player_so_load=1&is_android_pad_screen=0"
+    ) % device_id
+
+
+def _dm_sign_headers(query: str, body: bytes, device_id: str) -> dict[str, str]:
+    """手搓签名头: 只要 argus/ladon/khronos/stub, 多一个头都会被判空。"""
+    ts = int(time.time())
+    stub = hashlib.md5(body).hexdigest() if body else ""
+    headers = {
+        "x-ss-req-ticket": str(ts * 1000),
+        "x-khronos": str(ts),
+        "x-ladon": _ladon_encrypt(ts, _ARGUS_LICENSE_ID, 8662,
+                                  bytes(random.getrandbits(8) for _ in range(4))),
+        "x-argus": _argus_sign(query, stub, ts, 8662, device_id, "",
+                               random.randint(1, 0x7FFFFFFF)),
+    }
+    if stub:
+        headers["x-ss-stub"] = stub
+    return headers
+
+
+def _dm_device_id() -> str:
+    """弹幕用它自己的设备号, 不跟取流的轮换表绑在一起。"""
+    try:
+        did = _current_device()[0]
+    except Exception:
+        did = ""
+    if not did:
+        try:
+            did = _random_identity()[0]
+        except Exception:
+            did = ""
+    return did
+
+
+def _dm_page(vid: str, sid: str, start_ms: int, device_id: str) -> tuple[list, dict]:
+    """取一个 30s 窗口的弹幕, 返回 (items, extra)。"""
+    payload = {
+        "business_param": {
+            "book_id": str(sid),
+            "playlet_item_duration": 0,
+            "start_offset_time": int(start_ms),
+        },
+        "comment_source": 601,
+        "comment_type": 20,
+        "count": _DM_PAGE_SIZE,
+        "group_id": str(vid),
+        "group_type": 30,
+        "server_channel": 1000,
+        "sort": 1,
+    }
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    query = _dm_query(device_id)
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "user-agent": "com.dragon.read",
+        "accept": "application/json",
+    }
+    headers.update(_dm_sign_headers(query, body, device_id))
+    url = "https://%s/novel/commentapi/comment/list/%s/v1/?%s" % (_DM_HOST, vid, query)
+    session = requests.Session()
+    session.trust_env = False
+    response = session.post(url, data=body, headers=headers, timeout=15)
+    data = _json_response(response)
+    if not isinstance(data, Mapping):
+        raise HongguoPluginError("弹幕接口返回非 JSON")
+    code = data.get("code")
+    if code not in (0, "0", None):
+        raise HongguoPluginError("弹幕接口 code=%s %s" % (code, data.get("message") or ""))
+    block = data.get("data")
+    block = block if isinstance(block, Mapping) else {}
+    items = []
+    for row in block.get("data_list") or []:
+        if not isinstance(row, Mapping):
+            continue
+        comment = row.get("comment")
+        comment = comment if isinstance(comment, Mapping) else {}
+        common = comment.get("common")
+        common = common if isinstance(common, Mapping) else {}
+        content = common.get("content")
+        content = content if isinstance(content, Mapping) else {}
+        text = _text(content.get("text")).strip()
+        if not text:
+            continue
+        expand = comment.get("expand")
+        expand = expand if isinstance(expand, Mapping) else {}
+        offset = expand.get("offset_time")
+        if offset is None:
+            offset = expand.get("offset")
+        try:
+            ms = max(0, int(offset or 0))
+        except (TypeError, ValueError):
+            ms = 0
+        items.append({"text": text, "ms": ms})
+    extra = block.get("extra")
+    return items, (extra if isinstance(extra, Mapping) else {})
+
+
+def _dm_fetch(vid: str, sid: str, device_id: str) -> list:
+    """按 30s 窗口把整集弹幕取完(4 路并发, 空窗且到片尾就停)。"""
+    items: list = []
+    seen: set = set()
+    windows = [i * _DM_WINDOW_MS for i in range(_DM_MAX_WINDOWS)]
+    empty_batches = 0
+    stop = False
+    try:
+        import concurrent.futures as _cf
+        pool = _cf.ThreadPoolExecutor(max_workers=4)
+    except Exception:
+        pool = None
+    try:
+        for base in range(0, len(windows), 4):
+            if stop:
+                break
+            batch = windows[base:base + 4]
+            if pool is None:
+                results = []
+                for start in batch:
+                    try:
+                        results.append(_dm_page(vid, sid, start, device_id))
+                    except Exception as exc:
+                        if not _DM_ERR[0]:
+                            _DM_ERR[0] = str(exc)[:120]
+                        results.append(([], {}))
+            else:
+                futures = [pool.submit(_dm_page, vid, sid, start, device_id)
+                           for start in batch]
+                results = []
+                for future in futures:
+                    try:
+                        results.append(future.result(timeout=20))
+                    except Exception as exc:
+                        if not _DM_ERR[0]:
+                            _DM_ERR[0] = str(exc)[:120]
+                        results.append(([], {}))
+            batch_empty = True
+            for page, extra in results:
+                if page:
+                    batch_empty = False
+                    for item in page:
+                        key = (item["text"], item["ms"] // 500)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        items.append(item)
+                try:
+                    next_ms = int(extra.get("next_query_danmaku_list_time") or 0)
+                except (TypeError, ValueError):
+                    next_ms = 0
+                # 空窗 + 还给"下一窗起点" = 已经过了片尾, 后面的窗口不必再问
+                if not page and next_ms > 0:
+                    stop = True
+            empty_batches = empty_batches + 1 if batch_empty else 0
+            if empty_batches >= 2:
+                break
+    finally:
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False)
+            except Exception:
+                pass
+    items.sort(key=lambda row: row["ms"])
+    return items
+
+
+def _dm_state(vid: str) -> dict:
+    with _DM_LOCK:
+        return dict(_DM_CACHE.get(vid) or {})
+
+
+def _dm_set_state(vid: str, items: list, error: str = "") -> None:
+    with _DM_LOCK:
+        _DM_CACHE[vid] = {"t": time.time(), "items": items, "error": error}
+        if len(_DM_CACHE) > 48:
+            _DM_CACHE.pop(next(iter(_DM_CACHE)), None)
+        event = _DM_EVENTS.get(vid)
+    if event is not None:
+        event.set()
+
+
+def _dm_get(vid: str, sid: str = "", device_id: str = "", wait: float = 0.0) -> dict:
+    """拿一集弹幕(缓存 + 后台单飞)。wait 秒内没取完就先回已取到的部分。"""
+    vid = _text(vid).strip()
+    if not vid:
+        return {"items": [], "error": "missing vid"}
+    sid = _text(sid).strip() or _dm_series_of(vid)
+    if not sid:
+        # 没有 series_id 时上游只会回 103001, 别浪费请求
+        return {"items": [], "error": "no series_id"}
+    with _DM_LOCK:
+        state = dict(_DM_CACHE.get(vid) or {})
+        if state and (time.time() - float(state.get("t") or 0)) < _DM_TTL:
+            return state
+        event = _DM_EVENTS.get(vid)
+        need_spawn = event is None or event.is_set()
+        if need_spawn:
+            event = threading.Event()
+            _DM_EVENTS[vid] = event
+    if need_spawn:
+        def _worker():
+            _DM_ERR[0] = ""
+            try:
+                items = _dm_fetch(vid, sid, device_id or _dm_device_id())
+                _dm_set_state(vid, items, "" if items else (_DM_ERR[0] or "empty"))
+            except Exception as exc:
+                _dm_set_state(vid, [], str(exc)[:120])
+        threading.Thread(target=_worker, daemon=True).start()
+    if wait > 0:
+        try:
+            event.wait(wait)
+        except Exception:
+            pass
+    return _dm_state(vid)
+
+
+def _dm_rows(items: list) -> list:
+    """原始弹幕(毫秒) -> 播放器行(秒 + type/color/text)。"""
+    rows = []
+    for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
+        text = _text(item.get("text")).strip()
+        if not text:
+            continue
+        try:
+            ms = int(item.get("ms") or 0)
+        except (TypeError, ValueError):
+            ms = 0
+        # 保留 3 位小数: 弹幕本来就按秒散开, 抹到 0.1s 会让同屏扎堆
+        rows.append({"time": round(ms / 1000.0, 3), "type": 1,
+                     "color": 16777215, "text": text})
+    return rows
+
+
+def _dm_xml_escape(text: str) -> str:
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&apos;"))
+
+
+def _dm_to_xml(chat_id: str, rows: list) -> bytes:
+    """B 站 XML 弹幕: 壳子 DanmakuApi._parseXml / DanUni 都认这个格式。"""
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           "<i><chatserver>hongguo</chatserver><chatid>%s</chatid>"
+           "<mission>0</mission><maxlimit>99999</maxlimit><state>0</state>"
+           "<real_name>0</real_name><source>k-v</source>" % _dm_xml_escape(chat_id)]
+    for row in rows:
+        out.append('<d p="%.3f,1,25,%d,0,0,0,0">%s</d>'
+                   % (float(row["time"]), int(row["color"]), _dm_xml_escape(row["text"])))
+    out.append("</i>")
+    return "".join(out).encode("utf-8")
+
+
+def _dm_to_json(rows: list) -> bytes:
+    return json.dumps(rows, ensure_ascii=False).encode("utf-8")
+
+
+def _dm_url(port: int, vid: str, sid: str) -> str:
+    query = urlencode({"vid": vid, "sid": sid, "fmt": "xml"})
+    return "http://127.0.0.1:%d/hg_dm?%s" % (port, query)
+
+
+def _dm_payload(port: int, vid: str) -> dict:
+    """给 playerContent 挂弹幕: 顶层 danmaku(TVBox 标准) + extra.danmaku(壳内置源同款)。"""
+    if not _DM_ENABLED or not port or not str(vid).isdigit():
+        return {}
+    sid = _dm_series_of(vid)
+    if not sid:
+        return {}
+    url = _dm_url(port, vid, sid)
+    # 起播瞬间就把取数跑起来: 播放器来要弹幕时通常已经有前几窗了
+    try:
+        _dm_get(vid, sid, _dm_device_id(), wait=0)
+    except Exception:
+        pass
+    return {"danmaku": [{"name": "红果弹幕", "url": url}],
+            "extra": {"danmaku": url}}
+
+
+def _dm_attach(result: dict, dm: dict) -> dict:
+    """把弹幕字段并进 playerContent 的返回值(不覆盖源里已有的同名键)。"""
+    if dm:
+        result.setdefault("danmaku", dm.get("danmaku"))
+        result.setdefault("extra", dm.get("extra"))
+    return result
+
+
 # ---------------------------------------------------------------- 设备号轮换
 # 实测(2026-11-08): multi_video_model 对同一个 device_id 只放行一次取流,
 # 第二次起恒定 HTTP 200 + Content-Length: 0(空 body), 且不是几分钟能恢复的限流
@@ -4218,6 +5793,12 @@ def _remember_series(sid: str, vids: list) -> None:
         _SERIES_EPS[key] = list(vids)
         if len(_SERIES_EPS) > 24:
             _SERIES_EPS.pop(next(iter(_SERIES_EPS)), None)
+    # 顺带登记弹幕映射(vid -> series_id): 评论接口的 book_id 要的是 series_id,
+    # 而播放 id 里只有 vid。落盘后 App 重启续播也还查得到。
+    try:
+        _dm_remember_series(key, vids)
+    except Exception:
+        pass
 
 
 def _series_neighbour(vid: str) -> str:
@@ -5793,6 +7374,7 @@ def _cenc_tracks(model: Any) -> list:
                 seen.add(src)
                 found.append((name, {"src": src, "kid": kid,
                                      "spade": spade, "height": height,
+                                     "alts": _media_alts(value),
                                      "size": _int(meta.get("size")),
                                      "bitrate": _int(meta.get("bitrate")),
                                      "qtype": _int(value.get("quality_type"))}))
@@ -6473,6 +8055,12 @@ class Spider(Spider):
         return cfg
 
     def homeContent(self, filter):
+        # 顺手把本机流/登录服务拉起来: 首页是必然被访问到的入口，
+        # 这样用户想直接开 http://127.0.0.1:<port>/login/qr.png 时端口已经在了。
+        try:
+            _start_stream_server()
+        except Exception as _exc:
+            _play_log("stream server start FAIL: %r" % (_exc,))
         class_list = [
             {"type_id": "latest", "type_name": "最新"},
             {"type_id": "all", "type_name": "短剧"},
@@ -6481,6 +8069,13 @@ class Spider(Spider):
             {"type_id": "hot", "type_name": "最热"},
             {"type_id": "male", "type_name": "男频"},
             {"type_id": "female", "type_name": "女频"},
+        ]
+        # 账号区：登录后从云端同步观看记录 / 收藏 / 预约（未登录时条目内自带登录入口）
+        class_list += [
+            {"type_id": MINE_TID, "type_name": "我的"},
+            {"type_id": HIST_TID, "type_name": "历史"},
+            {"type_id": FAV_TID, "type_name": "收藏"},
+            {"type_id": RESV_TID, "type_name": "预约"},
         ]
         # 榜单：走官方「短剧榜单」页（书城榜单 cell），是真正的官方排名，
         # 和分类的 sort=newest/hot_score 不是同一份数据。
@@ -6529,7 +8124,11 @@ class Spider(Spider):
         ]
         # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板
         filter_dict = {c["type_id"]: groups for c in class_list
-                       if not str(c["type_id"]).startswith(HG_RANK_TID)}
+                       if not str(c["type_id"]).startswith(HG_RANK_TID)
+                       and c["type_id"] not in (MINE_TID, HIST_TID, FAV_TID, RESV_TID)}
+        # 预约分「已上线 / 待上线」两栏（上游是两份数据）
+        filter_dict[RESV_TID] = [{"key": "state", "name": "状态", "value": [
+            {"n": "已上线", "v": "1"}, {"n": "待上线", "v": "0"}]}]
         return {"class": class_list, "filters": filter_dict}
     def _warm_latest(self):
         """后台把「最新」第一页取好：首页展示的这段时间足够它跑完，
@@ -6618,7 +8217,8 @@ class Spider(Spider):
         except Exception:
             port = 0
         if port:
-            return "http://127.0.0.1:%d/login/qr.png" % port
+            # 带上码的生成时间: 换码后 URL 会变, 免得宿主用缓存里的旧二维码
+            return "http://127.0.0.1:%d/login/qr.png?v=%d" % (port, int(_LOGIN.created or 0))
         link = _LOGIN.qr_url
         if link:
             return ("https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=8&data="
@@ -6628,14 +8228,16 @@ class Spider(Spider):
     def _login_ok_item(self, vod_id):
         user = _LOGIN.display()
         name = str(user.get("name") or "已登录")
+        uid = str(user.get("uid") or "")
         return {
             "vod_id": vod_id, "vod_name": "账号: " + name,
             "vod_pic": str(user.get("avatar") or ""), "vod_year": "", "vod_area": "",
             "vod_director": "", "vod_actor": "",
             "vod_content": (
-                "已登录。播放时优先使用登录账号走 App 接口取流, 以获取高于官网 360p 的清晰度;\n"
-                "若上游仍拒绝(签名/风控), 会自动回退到官网 360p 公开直链, 不影响观看。\n\n"
-                "换号请先退出登录, 再重新扫码。"
+                "已登录" + (("（ID " + uid + "）") if uid else "") + "。\n"
+                "「历史 / 收藏 / 预约」三个分类现在会从这个账号的云端同步，"
+                "和手机 App 上看到的是同一份数据。\n\n"
+                "换号请先退出登录，再重新扫码。"
             ),
             "vod_remarks": "已登录",
             "vod_play_from": "", "vod_play_url": "",
@@ -6647,7 +8249,8 @@ class Spider(Spider):
         logged = _LOGIN.logged_in()
         state = ("已登录: " + name) if (logged and name) else ("已登录" if logged else "未登录")
         items = [
-            {"vod_id": LOGIN_QR, "vod_name": "扫码登录", "vod_pic": "", "vod_remarks": state},
+            {"vod_id": LOGIN_QR, "vod_name": "扫码登录", "vod_pic": self._login_pic(),
+             "vod_remarks": state},
             {"vod_id": LOGIN_APP, "vod_name": "跳转 APP 登录确认", "vod_pic": "",
              "vod_remarks": "手机打开链接" if not logged else state},
         ]
@@ -6670,7 +8273,14 @@ class Spider(Spider):
         if _LOGIN.logged_in():
             return {"list": [self._login_ok_item(vod_id)]}
 
-        # 未登录: 生成(或复用)二维码
+        # 未登录: 先在宿主里弹原生扫码小窗（电视上二维码够大，确认后自动关窗）
+        if vod_id == LOGIN_QR:
+            try:
+                _ui_qr_window(force=False)
+            except Exception:
+                pass
+
+        # 再生成(或复用)二维码，详情页本身也留一份图与链接兜底
         error = ""
         try:
             _LOGIN.new_qrcode(force=False)
@@ -6697,7 +8307,7 @@ class Spider(Spider):
         if _LOGIN.logged_in():
             return {"list": [self._login_ok_item(vod_id)]}
 
-        prompt = _LOGIN.prompt_text or "请使用「抖音 / 番茄小说」APP 扫一扫"
+        prompt = _LOGIN.prompt_text or "请用「红果短剧」App 扫一扫"
         if error:
             head = "二维码获取失败: " + error
         elif status == "expired":
@@ -6707,25 +8317,172 @@ class Spider(Spider):
         elif status and status != "new":
             head = "已扫码, 请在手机上点「确认登录」, 然后返回列表重新进入本页即可生效。"
         else:
-            head = prompt + "(在手机上用「抖音」或「番茄小说」APP 扫码)"
+            head = prompt + "(用手机红果短剧 App 扫)"
 
         link = _LOGIN.qr_url or ""
+        pic = self._login_pic()
+        # 同一个端点在浏览器里打开是"会自己换码"的页面, 拿不到图时这就是救命的入口
+        page_url = pic.split("?", 1)[0] if pic else ""
         content = (
             head + "\n\n"
             "操作步骤:\n"
-            "1. 手机打开「抖音」或「番茄小说」APP 的扫一扫, 扫描上方二维码;\n"
+            "1. 手机打开「红果短剧」App 的扫一扫, 扫描上方二维码;\n"
             "2. 手机上点「确认登录」;\n"
             "3. 返回列表并重新进入本页, 显示「已登录」即完成。\n\n"
-            "不方便扫码时, 可复制下面的链接到手机浏览器打开, APP 会自动接管确认:\n"
-            + (link if link else "(本次未取到链接, 可用二维码)")
+            "二维码约 1 分钟自动换新, 过期会自动补一张; 已经扫过但还没确认时不会换码。\n"
+            "如果上方没显示二维码, 把下面地址粘到电脑浏览器打开, 页面会自动换码并显示实时状态:\n"
+            + (page_url or "(本机端口未就绪)")
+            + "\n\n也可以把下面这条链接发到手机浏览器打开:\n"
+            + (link if link else "(本次未取到链接, 直接用二维码)")
         )
         name = "扫码登录" if vod_id == LOGIN_QR else "跳转 APP 登录确认"
         return {"list": [{
-            "vod_id": vod_id, "vod_name": name, "vod_pic": self._login_pic(),
+            "vod_id": vod_id, "vod_name": name, "vod_pic": pic,
             "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
             "vod_content": content, "vod_remarks": "未登录",
             "vod_play_from": "", "vod_play_url": "",
         }]}
+
+    # ---------------------------------------------------------------- 我的 / 账号同步
+    def _login_prompt_card(self, what, message=""):
+        """未登录(或出错)时给一张可点的卡：点开就是扫码登录页。"""
+        return {
+            "vod_id": LOGIN_QR,
+            "vod_name": ("扫码登录后同步" + what) if not message else message,
+            "vod_pic": self._login_pic(),
+            "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+            "vod_content": (
+                "这一栏的数据来自红果账号云端。\n"
+                "点开本项会弹出登录二维码：用手机「红果短剧」App 扫码，"
+                "并在手机上点「确认登录」，登录成功后回来刷新本页即可看到" + what + "。"
+            ),
+            "vod_remarks": "未登录", "vod_play_from": "", "vod_play_url": "",
+        }
+
+    def _mine_category(self):
+        logged = _LOGIN.logged_in()
+        user = _LOGIN.display()
+        name = str(user.get("name") or "")
+        state = ("已登录: " + name) if (logged and name) else ("已登录" if logged else "未登录")
+        items = [{
+            "vod_id": LOGIN_QR, "vod_name": "扫码登录", "vod_pic": self._login_pic(),
+            "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+            "vod_content": (
+                "登录后可同步：观看记录、收藏、预约。\n"
+                "点开本项会弹出二维码，手机扫码确认即可；不会上传任何本地数据。"
+            ),
+            "vod_remarks": state, "vod_play_from": "", "vod_play_url": "",
+        }]
+        if logged:
+            items.insert(0, {
+                "vod_id": LOGIN_QR, "vod_name": "账号: " + (name or "红果用户"),
+                "vod_pic": str(user.get("avatar") or self._login_pic()),
+                "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+                "vod_content": ("已登录，观看记录 / 收藏 / 预约会从云端同步到对应分类。\n"
+                                "换号请先退出登录，再重新扫码。"),
+                "vod_remarks": "已登录", "vod_play_from": "", "vod_play_url": "",
+            })
+            items.append({"vod_id": LOGIN_LOGOUT, "vod_name": "退出登录", "vod_pic": "",
+                          "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+                          "vod_content": "清除本机登录凭证，并清空观看记录 / 收藏 / 预约的缓存。",
+                          "vod_remarks": "", "vod_play_from": "", "vod_play_url": ""})
+        return {"page": 1, "pagecount": 1, "limit": len(items),
+                "total": len(items), "list": items}
+
+    @staticmethod
+    def _account_card(rows, kind):
+        cards = []
+        for row in rows:
+            sid = _text(row.get("id"))
+            if not sid.isdigit():
+                continue
+            title = _text(row.get("title")) or ("剧集 " + sid)
+            remarks = []
+            if kind == "hist":
+                if row.get("index"):
+                    remarks.append("看到第 %d 集" % (int(row["index"]) + 1))
+                played, total = _acc_int(row.get("pos")), _acc_int(row.get("total"))
+                if played > 0:
+                    clock = "%d:%02d" % (played // 60, played % 60)
+                    remarks.append(clock + (" / %d:%02d" % (total // 60, total % 60) if total else ""))
+                if row.get("count"):
+                    remarks.append("全 %d 集" % int(row["count"]))
+                when = _acc_clock(row.get("at"))
+                if when:
+                    remarks.append(when)
+            elif kind == "fav":
+                if row.get("badge"):
+                    remarks.append(str(row["badge"]))
+                if row.get("tags"):
+                    remarks.append(str(row["tags"]))
+                when = _acc_clock(row.get("at"))
+                if when:
+                    remarks.append("收藏于 " + when)
+            else:
+                if row.get("badge"):
+                    remarks.append(str(row["badge"]))
+                if row.get("text"):
+                    remarks.append(str(row["text"]))
+                when = _acc_clock(row.get("at"))
+                if when:
+                    remarks.append("预计 " + when)
+            cards.append({
+                "vod_id": sid, "vod_name": title,
+                "vod_pic": _text(row.get("cover")), "vod_year": "", "vod_area": "",
+                "vod_director": "", "vod_actor": "",
+                "vod_content": _text(row.get("intro")),
+                "vod_remarks": " · ".join(remarks), "vod_play_from": "", "vod_play_url": "",
+            })
+        return cards
+
+    @staticmethod
+    def _account_kind(tid):
+        """分类 id -> 短 kind（hg_hist -> hist），避免把 tid 直接当 kind 用。"""
+        return {HIST_TID: "hist", FAV_TID: "fav", RESV_TID: "resv"}.get(str(tid), "")
+
+    def _account_category(self, tid, extend):
+        kind = self._account_kind(tid)
+        if not kind:
+            return {"page": 1, "pagecount": 1, "limit": 0, "total": 0, "list": []}
+        if not _LOGIN.logged_in():
+            what = {"hist": "观看记录", "fav": "收藏", "resv": "预约"}.get(kind, "账号数据")
+            return {"page": 1, "pagecount": 1, "limit": 1, "total": 1,
+                    "list": [self._login_prompt_card(what)]}
+        online = True
+        if kind == "resv":
+            if isinstance(extend, str) and extend:
+                try:
+                    extend = json.loads(extend)
+                except Exception:
+                    extend = {}
+            if isinstance(extend, Mapping):
+                online = str(extend.get("state") or "1") not in ("0", "false", "False")
+        try:
+            if kind == "hist":
+                rows = _acc_history()
+            elif kind == "fav":
+                rows = _acc_favorites()
+            else:
+                rows = _acc_reservations(online)
+        except Exception as exc:
+            what = {"hist": "观看记录", "fav": "收藏", "resv": "预约"}.get(kind, "账号数据")
+            return {"page": 1, "pagecount": 1, "limit": 1, "total": 1,
+                    "list": [self._login_prompt_card(what, what + "读取失败: " + str(exc)[:40])]}
+        cards = self._account_card(rows, kind)
+        if not cards:
+            what = {"hist": "观看记录", "fav": "收藏", "resv": "预约"}.get(kind, "账号数据")
+            empty = {
+                "vod_id": LOGIN_QR, "vod_name": what + "还是空的",
+                "vod_pic": "", "vod_year": "", "vod_area": "", "vod_director": "", "vod_actor": "",
+                "vod_content": ("账号云端没有" + what + "。\n"
+                                + ("先在手机上用同一个账号看几集，或重新扫码登录后刷新本页。"
+                                   if kind == "hist" else
+                                   "先在手机上用同一个账号操作后，回到这里刷新本页。")),
+                "vod_remarks": "空", "vod_play_from": "", "vod_play_url": "",
+            }
+            return {"page": 1, "pagecount": 1, "limit": 1, "total": 1, "list": [empty]}
+        return {"page": 1, "pagecount": 1, "limit": len(cards),
+                "total": len(cards), "list": cards}
 
     def _rank_category(self, board, page):
         """榜单分类：走官方榜单 cell（每页 10 条，服务端 has_more 决定到底）。"""
@@ -6755,6 +8512,10 @@ class Spider(Spider):
     def categoryContent(self, tid, pg, filter, extend):
         if str(tid) == LOGIN_TID:
             return self._login_category()
+        if str(tid) == MINE_TID:
+            return self._mine_category()
+        if str(tid) in (HIST_TID, FAV_TID, RESV_TID):
+            return self._account_category(str(tid), extend)
         try: page = max(1, int(pg))
         except (TypeError, ValueError): page = 1
         if str(tid).startswith(HG_RANK_TID):
@@ -6994,6 +8755,11 @@ class Spider(Spider):
         except Exception:
             port = 0
         public_url = _public_media_url(vid)
+        # 弹幕: 详情页记过 vid->series_id 才挂(缺 series_id 时评论接口恒定回 103001)
+        try:
+            dm = _dm_payload(port, vid)
+        except Exception:
+            dm = {}
         if port and vid.isdigit():
             tracks = []
             error = ""
@@ -7007,11 +8773,16 @@ class Spider(Spider):
                 if tier_hint:
                     # 线路栏选的是清晰度 → 只给这一档（命中不了的档位就退到最接近的）
                     name, item = _pick_track(tracks, tier_hint)
+                    item = dict(item, vid=vid)
                     query = urlencode({
                         "src": item.get("src") or "",
                         "kid": item.get("kid") or "",
                         "spade": item.get("spade") or "",
                         "name": name,
+                        # 带上 vid：流服务端写日志、以及"媒体地址全线失败时作废
+                        # model 缓存"都要用到，不能只靠进程内的映射表
+                        # （App 重启后从播放器缓存直接续播时表是空的）。
+                        "vid": vid,
                     })
                     # 播放器真正发请求前先把 CENC 计划建好：1080P 计划要 1.2s，
                     # 不预热的话这段时间全是黑屏等待。
@@ -7019,25 +8790,29 @@ class Spider(Spider):
                     _play_log("play %s -> %s 单档 %dP (ct=%d)"
                               % (vid, name, int(item.get("height") or 0),
                                  _hg_content_type(vid, ct_hint)))
-                    return {"parse": 0, "jx": 0, "playUrl": "",
-                            "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
-                            "header": {"User-Agent": UA}}
+                    return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
+                                       "url": "http://127.0.0.1:%d/hg.mp4?%s" % (port, query),
+                                       "header": {"User-Agent": UA}}, dm)
                 pairs = []
                 for name, item in tracks:
+                    # 每档都登记备用节点：播放器可能直接选非首选档，
+                    # 那一档 403 时也得能就地换 CDN。
+                    _media_register(item.get("src"), item.get("alts"), vid)
                     query = urlencode({
                         "src": item["src"],
                         "kid": item["kid"],
                         "spade": item["spade"],
                         "name": name,
+                        "vid": vid,
                     })
                     pairs.append(name)
                     pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
                 if tracks:
-                    _warm_plan(tracks[0][1])
+                    _warm_plan(dict(tracks[0][1], vid=vid))
                 _play_log("play %s -> %d 档 (ct=%d)"
                           % (vid, len(tracks), _hg_content_type(vid, ct_hint)))
-                return {"parse": 0, "jx": 0, "playUrl": "", "url": pairs,
-                        "header": {"User-Agent": UA}}
+                return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
+                                   "url": pairs, "header": {"User-Agent": UA}}, dm)
             _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
                       % (vid, error or "无可用档位"))
         # 兜底: 官网公开直链(仅 10 秒试看片段)
