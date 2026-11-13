@@ -5777,11 +5777,12 @@ def _home_hot_list():
 _SERIES_EPS: dict[str, list] = {}
 _SERIES_LOCK = threading.Lock()
 _PREFETCHING: set = set()
-_PREFETCH_DELAY = 4.0
-# 预取下一集 = 每看一集多打一次取流。上游对同 IP 的取流窗口很窄，多出来的这一发
-# 经常把"下一集真正开播"的那一次挤成 HTTP 200 + 空 body，于是下一集起播要等
-# 十几秒、最后还回落 360p 试看（实测连播 5 集里 3 集是这样）。
-# 起播稳定 > 切集那点缓存收益，默认关闭；需要时可临时改回 True。
+# 预取时点：太早（<5s）会跟"当前集正在供流"抢窗口 —— 历史上就是这一发把下一集
+# 真正开播的那次挤成 200+空 body。改成当前集播了 18 秒后再取，那时上游早已
+# 为当前集建好会话，多一发压力很小；而短剧一集 40~80s，18 秒取回还来得及。
+_PREFETCH_DELAY = 18.0
+# 2026-11-13 起启用：配合 `_video_model_direct` 的梯度重试，即使预取这一发被挤，
+# 切集时的 7 发梯度重试也能兜住，不再是"预取反而害了切集"的旧局面。
 _PREFETCH_ENABLED = True
 
 
@@ -5814,7 +5815,16 @@ def _series_neighbour(vid: str) -> str:
 
 
 def _prefetch_next(vid: str, config: Mapping[str, Any]) -> None:
-    """后台把下一集的 video_model 先取回来（用户还在看这一集，时间充裕）。"""
+    """后台把下一集的 video_model 先取回来（用户还在看这一集，时间充裕）。
+
+    切集时壳子会重新来要 playerContent，命中 `_MODEL_CACHE` 就是 0 网络、
+    0 秒返回 —— 这是消除"切集停顿"最直接的一招。
+
+    两条纪律：
+      1. **只打直连、只试 3 发**，不碰签名服务（已死）、不叠加 7 发梯度；
+      2. 失败**绝不**写 `_DIRECT_FAIL_AT` / `_sig_breaker`，否则预取失败会把
+         "马上要来的真正切集"一起拖下水。
+    """
     if not _PREFETCH_ENABLED:
         return
     target = _series_neighbour(vid)
@@ -5833,8 +5843,19 @@ def _prefetch_next(vid: str, config: Mapping[str, Any]) -> None:
             time.sleep(_PREFETCH_DELAY)
             if _MODEL_CACHE.get(target):
                 return
-            _video_model(target, config, ct_hint=_EP_CT.get(target) or 0)
+            model = _video_model_direct(target, config,
+                                        ct_hint=_EP_CT.get(target) or 0, tries=3)
+            if len(_MODEL_CACHE) >= _MODEL_CACHE_MAX:
+                _MODEL_CACHE.clear()
+            _MODEL_CACHE[target] = (time.time(), dict(model))
             _play_log("prefetch %s ok" % target)
+            # 取回 model 顺手把 CENC 计划也建掉（切集首包直接命中）
+            try:
+                one = _cenc_tracks(model)
+                if one:
+                    _warm_plan(dict(one[0][1], vid=target))
+            except Exception:
+                pass
         except Exception as exc:  # noqa: BLE001 - 预取失败不影响当前播放
             _play_log("prefetch %s skip(%s)" % (target, str(exc)[:50]))
         finally:
@@ -5881,9 +5902,24 @@ _HG_FAIL_AT = [0.0]              # 上次取流彻底失败的时间（用于详
 # 15 分钟静默期，期间直接走试看兜底，避免播放器反复黑屏 + 给上游刷无效请求。
 _DIRECT_FAIL_AT = [0.0]
 _DIRECT_COOLDOWN = 20.0
+# 2026-11-13：直连的"回空"是**成簇**出现的 —— 单发约 1/5 空，但"连打 3 发全空"
+# 实测占 273 次播放里的 70 次（26%），远高于独立事件的概率，说明撞上的是一段
+# 几百毫秒到几秒的风控/调度窗口。3 发全部挤在 2 秒内打完，正好整段落在窗口里。
+# 改成「快打 3 发 + 拉开间隔补 4 发」的梯度重试：偶发靠快打，窗口靠等。
+# 每发前等待（秒），按 attempt 取；最坏总耗时约 5.2s，仍远好于回落 10 秒试看。
+_DIRECT_TRIES = 7
+_DIRECT_WAITS = (0.0, 0.12, 0.25, 1.2, 0.6, 2.0, 0.8)
+# 签名服务（8788）2026-11-11 起恒回 HTTP 400，实测 46 次失败里 13 次是纯超时、
+# 每次都白等 1~2 秒。连续失败 2 次就静默 30 分钟，别再让它拖慢每一集。
 _SIG_BREAKER = {"until": 0.0, "strikes": 0}
 _SIG_BREAKER_STRIKES = 2
-_SIG_BREAKER_SECONDS = 900.0
+_SIG_BREAKER_SECONDS = 1800.0
+# 签名服务的"限频探测"：直连已经重试 7 发（约 5s）之后，再让它超时一次
+# （`_SIGNED_PLAY_BUDGET=4s`，两轮最多 8s）会把一集的黑屏拖到 9~13 秒。
+# 既然 8788 恒回 400，就 30 分钟只探测一次 —— 保留"服务恢复"的可能，
+# 又不会让每一集都为它买单。
+_SIGNED_PROBE = {"at": 0.0}
+_SIGNED_PROBE_GAP = 1800.0
 
 
 def _sig_breaker_active() -> bool:
@@ -5901,9 +5937,17 @@ def _sig_breaker_strike() -> None:
 def _sig_breaker_reset() -> None:
     _SIG_BREAKER["strikes"] = 0
     _SIG_BREAKER["until"] = 0.0
+    # 有成功就打开探测闸门：下次直连失败时仍会试一次签名，别把它永久关死
+    _SIGNED_PROBE["at"] = 0.0
 
 
 def _direct_healthy() -> bool:
+    """直连最近是否刚整轮失败过。
+
+    **注意语义**：这里只用来决定"要不要加重试力度"，不再是"跳过直连"。
+    以前冷却期直接跳过直连去撞签名服务，而签名服务已下线 → 100% FAIL，
+    这才是"切集停顿很久"的主因（20 秒窗口内所有播放请求必失败）。
+    """
     at = _DIRECT_FAIL_AT[0]
     return not at or (time.time() - at) > _DIRECT_COOLDOWN
 
@@ -6968,24 +7012,31 @@ def _video_model_once(video_id: str, config: Mapping[str, Any],
       签名服务退回纯兜底（只有 3 发都空才动它）。
     """
     started = time.time()
+    # **直连是当前唯一可用的取流路径**（8788 签名服务 2026-11-11 起恒回 HTTP 400）。
+    # 以前这里会因 `_sig_breaker_active()`（15 分钟静默）或 `_direct_healthy()`
+    # （失败后 20 秒冷却）**跳过直连**，直接去撞已死的签名服务 → 必 FAIL →
+    # 回落 10 秒试看。这就是"切集有时停顿很久"的主因：一次三发全空之后，
+    # 接下来 20 秒内的每一次播放请求都被推进这条死路。
+    # 现在无论如何都先打直连，冷却期只用来**加重试力度**，不再跳过。
+    tries = _DIRECT_TRIES if _direct_healthy() else _DIRECT_TRIES + 1
+    try:
+        model = _video_model_direct(video_id, config, ct_hint, tries=tries)
+        _sig_breaker_reset()
+        return model
+    except _VideoModelEmpty as exc:
+        _DIRECT_FAIL_AT[0] = time.time()
+        _play_log("direct empty(%d发/%.1fs): %s -> signed"
+                  % (tries, time.time() - started, str(exc)[:50]))
+    except Exception as exc:  # noqa: BLE001 - 直连异常也退回签名
+        _DIRECT_FAIL_AT[0] = time.time()
+        _play_log("direct fail: %s -> signed" % str(exc)[:60])
     if _sig_breaker_active():
-        # 2026-11-11：红果把播放接口的签名换成 MedusaV5，旧签名（含 8788 服务）
-        # 一律被拒、恒回 200+0 字节。这时再按 3 发直连 + 2 轮注册去撞，
-        # 只是让播放器多黑屏 5 秒并继续给上游送无效请求（有可能延长封禁）。
-        raise HongguoPluginError("取流接口签名已变更，暂不重试")
-    if _direct_healthy():
-        try:
-            model = _video_model_direct(video_id, config, ct_hint, tries=3)
-            _sig_breaker_reset()
-            return model
-        except _VideoModelEmpty as exc:
-            _DIRECT_FAIL_AT[0] = time.time()
-            _play_log("direct empty: %s -> signed" % str(exc)[:60])
-        except Exception as exc:  # noqa: BLE001 - 直连异常也退回签名
-            _DIRECT_FAIL_AT[0] = time.time()
-            _play_log("direct fail: %s -> signed" % str(exc)[:60])
-    else:
-        _play_log("direct 近期判空, 跳过直连直接签名")
+        # 签名服务已在静默期：再打只是多等一次超时（实测单次 1~2s，13 次纯超时）。
+        raise HongguoPluginError("video_model 取流失败: 签名服务不可用(静默中)")
+    if time.time() - _SIGNED_PROBE["at"] < _SIGNED_PROBE_GAP:
+        # 30 分钟内已探测过并失败 —— 直连已经打了 7 发，别再叠加 4~8 秒超时。
+        raise HongguoPluginError("video_model 取流失败: 签名服务已停用(限频探测)")
+    _SIGNED_PROBE["at"] = time.time()
     try:
         model = _hg_signed_play(video_id, ct_hint)
         _sig_breaker_reset()
@@ -7010,12 +7061,12 @@ class _VideoModelEmpty(HongguoPluginError):
 
 
 def _video_model_direct(video_id: str, config: Mapping[str, Any],
-                        ct_hint: int = 0, tries: int = 3) -> dict[str, Any]:
+                        ct_hint: int = 0, tries: int = _DIRECT_TRIES) -> dict[str, Any]:
     """直连 multi_video_model/player/v1，每次换新设备号 + 换一台接入机器。
 
-    回空是这条接口的偶发行为（约 1/5），重打一发的代价只有 ~0.15s，
-    所以默认试 3 次、每次换主机 —— 实测 3 次内成功率接近 100%，
-    而以前一发失败就去走签名服务（注册 1.5s + 令牌一次一用）。
+    回空是这条接口的偶发行为，而且是**成簇**的（连打 3 发全空占 26%），
+    所以按 `_DIRECT_WAITS` 做梯度重试：前几发快打覆盖偶发，后几发拉开
+    间隔覆盖"风控窗口"，最后几发每发还能换到没试过的接入机器。
     """
     bare = _text(video_id).split("@")[0].strip()
     if not bare:
@@ -7023,6 +7074,9 @@ def _video_model_direct(video_id: str, config: Mapping[str, Any],
     content_type = _hg_content_type(bare, ct_hint)
     last = ""
     for attempt in range(max(1, tries)):
+        # 梯度等待：偶发空响应靠快打，成簇的风控窗口靠拉开间隔
+        if attempt:
+            time.sleep(_DIRECT_WAITS[min(attempt, len(_DIRECT_WAITS) - 1)])
         device_id, install_id = _random_identity()
         try:
             _persist_identity(device_id, install_id)
@@ -7076,7 +7130,6 @@ def _video_model_direct(video_id: str, config: Mapping[str, Any],
             response = _http().post(url, headers=headers, data=body, timeout=20)
         except Exception as exc:  # noqa: BLE001
             last = "网络异常: %s" % exc
-            time.sleep(0.15)
             continue
         if response.status_code == 200 and response.content:
             model = _model_from_response(response, bare)
@@ -7090,7 +7143,6 @@ def _video_model_direct(video_id: str, config: Mapping[str, Any],
             last = "HTTP %s, %d 字节" % (response.status_code,
                                          len(response.content or b""))
         _play_log("direct %s 第%d发空(%s), 换机器重试" % (bare, attempt + 1, last))
-        time.sleep(0.12)
     raise _VideoModelEmpty("直连取流失败(%s)" % (last or "unknown"))
 
 
@@ -7863,6 +7915,344 @@ def _app_category_list(genre, page, config, sort=None, gender=None,
     return out
 
 
+# ---------------------------------------------------------------- 推荐流
+# 官方 App 首页「找剧」tab 的个性化推荐流 = 书城 cell/change 的一个推荐 cell：
+#   tab_type=8 + cell_id=<tab8 主推荐 cell>（use_recommend=True, show_type=506）
+# 卡片在 cell_view.cell_data[i].video_data[0]，带 title/cover/video_desc/
+# episode_cnt/score/series_id，另有 recommend_info（JSON 串）里的算法队列 rank /
+# queue_names / final_queue_name —— 这是推荐队列的铁证，不是榜单也不是分类排序。
+# 2026-11-13 实测事实（都是踩过的坑）：
+#   1) **Cookie 才是个性化开关**：带登录 Cookie 的两次请求彼此重合 5~6/6，
+#      匿名彼此 4/6，而「登录 vs 匿名」只有 0~1/6；user_is_login 参数毫无影响。
+#   2) 每页固定 6 条，limit/count/page_size 都改不了条数。
+#   3) 串行带 session_id 翻 8 页 = 48 条零重复但要 6.5s；同一 session_id 并发
+#      不同 offset 只要 1.4s，但页间会重复 —— 首页要一屏，用「并发 + 去重」划算。
+#   4) 响应里混着「双列图文贴」(show_type 557) 和空 cell，没有 series_id 的一律丢掉。
+HG_REC_PATH = "/reading/bookapi/bookmall/cell/change/v1/"
+HG_REC_TAB_PATH = "/reading/bookapi/bookmall/tab/v1/"
+HG_REC_CELL = "6952850996422770718"   # 常量兜底；运行时优先从 tab 接口动态取
+HG_REC_TAB = "8"
+HG_REC_PAGE = 6                       # 上游写死每页 6 条
+# 首屏并发页数：实测 7 页只去重出 13 条、9 页 19~27 条、11 页 25 条且更稳，
+# 再多不会变多（服务端窗口本来就重叠）。11 页约 2.6s。
+HG_REC_FANOUT = 11
+HG_REC_FILL = 30                      # 首屏目标条数（壳子 _LIST_PAGE_SIZE=36，凑一屏稍欠即可）
+HG_REC_MIN = 20                       # 首屏少于这个数就再从游标后面补一批（并发去重波动大）
+HG_REC_PAGE_MIN = 10                  # 翻页少于这个数就从更后面再补一批（推荐队列尾部重叠）
+HG_REC_TTL = 180.0                    # 推荐流带画像 + 时间，缓存别太长
+HG_REC_CELL_TTL = 21600.0             # cell_id 是运营配置，6 小时刷一次足够
+REC_TID = "rec"                       # 首页分类栏第一项「推荐」：登录后走个性化流
+_HG_REC_CACHE = {"t": 0.0, "rows": []}
+_HG_REC_LOCK = threading.Lock()
+_HG_REC_EVENT = [None]        # 在途那一批的完成信号，后到的请求直接等它
+_HG_REC_CELL_STATE = {"id": HG_REC_CELL, "t": 0.0, "busy": False}
+# 翻页游标 + 全局去重：并发 offset 之间会重复，靠 series_id 全局去重保证
+# 「翻页不会再看到上一页的剧」；游标保证每次从那之后继续要，不会原地打转。
+_HG_REC_NEXT = [0]
+_HG_REC_HOME_END = [HG_REC_FANOUT * HG_REC_PAGE]   # 首页实际吃掉的 offset 上限（补批后会更大）
+_HG_REC_SEEN: set = set()
+_HG_REC_SEEN_MAX = 3000
+
+
+def _rec_cell_refresh(config):
+    """后台校准 tab8 主推荐 cell_id。
+
+    运营会改 cell 配置，写死迟早失效；但把它放在首屏同步链上要白等 1.9s
+    （tab 接口本身也是一次签名请求），所以改成「常量先顶上，后台校准」。
+    """
+    with _HG_REC_LOCK:
+        if _HG_REC_CELL_STATE["busy"]:
+            return
+        _HG_REC_CELL_STATE["busy"] = True
+    cell = ""
+    try:
+        j = _api_get(HG_REC_TAB_PATH, {}, config)
+        for tab in (((j.get("data") or {}).get("tab_item")) or []):
+            if str(tab.get("tab_type")) != HG_REC_TAB:
+                continue
+            for one in (tab.get("cell_data") or []):
+                if not one.get("use_recommend"):
+                    continue
+                cell = _text(one.get("cell_id") or one.get("cell_id_str"))
+                if cell:
+                    break
+            if cell:
+                break
+    except Exception:
+        cell = ""
+    with _HG_REC_LOCK:
+        _HG_REC_CELL_STATE["busy"] = False
+        if cell:
+            if cell != _HG_REC_CELL_STATE["id"]:
+                _play_log("rec cell -> %s" % cell)
+            _HG_REC_CELL_STATE["id"] = cell
+            _HG_REC_CELL_STATE["t"] = time.time()
+        else:
+            # 校准失败就 10 分钟后再试，别每次首页都打一遍
+            _HG_REC_CELL_STATE["t"] = time.time() - HG_REC_CELL_TTL + 600
+
+
+def _rec_cell_id(config):
+    """tab8（找剧）主推荐 cell：常量立即返回，过期时丢后台校准，绝不阻塞首屏。"""
+    with _HG_REC_LOCK:
+        cell = _HG_REC_CELL_STATE["id"] or HG_REC_CELL
+        stale = time.time() - _HG_REC_CELL_STATE["t"] > HG_REC_CELL_TTL
+        busy = _HG_REC_CELL_STATE["busy"]
+    if stale and not busy:
+        try:
+            threading.Thread(target=_rec_cell_refresh, args=(config,), daemon=True).start()
+        except Exception:
+            pass
+    return cell
+
+
+def _rec_rank(it):
+    """recommend_info 里的算法 rank。解析失败排到最后，不影响出片。"""
+    raw = it.get("recommend_info")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        return int(raw.get("rank") or 9999)
+    except (TypeError, ValueError):
+        return 9999
+
+
+def _rec_item(it):
+    """推荐卡片 → vod。封面同样是 .heic，和榜单同款，壳子本来就能显示。"""
+    cnt = it.get("episode_cnt") or 0
+    score = _text(it.get("score"))
+    bits = []
+    if score:
+        bits.append("%s分" % score)
+    if cnt:
+        bits.append("全%s集" % cnt)
+    return {"vod_id": _text(it.get("series_id")),
+            "vod_name": _text(it.get("title")) or "未命名",
+            "vod_pic": _text(it.get("cover")),
+            "vod_remarks": " · ".join(bits),
+            "vod_content": _text(it.get("video_desc") or "")}
+
+
+def _rec_page(config, cell, offset, session_id):
+    """推荐流一页 → (rows, next_offset, session_id, has_more)。
+
+    offset 必须显式传，并且配合同一个 session_id 才能并发：
+    不带 session_id 并发不同 offset 会大量重复（实测 22 条只去重出 11 条）。
+    """
+    params = {"tab_type": HG_REC_TAB, "cell_id": cell, "offset": str(offset)}
+    if session_id:
+        params["session_id"] = session_id
+    j = _api_get(HG_REC_PATH, params, config)
+    data = j.get("data") or {}
+    cv = data.get("cell_view") or {}
+    rows = []
+    for one in (cv.get("cell_data") or []):
+        for it in (one.get("video_data") or []):
+            item = _rec_item(it)
+            if not item.get("vod_id"):
+                continue          # 图文贴 / 空 cell，没有 series_id
+            item["_rank"] = _rec_rank(it)
+            rows.append(item)
+    try:
+        nxt = int(data.get("next_offset") or 0)
+    except (TypeError, ValueError):
+        nxt = 0
+    if nxt <= offset:
+        nxt = offset + HG_REC_PAGE
+    return rows, nxt, _text(data.get("session_id")) or session_id, bool(data.get("has_more"))
+
+
+def _rec_collect(config, cell, fill, start=0, pages=None, exclude=None):
+    """取一批推荐：所有页一次性并发，再去重 + 按算法 rank 排序。
+
+    为什么不让第一页串行去拿 session_id：那要白等一个 RTT（实测 1.3s），而
+    「带 session_id 并发」和「不带 session_id 并发」去重后的条数几乎一样
+    （前者 24→12，后者 22→11），干脆全部并发，首屏从 2.9s 降到 1.6s。
+    页间重复靠 series_id 去重，顺序靠 recommend_info.rank 重排 ——
+    并发拿到的仍然是算法队列里的位置，所以排完还是推荐顺序。
+
+    start/exclude 是给翻页用的：翻页从游标 start 往后要，并排除已经展示过的
+    （推荐流不同 offset 之间会重叠，全局去重才能保证翻页不重复）。
+    """
+    pages = pages or HG_REC_FANOUT
+    offsets = [start + k * HG_REC_PAGE for k in range(max(1, pages))]
+    rows = []
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=min(9, len(offsets))) as pool:
+        futs = [pool.submit(_rec_page, config, cell, off, "") for off in offsets]
+        for fut in futs:
+            try:
+                rows.extend(fut.result(timeout=20)[0])
+            except Exception:
+                pass
+    seen, out = set(), []
+    for item in rows:
+        sid_one = item.get("vod_id")
+        if not sid_one or sid_one in seen:
+            continue
+        if exclude and sid_one in exclude:
+            continue
+        seen.add(sid_one)
+        out.append(item)
+    out.sort(key=lambda x: x.get("_rank", 9999))
+    clean = []
+    for item in out[:max(1, fill)]:
+        item.pop("_rank", None)
+        clean.append(item)
+    return clean
+
+
+def _rec_notify(rows):
+    """记下已经给过用户的剧：翻页时排除，保证翻页不会重样。"""
+    ids = [r.get("vod_id") for r in rows if r.get("vod_id")]
+    if not ids:
+        return
+    with _HG_REC_LOCK:
+        _HG_REC_SEEN.update(ids)
+        if len(_HG_REC_SEEN) > _HG_REC_SEEN_MAX:
+            _HG_REC_SEEN.clear()
+            _HG_REC_SEEN.update(ids)
+
+
+def _rec_reset_session():
+    """进源 = 新会话：翻页游标归零（seen 保留，仍能挡住重复）。"""
+    with _HG_REC_LOCK:
+        _HG_REC_NEXT[0] = 0
+
+
+def _rec_home_list(config):
+    """首页推荐位：登录后走官方 App 个性化推荐流，未登录/失败返回 [] 让调用方回落。
+
+    - 缓存 180s：二次进首页 0ms；
+    - 单飞：并发进首页只打一遍上游，后到的请求等第一批结果（最多 3s），
+      拿不到才回落 SSR —— 绝不会为了「不重复请求」而返回空。
+    - 任何异常都只记日志并返回 []，绝不白屏。
+    """
+    if not config or not _LOGIN.logged_in():
+        return []
+    with _HG_REC_LOCK:
+        if _HG_REC_CACHE["rows"] and time.time() - _HG_REC_CACHE["t"] < HG_REC_TTL:
+            cached = list(_HG_REC_CACHE["rows"])
+        else:
+            cached = None
+    if cached is not None:
+        # 注意：_rec_notify 自己也要拿 _HG_REC_LOCK，不能在上面那个 with 里调（死锁）
+        _rec_notify(cached)
+        return cached
+    with _HG_REC_LOCK:
+        stale = list(_HG_REC_CACHE["rows"])
+        event = _HG_REC_EVENT[0]
+        owner = event is None
+        if owner:
+            event = threading.Event()
+            _HG_REC_EVENT[0] = event
+    if not owner:
+        event.wait(3.0)
+        with _HG_REC_LOCK:
+            rows = list(_HG_REC_CACHE["rows"])
+        rows = rows or stale
+        _rec_notify(rows)
+        return rows
+    rows = []
+    try:
+        t0 = time.time()
+        cell = _rec_cell_id(config)
+        rows = _rec_collect(config, cell, HG_REC_FILL)
+        # 并发翻页的页间重叠是服务端行为，波动很大（7 页只 13 条、9 页 27 条）。
+        # 不足一屏就再从游标后面补一批，保证首页稳定有 20+ 条。
+        if len(rows) < HG_REC_MIN:
+            extra = _rec_collect(config, cell, HG_REC_FILL,
+                                 start=HG_REC_FANOUT * HG_REC_PAGE,
+                                 exclude={r.get("vod_id") for r in rows})
+            if extra:
+                rows = rows + extra
+                with _HG_REC_LOCK:
+                    _HG_REC_HOME_END[0] = 2 * HG_REC_FANOUT * HG_REC_PAGE
+        if rows:
+            _play_log("rec home ok rows=%d %.2fs cell=%s"
+                      % (len(rows), time.time() - t0, _HG_REC_CELL_STATE["id"]))
+        else:
+            _play_log("rec home empty cell=%s" % _HG_REC_CELL_STATE["id"])
+    except Exception as exc:
+        _play_log("rec home FAIL %s: %s" % (type(exc).__name__, str(exc)[:120]))
+        rows = []
+    finally:
+        with _HG_REC_LOCK:
+            if _HG_REC_EVENT[0] is event:
+                _HG_REC_EVENT[0] = None
+        event.set()
+    if rows:
+        with _HG_REC_LOCK:
+            _HG_REC_CACHE["rows"] = list(rows)
+            _HG_REC_CACHE["t"] = time.time()
+        _rec_notify(rows)
+        return list(rows)
+    _rec_notify(stale)
+    return stale
+
+
+def _rec_category(page, config):
+    """分类栏「推荐」：第 1 页吃首页缓存，之后从游标接着并发要新的一批。
+
+    壳子翻页是顺着的，所以用「游标 + 全局 series_id 去重」就够了：
+    并发不同 offset 之间本来就有重叠，去重后每页仍有 20+ 条新内容，且不会重样。
+    未登录时不打推荐接口，第 1 页直接给官网热播位（和改之前完全一致）。
+    """
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    if page <= 1:
+        rows = _rec_home_list(config)
+        if not rows:
+            try:
+                rows = _home_hot_list()
+            except Exception:
+                rows = []
+        with _HG_REC_LOCK:
+            if _HG_REC_NEXT[0] == 0:
+                _HG_REC_NEXT[0] = _HG_REC_HOME_END[0]
+        return {"list": rows, "page": 1, "pagecount": 9999 if rows else 1,
+                "limit": len(rows), "total": 999999 if rows else 0}
+    if not _LOGIN.logged_in():
+        return {"list": [], "page": page, "pagecount": 1, "limit": 0, "total": 0}
+    with _HG_REC_LOCK:
+        start = _HG_REC_NEXT[0]
+        seen = set(_HG_REC_SEEN)
+    rows = []
+    try:
+        cell = _rec_cell_id(config)
+        rows = _rec_collect(config, cell, HG_REC_FILL, start=start, exclude=seen)
+        # 推荐队列的尾部窗口高度重叠（offset 越大重复越多），一页捞到的常常只有
+        # 三五条新的。不够就再往后补一批，别让用户翻页看到半屏空。
+        if len(rows) < HG_REC_PAGE_MIN:
+            more_start = start + HG_REC_FANOUT * HG_REC_PAGE
+            extra = _rec_collect(config, cell, HG_REC_FILL, start=more_start,
+                                 exclude=seen | {r.get("vod_id") for r in rows})
+            if extra:
+                rows = rows + extra
+                start = more_start
+    except Exception as exc:
+        _play_log("rec cat FAIL %s: %s" % (type(exc).__name__, str(exc)[:120]))
+        rows = []
+    if rows:
+        with _HG_REC_LOCK:
+            _HG_REC_NEXT[0] = start + HG_REC_FANOUT * HG_REC_PAGE
+        _rec_notify(rows)
+    else:
+        # 队列尾部（或这一段全看过了）：游标回头，下次从新的推荐会话开始
+        with _HG_REC_LOCK:
+            _HG_REC_NEXT[0] = 0
+    _play_log("rec cat p%d start=%d rows=%d" % (page, start, len(rows)))
+    return {"list": rows, "page": page, "pagecount": 9999 if rows else 1,
+            "limit": len(rows), "total": 0}
+
+
 # ---------------------------------------------------------------- 榜单
 # 红果 App 的「短剧榜单」页 = 书城一个 cell 的换一批（tab_type=26）：
 #   目录  = 响应里的 cell_selector.outer_row.items（全部榜单都在这）
@@ -8061,7 +8451,15 @@ class Spider(Spider):
             _start_stream_server()
         except Exception as _exc:
             _play_log("stream server start FAIL: %r" % (_exc,))
+        # 进源 = 新会话：推荐流翻页游标归零，别接着上一次的位置继续
+        try:
+            _rec_reset_session()
+        except Exception:
+            pass
         class_list = [
+            # 「推荐」放第一位：壳子默认选中第一个分类，放这里 = 打开源就落在推荐。
+            # 登录后是官方 App 个性化推荐流，未登录就是官网首页热播位（和以前一样）。
+            {"type_id": REC_TID, "type_name": "推荐"},
             {"type_id": "latest", "type_name": "最新"},
             {"type_id": "all", "type_name": "短剧"},
             {"type_id": "comic", "type_name": "漫剧"},
@@ -8122,10 +8520,11 @@ class Spider(Spider):
                 {"n": "30天内上新", "v": "3"}, {"n": "90天内上新", "v": "4"},
             ]},
         ]
-        # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板
+        # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板；
+        # 推荐流同理 —— 它是算法队列，不接受筛选条件。
         filter_dict = {c["type_id"]: groups for c in class_list
                        if not str(c["type_id"]).startswith(HG_RANK_TID)
-                       and c["type_id"] not in (MINE_TID, HIST_TID, FAV_TID, RESV_TID)}
+                       and c["type_id"] not in (MINE_TID, HIST_TID, FAV_TID, RESV_TID, REC_TID)}
         # 预约分「已上线 / 待上线」两栏（上游是两份数据）
         filter_dict[RESV_TID] = [{"key": "state", "name": "状态", "value": [
             {"n": "已上线", "v": "1"}, {"n": "待上线", "v": "0"}]}]
@@ -8178,17 +8577,22 @@ class Spider(Spider):
             _prefetch_list_page(ck, make(board), delay=0.05 * i)
 
     def homeVideoContent(self):
-        """首页推荐位直接吃官网首页 SSR 的热播区块（一个请求 0.15~0.25s 铺满一屏）。
+        """首页推荐位。
 
-        以前这里返回空，bridge 会退回「拿第一个分类再拉一页」，而那是「最新」排序
-        —— 全部分类里最慢的一条（~0.8s），于是打开源要等 1.1~1.4s。
-        现在首页自带数据，并且顺手在后台预热「最新」第一页和 8 个榜单第一页。
+        登录后走官方 App 的个性化推荐流（tab8 主推荐 cell，带登录画像）；
+        未登录 / 取数失败 / 取空 一律回落官网首页 SSR 的热播区块 ——
+        老路径一个字符都没改，所以匿名体验和以前完全一样。
         """
         rows = []
         try:
-            rows = _home_hot_list()
+            rows = _rec_home_list(self._cfg())
         except Exception:
             rows = []
+        if not rows:
+            try:
+                rows = _home_hot_list()
+            except Exception:
+                rows = []
         if not rows:
             return {"list": []}
         try:
@@ -8510,6 +8914,8 @@ class Spider(Spider):
         return result
 
     def categoryContent(self, tid, pg, filter, extend):
+        if str(tid) == REC_TID:
+            return _rec_category(pg, self._cfg())
         if str(tid) == LOGIN_TID:
             return self._login_category()
         if str(tid) == MINE_TID:
@@ -8787,6 +9193,11 @@ class Spider(Spider):
                     # 播放器真正发请求前先把 CENC 计划建好：1080P 计划要 1.2s，
                     # 不预热的话这段时间全是黑屏等待。
                     _warm_plan(item)
+                    # 顺手把下一集的取流在后台做掉：切集时就是 0 秒起播
+                    try:
+                        _prefetch_next(vid, self._cfg())
+                    except Exception:
+                        pass
                     _play_log("play %s -> %s 单档 %dP (ct=%d)"
                               % (vid, name, int(item.get("height") or 0),
                                  _hg_content_type(vid, ct_hint)))
@@ -8809,6 +9220,10 @@ class Spider(Spider):
                     pairs.append("http://127.0.0.1:%d/hg.mp4?%s" % (port, query))
                 if tracks:
                     _warm_plan(dict(tracks[0][1], vid=vid))
+                try:
+                    _prefetch_next(vid, self._cfg())
+                except Exception:
+                    pass
                 _play_log("play %s -> %d 档 (ct=%d)"
                           % (vid, len(tracks), _hg_content_type(vid, ct_hint)))
                 return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
