@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
+# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 · 2026-11-14 =====
+# 由 红果短剧sky.py 派生，只针对 Android/Chaquopy 壳做减法：
+#   1) 不再自己插「推荐」分类（壳子自带一个，否则显示两个推荐）
+#   2) 榜单分类整块去掉
+#   3) 去掉进源时 1+8 个带全套签名的后台预热，改成点分类才取
+#   4) 本机流/登录服务改后台起，不阻塞首屏
+#   5) homeContent 一次返回 class/filters/list，少一次 RPC
+#   6) 补纯 Python AES-128 兜底，缺 cryptography/pycryptodome 也能签名
+# 播放 / 弹幕 / 全清晰度 / 登录后个性化推荐 / 切集预取全部保留。
+# 主源与 E:/winapp/dist/无名影视 的部署副本均未改动。
 from __future__ import annotations
+HG_LIGHT_BUILD = True
 import base64
 import binascii
 import bisect
@@ -43,6 +54,169 @@ elif CryptoAES is not None:
 else:
     AES_BACKEND = "none"
 
+# ---- Chaquopy 兜底：纯 Python AES-128（抄自官方轻量源）----
+class _PureAES128:
+    """纯 Python AES-128，供无 pycryptodome/cryptography 的壳使用。"""
+
+    _S = (
+        99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,202,130,201,125,250,89,71,240,
+        173,212,162,175,156,164,114,192,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,
+        4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,
+        179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,
+        77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,188,182,218,33,16,255,243,
+        210,205,12,19,236,95,151,68,23,196,167,126,61,100,93,25,115,96,129,79,220,34,42,144,136,70,
+        238,184,20,222,94,11,219,224,50,58,10,73,6,36,92,194,211,172,98,145,149,228,121,231,200,55,
+        109,141,213,78,169,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,
+        75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,
+        217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,
+        187,22
+    )
+    _RCON = (0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1B,0x36)
+
+    def __init__(self, key: bytes):
+        if len(key) != 16:
+            raise ValueError("AES-128 only")
+        self._rk = self._expand(key)
+
+    def _expand(self, key: bytes):
+        s = self._S
+        w = list(key)
+        for i in range(4, 44):
+            t0, t1, t2, t3 = w[-4], w[-3], w[-2], w[-1]
+            if i % 4 == 0:
+                t0, t1, t2, t3 = s[t1], s[t2], s[t3], s[t0]
+                t0 ^= self._RCON[i // 4]
+            base = (i - 4) * 4
+            w.extend((w[base] ^ t0, w[base + 1] ^ t1, w[base + 2] ^ t2, w[base + 3] ^ t3))
+        return w
+
+    @staticmethod
+    def _xtime(a: int) -> int:
+        return ((a << 1) ^ 0x1B) & 0xFF if (a & 0x80) else ((a << 1) & 0xFF)
+
+    def encrypt_block(self, block: bytes) -> bytes:
+        s = list(block)
+        rk = self._rk
+        for i in range(16):
+            s[i] ^= rk[i]
+        for rnd in range(1, 10):
+            s = [self._S[b] for b in s]
+            s = [s[0], s[5], s[10], s[15], s[4], s[9], s[14], s[3],
+                 s[8], s[13], s[2], s[7], s[12], s[1], s[6], s[11]]
+            for c in range(4):
+                i = c * 4
+                a, b, c0, d = s[i], s[i + 1], s[i + 2], s[i + 3]
+                t = a ^ b ^ c0 ^ d
+                u = a
+                a ^= t ^ self._xtime(a ^ b)
+                b ^= t ^ self._xtime(b ^ c0)
+                c0 ^= t ^ self._xtime(c0 ^ d)
+                d ^= t ^ self._xtime(d ^ u)
+                s[i], s[i + 1], s[i + 2], s[i + 3] = a, b, c0, d
+            off = rnd * 16
+            for i in range(16):
+                s[i] ^= rk[off + i]
+        s = [self._S[b] for b in s]
+        s = [s[0], s[5], s[10], s[15], s[4], s[9], s[14], s[3],
+             s[8], s[13], s[2], s[7], s[12], s[1], s[6], s[11]]
+        for i in range(16):
+            s[i] ^= rk[160 + i]
+        return bytes(s)
+
+    def decrypt_block(self, block: bytes) -> bytes:
+        def mul(a, b):
+            p = 0
+            for _ in range(8):
+                if b & 1:
+                    p ^= a
+                hi = a & 0x80
+                a = (a << 1) & 0xFF
+                if hi:
+                    a ^= 0x1B
+                b >>= 1
+            return p
+
+        s = list(block)
+        rk = self._rk
+        for i in range(16):
+            s[i] ^= rk[160 + i]
+        for rnd in range(9, 0, -1):
+            s = [s[0], s[13], s[10], s[7], s[4], s[1], s[14], s[11],
+                 s[8], s[5], s[2], s[15], s[12], s[9], s[6], s[3]]
+            s = [self._SI[b] for b in s]
+            off = rnd * 16
+            for i in range(16):
+                s[i] ^= rk[off + i]
+            for c in range(4):
+                i = c * 4
+                a, b, c0, d = s[i], s[i + 1], s[i + 2], s[i + 3]
+                s[i] = mul(a, 0x0E) ^ mul(b, 0x0B) ^ mul(c0, 0x0D) ^ mul(d, 0x09)
+                s[i + 1] = mul(a, 0x09) ^ mul(b, 0x0E) ^ mul(c0, 0x0B) ^ mul(d, 0x0D)
+                s[i + 2] = mul(a, 0x0D) ^ mul(b, 0x09) ^ mul(c0, 0x0E) ^ mul(d, 0x0B)
+                s[i + 3] = mul(a, 0x0B) ^ mul(b, 0x0D) ^ mul(c0, 0x09) ^ mul(d, 0x0E)
+        s = [s[0], s[13], s[10], s[7], s[4], s[1], s[14], s[11],
+             s[8], s[5], s[2], s[15], s[12], s[9], s[6], s[3]]
+        s = [self._SI[b] for b in s]
+        for i in range(16):
+            s[i] ^= rk[i]
+        return bytes(s)
+
+
+
+_PureAES128._SI = tuple({v: i for i, v in enumerate(_PureAES128._S)}[i] for i in range(256))
+
+
+def _pure_ctr_decrypt(key: bytes, counter: bytes, data: bytes) -> bytes:
+    if not data:
+        return b""
+    if len(counter) < 16:
+        counter = counter.ljust(16, b"\0")
+    else:
+        counter = counter[:16]
+    aes = _PureAES128(key)
+    ctr = int.from_bytes(counter, "big")
+    out = bytearray()
+    for offset in range(0, len(data), 16):
+        ks = aes.encrypt_block(ctr.to_bytes(16, "big"))
+        ctr = (ctr + 1) & ((1 << 128) - 1)
+        chunk = data[offset:offset + 16]
+        out.extend(c ^ k for c, k in zip(chunk, ks))
+    return bytes(out)
+
+
+def _pure_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    if not data:
+        return b""
+    if len(data) % 16:
+        data = data[: len(data) - (len(data) % 16)]
+    aes = _PureAES128(key)
+    prev = (iv[:16] if len(iv) >= 16 else iv).ljust(16, b"\0")
+    out = bytearray()
+    for i in range(0, len(data), 16):
+        block = data[i:i + 16]
+        dec = aes.decrypt_block(block)
+        out.extend(d ^ p for d, p in zip(dec, prev))
+        prev = block
+    return bytes(out)
+
+
+def _pure_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    """无 AES 库时的 CBC/NoPadding 加密（Argus 551 末尾一步）。"""
+    if not data:
+        return b""
+    if len(data) % 16:
+        data = data[:len(data) - (len(data) % 16)]
+    aes = _PureAES128(key)
+    prev = iv[:16].ljust(16, b"\0")
+    out = bytearray()
+    for i in range(0, len(data), 16):
+        block = bytes(a ^ b for a, b in zip(data[i:i + 16], prev))
+        enc = aes.encrypt_block(block)
+        out.extend(enc)
+        prev = enc
+    return bytes(out)
+
+
 def _aes_ctr_decrypt(key: bytes, counter: bytes, data: bytes) -> bytes:
     if not data:
         return b""
@@ -54,7 +228,7 @@ def _aes_ctr_decrypt(key: bytes, counter: bytes, data: bytes) -> bytes:
             key, CryptoAES.MODE_CTR, nonce=b"", initial_value=counter
         )
         return cipher.decrypt(data)
-    raise HongguoPluginError("缺少 AES 实现：需要 cryptography 或 pycryptodome")
+    return _pure_ctr_decrypt(key, counter, data)
 
 def _aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     if not data:
@@ -64,7 +238,7 @@ def _aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         return decryptor.update(data) + decryptor.finalize()
     if AES_BACKEND == "pycryptodome":
         return CryptoAES.new(key, CryptoAES.MODE_CBC, iv).decrypt(data)
-    raise HongguoPluginError("缺少 AES 实现：需要 cryptography 或 pycryptodome")
+    return _pure_cbc_decrypt(key, iv, data)
 
 SITE = "https://hongguoduanju.com"
 EPISODE_PREFIX = "hg-episode-v1:"
@@ -4367,7 +4541,7 @@ def _aes_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         return encryptor.update(data) + encryptor.finalize()
     if AES_BACKEND == "pycryptodome":
         return CryptoAES.new(key, CryptoAES.MODE_CBC, iv).encrypt(data)
-    raise HongguoPluginError("缺少 AES 实现：需要 cryptography 或 pycryptodome")
+    return _pure_cbc_encrypt(key, iv, data)
 
 
 def _rol64(x: int, n: int) -> int:
@@ -8447,19 +8621,26 @@ class Spider(Spider):
     def homeContent(self, filter):
         # 顺手把本机流/登录服务拉起来: 首页是必然被访问到的入口，
         # 这样用户想直接开 http://127.0.0.1:<port>/login/qr.png 时端口已经在了。
+        # 轻量版：Android/Chaquopy 上 bind 本机端口会拖慢进源，改后台起。
+        # 二维码端点仍有 _login_pic() / playerContent 里的同步兜底。
+        def _boot_stream():
+            try:
+                _start_stream_server()
+            except Exception as _exc:
+                _play_log("stream server start FAIL: %r" % (_exc,))
         try:
-            _start_stream_server()
-        except Exception as _exc:
-            _play_log("stream server start FAIL: %r" % (_exc,))
+            threading.Thread(target=_boot_stream, daemon=True,
+                             name="hg-light-stream").start()
+        except Exception:
+            pass
         # 进源 = 新会话：推荐流翻页游标归零，别接着上一次的位置继续
         try:
             _rec_reset_session()
         except Exception:
             pass
         class_list = [
-            # 「推荐」放第一位：壳子默认选中第一个分类，放这里 = 打开源就落在推荐。
-            # 登录后是官方 App 个性化推荐流，未登录就是官网首页热播位（和以前一样）。
-            {"type_id": REC_TID, "type_name": "推荐"},
+            # 轻量版：FongMi 壳子自带一个「推荐」tab 承载首页位，源里再加一个
+            # 会出现两个「推荐」。这里不再插入，首页数据改由 homeContent 的 list 给出。
             {"type_id": "latest", "type_name": "最新"},
             {"type_id": "all", "type_name": "短剧"},
             {"type_id": "comic", "type_name": "漫剧"},
@@ -8475,10 +8656,8 @@ class Spider(Spider):
             {"type_id": FAV_TID, "type_name": "收藏"},
             {"type_id": RESV_TID, "type_name": "预约"},
         ]
-        # 榜单：走官方「短剧榜单」页（书城榜单 cell），是真正的官方排名，
-        # 和分类的 sort=newest/hot_score 不是同一份数据。
-        class_list += [{"type_id": HG_RANK_TID + bid, "type_name": name}
-                       for name, bid in HG_RANK_BOARDS]
+        # 轻量版：榜单分类整块去掉（用户 11-14 要求）。
+        # _hg_rank_page / _rank_category 等函数保留但无入口，不影响启动开销。
         groups = [
             {"key": "topic", "name": "主题", "value": [
                 {"n": "全部", "v": ""}, {"n": "现言", "v": "cate_1021"}, {"n": "女性成长", "v": "cate_1048"},
@@ -8528,7 +8707,13 @@ class Spider(Spider):
         # 预约分「已上线 / 待上线」两栏（上游是两份数据）
         filter_dict[RESV_TID] = [{"key": "state", "name": "状态", "value": [
             {"n": "已上线", "v": "1"}, {"n": "待上线", "v": "0"}]}]
-        return {"class": class_list, "filters": filter_dict}
+        # 参考官方轻量源：首屏一次给全 class/filters/list，FongMi 自带的「推荐」
+        # tab 直接吃这份 list，少一次 RPC；homeVideoContent 有缓存，不会重复取数。
+        try:
+            vlist = (self.homeVideoContent() or {}).get("list") or []
+        except Exception:
+            vlist = []
+        return {"class": class_list, "filters": filter_dict, "list": vlist}
     def _warm_latest(self):
         """后台把「最新」第一页取好：首页展示的这段时间足够它跑完，
         用户点进「最新」分类就是 0 毫秒（newest 是所有排序里最慢的一个，约 0.8s）。"""
@@ -8595,14 +8780,9 @@ class Spider(Spider):
                 rows = []
         if not rows:
             return {"list": []}
-        try:
-            self._warm_latest()
-        except Exception:
-            pass
-        try:
-            self._warm_ranks()
-        except Exception:
-            pass
+        # 轻量版：砍掉「最新」1 个 + 榜单 8 个后台预热。它们每个都要算
+        # argus/ladon/gorgon/helios/medusa 全套签名，是 Chaquopy 进源慢的头号原因。
+        # 改成用户真正点进分类时才取（懒加载）。
         return {"list": rows}
 
     def _query(self, pg, q=None):
