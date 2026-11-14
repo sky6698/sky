@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 · 2026-11-14 =====
+# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v2 · 2026-11-14 =====
 # 由 红果短剧sky.py 派生，只针对 Android/Chaquopy 壳做减法：
 #   1) 不再自己插「推荐」分类（壳子自带一个，否则显示两个推荐）
 #   2) 榜单分类整块去掉
@@ -7,8 +7,11 @@
 #   4) 本机流/登录服务改后台起，不阻塞首屏
 #   5) homeContent 一次返回 class/filters/list，少一次 RPC
 #   6) 补纯 Python AES-128 兜底，缺 cryptography/pycryptodome 也能签名
+# 播放 / 弹幕 / 全清晰度 / 登录后个性化推荐 / 切集预取全部保留。
+# 主源与 E:/winapp/dist/无名影视 的部署副本均未改动。
 from __future__ import annotations
 HG_LIGHT_BUILD = True
+HG_LIGHT_V2 = True
 import base64
 import binascii
 import bisect
@@ -5913,22 +5916,109 @@ def _warm_conn():
     threading.Thread(target=run, daemon=True).start()
 
 
+# ---- v2：官网 SSR 局部解析 -------------------------------------------------
+# Chaquopy 的 json 是纯 Python 实现，首页 586KB / 分类页 250KB 整页 raw_decode
+# 在手机上要几百毫秒~数秒；这里只把需要的字段抠出来解析，失败再退回整页。
+def _json_fragment(html, key, default):
+    m = re.search(r'"%s"\s*:\s*' % re.escape(key), html)
+    if not m:
+        return default
+    try:
+        return json.JSONDecoder().raw_decode(html[m.end():])[0]
+    except Exception:
+        return default
+
+
+def _router_from_html(html):
+    m = re.search(r"(?:window\.)?_ROUTER_DATA\s*=\s*", html)
+    if not m:
+        return {}
+    try:
+        return json.JSONDecoder().raw_decode(html[m.end():])[0]
+    except Exception:
+        return {}
+
+
+_LIGHT_ROUTE = {
+    "latest": "real-drama", "all": "real-drama", "hot": "real-drama",
+    "male": "real-drama", "female": "real-drama",
+    "comic": "comic-drama", "ai": "ai-drama",
+}
+_LIGHT_CAT_CACHE = {}
+_LIGHT_CAT_LOCK = threading.Lock()
+_LIGHT_CAT_TTL = 180.0
+
+
+def _light_category_page(route, page):
+    """官网 /category/{route}?page=N，零签名。数据只取 recommendList + pagination。"""
+    ck = (route, page)
+    with _LIGHT_CAT_LOCK:
+        hit = _LIGHT_CAT_CACHE.get(ck)
+        if hit and time.time() - hit[0] < _LIGHT_CAT_TTL:
+            return hit[1]
+    html = ""
+    try:
+        html = _page_static(SITE + "/category/" + route + "?page=" + str(max(1, page)))
+    except Exception:
+        html = ""
+    rows = _json_fragment(html, "recommendList", None) if html else None
+    pgn = _json_fragment(html, "pagination", None) if html else None
+    if not isinstance(rows, list) or not rows:
+        cp = ((_router_from_html(html).get("loaderData") or {}).get("category_$") or {})
+        rows = cp.get("recommendList") or []
+        pgn = cp.get("pagination") or {}
+    if not isinstance(pgn, dict):
+        pgn = {}
+    out, seen = [], set()
+    for x in rows:
+        if not isinstance(x, dict):
+            continue
+        it = _item(x)
+        vid = str(it.get("vod_id") or "")
+        if not vid.isdigit() or vid in seen:
+            continue
+        seen.add(vid)
+        out.append(it)
+    try:
+        total_pages = max(1, min(50, int(pgn.get("totalPages") or 1)))
+    except Exception:
+        total_pages = 1
+    try:
+        total = int(pgn.get("total") or len(out))
+    except Exception:
+        total = len(out)
+    result = {"page": page, "pagecount": total_pages, "limit": len(out),
+              "total": total, "list": out}
+    if out:
+        with _LIGHT_CAT_LOCK:
+            _LIGHT_CAT_CACHE[ck] = (time.time(), result)
+    return result
+
+
 # 官网首页 SSR 的「热播」区块：一个请求 0.2~0.3s 就能铺满首页。
 # 打开源时壳会先要首页，过去这里的兜底是「拿第一个分类再拉一页」——
 # 那一下要多花 0.8s（最新排序是所有排序里最慢的），是「打开源慢」的主因。
-_HOME_SSR_TTL = 120
+_HOME_SSR_TTL = 900
 _HOME_SSR_STATE: list = []
 _HOME_SSR_LOCK = threading.Lock()
 
 
 def _home_hot_list():
+    """v2：只解析 homeSections 数组，不再 raw_decode 整页 586KB JSON。"""
     with _HOME_SSR_LOCK:
         if _HOME_SSR_STATE and time.time() - _HOME_SSR_STATE[0] < _HOME_SSR_TTL:
             return list(_HOME_SSR_STATE[1])
     rows, seen = [], set()
     try:
-        page = ((_data_static(SITE + "/").get("loaderData") or {}).get("page") or {})
-        for sec in (page.get("homeSections") or []):
+        html = _page_static(SITE + "/")
+        secs = _json_fragment(html, "homeSections", None)
+        if not isinstance(secs, list) or not secs:
+            secs = (((_router_from_html(html).get("loaderData") or {}).get("page") or {})
+                    .get("homeSections")) or []
+        for sec in secs:
+            if not isinstance(sec, dict):
+                continue
+            tname = _text(sec.get("tab_name")) or "红果热播"
             for x in (sec.get("video_list") or []):
                 sid = _text(x.get("series_id"))
                 if not sid or sid in seen:
@@ -5936,6 +6026,7 @@ def _home_hot_list():
                 seen.add(sid)
                 item = _item(x)
                 if item.get("vod_id"):
+                    item["type_name"] = tname   # 参考官方轻量源：按板块出卡
                     rows.append(item)
     except Exception:
         rows = []
@@ -7865,7 +7956,7 @@ def _data(url):
 
 def _page_static(url):
     """抓官网 SSR, 不发浏览器 UA —— 走 CDN 静态缓存, 见 _http_static 说明。"""
-    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"}, timeout=12)
+    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"}, timeout=8)
     r.raise_for_status()
     return r.text
 
@@ -8594,11 +8685,8 @@ class Spider(Spider):
         if _text(cfg.get("install_id")):
             self.install_id = _text(cfg.get("install_id"))
         self._extra_config = cfg
-        # 冷启动先在后台把 TLS 握好，省掉首屏那次握手
-        try:
-            _warm_conn()
-        except Exception:
-            pass
+        # v2：去掉 _warm_conn() 的 3 个后台 HEAD。Android 冷启 DNS+TLS 会占线程，
+        # 首屏本来就要发的那一个官网请求自己会完成握手，预热反而抢资源。
         return None
 
     def _cfg(self):
@@ -8637,15 +8725,13 @@ class Spider(Spider):
         except Exception:
             pass
         class_list = [
-            # 轻量版：FongMi 壳子自带一个「推荐」tab 承载首页位，源里再加一个
-            # 会出现两个「推荐」。这里不再插入，首页数据改由 homeContent 的 list 给出。
-            {"type_id": "latest", "type_name": "最新"},
-            {"type_id": "all", "type_name": "短剧"},
+            # v2：只保留官网 SSR 能真正区分的三项。实测 /category 只认 page，
+            # sort_type / gender 会让 recommendList 变 0；若留着「最新/男频/女频」，
+            # 它们只能都指向 real-drama，点开就是同一份内容。要恢复这几个语义分类，
+            # 得回到带全套签名的 App landpage 接口（见 categoryContent 的筛选回落分支）。
+            {"type_id": "all", "type_name": "真人剧"},
             {"type_id": "comic", "type_name": "漫剧"},
             {"type_id": "ai", "type_name": "AI短剧"},
-            {"type_id": "hot", "type_name": "最热"},
-            {"type_id": "male", "type_name": "男频"},
-            {"type_id": "female", "type_name": "女频"},
         ]
         # 账号区：登录后从云端同步观看记录 / 收藏 / 预约（未登录时条目内自带登录入口）
         class_list += [
@@ -8656,52 +8742,10 @@ class Spider(Spider):
         ]
         # 轻量版：榜单分类整块去掉（用户 11-14 要求）。
         # _hg_rank_page / _rank_category 等函数保留但无入口，不影响启动开销。
-        groups = [
-            {"key": "topic", "name": "主题", "value": [
-                {"n": "全部", "v": ""}, {"n": "现言", "v": "cate_1021"}, {"n": "女性成长", "v": "cate_1048"},
-                {"n": "脑洞", "v": "cate_262"}, {"n": "奇幻", "v": "cate_1020"}, {"n": "玄幻", "v": "cate_1019"},
-                {"n": "古言", "v": "cate_439"}, {"n": "战神", "v": "cate_1038"}, {"n": "宫斗", "v": "cate_246"},
-                {"n": "仙侠", "v": "cate_1013"}, {"n": "权谋", "v": "cate_1047"}, {"n": "种田", "v": "cate_1180"},
-                {"n": "年代爱情", "v": "cate_1022"}, {"n": "悬疑", "v": "cate_165"}, {"n": "喜剧", "v": "cate_303"},
-                {"n": "青春", "v": "cate_297"}, {"n": "志怪", "v": "cate_1027"}, {"n": "民国爱情", "v": "cate_1025"},
-                {"n": "灵异", "v": "cate_751"}, {"n": "家国情怀", "v": "cate_1235"}, {"n": "法律", "v": "cate_1136"},
-                {"n": "刑侦", "v": "cate_1148"}, {"n": "抗战", "v": "cate_504"}, {"n": "武侠", "v": "cate_1172"},
-                {"n": "民国传奇", "v": "cate_1240"}, {"n": "求生", "v": "cate_1168"}, {"n": "动作", "v": "cate_302"},
-                {"n": "科幻", "v": "cate_1092"}, {"n": "恐怖", "v": "cate_1219"}, {"n": "商战", "v": "cate_1225"},
-            ]},
-            {"key": "background", "name": "背景", "value": [
-                {"n": "全部", "v": ""}, {"n": "现代", "v": "cate_757"}, {"n": "都市", "v": "cate_1"},
-                {"n": "古代", "v": "cate_758"}, {"n": "乡村", "v": "cate_11"}, {"n": "年代", "v": "cate_79"},
-                {"n": "架空", "v": "cate_452"}, {"n": "职场", "v": "cate_127"}, {"n": "民国", "v": "cate_390"},
-                {"n": "校园", "v": "cate_4"}, {"n": "宫廷", "v": "cate_1153"}, {"n": "荒岛", "v": "cate_1162"},
-            ]},
-            {"key": "setting", "name": "设定", "value": [
-                {"n": "全部", "v": ""}, {"n": "打脸虐渣", "v": "cate_1051"}, {"n": "大男主", "v": "cate_1207"},
-                {"n": "大女主", "v": "cate_760"}, {"n": "马甲", "v": "cate_266"}, {"n": "重生", "v": "cate_36"},
-                {"n": "穿越", "v": "cate_37"}, {"n": "系统", "v": "cate_19"}, {"n": "先婚后爱", "v": "cate_265"},
-                {"n": "家长里短", "v": "cate_862"}, {"n": "小人物", "v": "cate_1010"}, {"n": "破镜重圆", "v": "cate_475"},
-                {"n": "神豪", "v": "cate_20"}, {"n": "豪门", "v": "cate_936"}, {"n": "强者回归", "v": "cate_1045"},
-                {"n": "异能", "v": "cate_598"}, {"n": "虐恋", "v": "cate_1008"}, {"n": "传承觉醒", "v": "cate_1007"},
-                {"n": "医生", "v": "cate_487"}, {"n": "强强联合", "v": "cate_1049"}, {"n": "赘婿逆袭", "v": "cate_1044"},
-                {"n": "甜宠", "v": "cate_96"}, {"n": "娱乐圈", "v": "cate_43"}, {"n": "神医", "v": "cate_26"},
-                {"n": "青梅竹马", "v": "cate_387"}, {"n": "姐弟恋", "v": "cate_762"}, {"n": "玄学", "v": "cate_929"},
-                {"n": "追妻火葬场", "v": "cate_616"}, {"n": "业界精英", "v": "cate_1293"}, {"n": "一见钟情", "v": "cate_477"},
-                {"n": "福宝", "v": "cate_1291"}, {"n": "捞偏门", "v": "cate_1287"}, {"n": "反派主角", "v": "cate_1042"},
-                {"n": "萌宠", "v": "cate_428"}, {"n": "双向救赎", "v": "cate_1200"}, {"n": "方言", "v": "cate_1255"},
-                {"n": "白月光", "v": "cate_615"}, {"n": "灵魂互换", "v": "cate_831"}, {"n": "病娇", "v": "cate_380"},
-                {"n": "暴富", "v": "cate_1191"}, {"n": "黑道", "v": "cate_826"}, {"n": "丧尸", "v": "cate_582"},
-                {"n": "特种兵", "v": "cate_375"},
-            ]},
-            {"key": "time", "name": "时间", "value": [
-                {"n": "全部", "v": ""}, {"n": "7天内上新", "v": "1"}, {"n": "14天内上新", "v": "2"},
-                {"n": "30天内上新", "v": "3"}, {"n": "90天内上新", "v": "4"},
-            ]},
-        ]
+        # v2：筛选面板整体去掉（参考官方轻量源），返回体从几十 KB 降到几 KB。
         # 榜单没有可用的筛选维度（分类那套主题/背景/设定对榜单无效），不挂筛选面板；
         # 推荐流同理 —— 它是算法队列，不接受筛选条件。
-        filter_dict = {c["type_id"]: groups for c in class_list
-                       if not str(c["type_id"]).startswith(HG_RANK_TID)
-                       and c["type_id"] not in (MINE_TID, HIST_TID, FAV_TID, RESV_TID, REC_TID)}
+        filter_dict = {}
         # 预约分「已上线 / 待上线」两栏（上游是两份数据）
         filter_dict[RESV_TID] = [{"key": "state", "name": "状态", "value": [
             {"n": "已上线", "v": "1"}, {"n": "待上线", "v": "0"}]}]
@@ -8760,28 +8804,16 @@ class Spider(Spider):
             _prefetch_list_page(ck, make(board), delay=0.05 * i)
 
     def homeVideoContent(self):
-        """首页推荐位。
+        """v2：首页位固定走官网 SSR（对齐官方轻量源）。
 
-        登录后走官方 App 的个性化推荐流（tab8 主推荐 cell，带登录画像）；
-        未登录 / 取数失败 / 取空 一律回落官网首页 SSR 的热播区块 ——
-        老路径一个字符都没改，所以匿名体验和以前完全一样。
+        不再调 _rec_home_list/_cfg()：那会读登录凭证、设备号落盘，登录后还要
+        并发 11 页带全套签名的推荐请求 —— 在 Chaquopy 上是进源慢的主因之一。
+        登录后个性化推荐保留在 PC 主源，轻量版专注于「打开就出内容」。
         """
-        rows = []
         try:
-            rows = _rec_home_list(self._cfg())
+            return {"list": _home_hot_list()}
         except Exception:
-            rows = []
-        if not rows:
-            try:
-                rows = _home_hot_list()
-            except Exception:
-                rows = []
-        if not rows:
             return {"list": []}
-        # 轻量版：砍掉「最新」1 个 + 榜单 8 个后台预热。它们每个都要算
-        # argus/ladon/gorgon/helios/medusa 全套签名，是 Chaquopy 进源慢的头号原因。
-        # 改成用户真正点进分类时才取（懒加载）。
-        return {"list": rows}
 
     def _query(self, pg, q=None):
         try: pg = max(1, int(pg))
@@ -9091,6 +9123,12 @@ class Spider(Spider):
                 _prefetch_list_page(key(page + 1), lambda p=page + 1: fetch(p))
         return result
 
+    def _light_category(self, tid, page):
+        try:
+            return _light_category_page(_LIGHT_ROUTE.get(str(tid), "real-drama"), page)
+        except Exception:
+            return {"page": page, "pagecount": page, "limit": 0, "total": 0, "list": []}
+
     def categoryContent(self, tid, pg, filter, extend):
         if str(tid) == REC_TID:
             return _rec_category(pg, self._cfg())
@@ -9114,6 +9152,10 @@ class Spider(Spider):
         epoch = [extend["background"]] if extend.get("background") else None
         role = [extend["setting"]] if extend.get("setting") else None
         online = [extend["time"]] if str(extend.get("time") or "") not in ("", "0") else None
+        # v2：不带筛选时一律走官网 SSR（零签名）；只有用户真的选了筛选条件，
+        # 才回落到下面那套带全套签名的 App 接口，功能不丢。
+        if not (theme or epoch or role or online):
+            return self._light_category(tid, page)
         # 全部短剧分类统一走 App 后端接口 (官网 SSR /category 对部分分类返回空列表, 已废弃)
         genre = {"comic": "comic_series", "ai": "ai_series"}.get(tid, "short_play")
         config = self._cfg()
