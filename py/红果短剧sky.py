@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v2 · 2026-11-14 =====
+# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v3 · 2026-11-14 =====
+# v3 针对「进源转圈 15 秒」：模块顶层 import 惰性化 + 首页内置兜底 + 后台预热。
 # 由 红果短剧sky.py 派生，只针对 Android/Chaquopy 壳做减法：
 #   1) 不再自己插「推荐」分类（壳子自带一个，否则显示两个推荐）
 #   2) 榜单分类整块去掉
@@ -12,6 +13,7 @@
 from __future__ import annotations
 HG_LIGHT_BUILD = True
 HG_LIGHT_V2 = True
+HG_LIGHT_V3 = True
 import base64
 import binascii
 import bisect
@@ -28,12 +30,39 @@ import threading
 import time
 import zlib
 from collections.abc import Mapping
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html.parser import HTMLParser
-from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
-import urllib.request
-import requests
+
+
+class _LazyModule:
+    """v3: 首次访问属性时才真正 import 的模块代理。
+
+    PC 上 `import requests` 要 0.33s，Chaquopy 冷启(纯 Python urllib3/idna/
+    charset_normalizer)要数秒；而首页/分类路径第一次网络请求才用得到它。
+    所有 `requests.Session()` / `requests.get()` / `requests.RequestException`
+    调用点都不用改，代理在首次取属性时把真模块加载进来。
+    """
+    __slots__ = ("_lm_name", "_lm_mod")
+
+    def __init__(self, name):
+        object.__setattr__(self, "_lm_name", name)
+        object.__setattr__(self, "_lm_mod", None)
+
+    def _lm_load(self):
+        mod = object.__getattribute__(self, "_lm_mod")
+        if mod is None:
+            mod = __import__(object.__getattribute__(self, "_lm_name"))
+            object.__setattr__(self, "_lm_mod", mod)
+        return mod
+
+    def __getattr__(self, item):
+        return getattr(self._lm_load(), item)
+
+
+requests = _LazyModule("requests")
+# `from __future__ import annotations` 已把全部注解变成字符串，运行时不求值 Any。
+# 用 object 占位即可，省掉 typing 的导入开销（PC 0.036s / Chaquopy 更贵）。
+Any = object
 try:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -44,7 +73,18 @@ try:
     from Crypto.Cipher import AES as CryptoAES
 except ImportError:
     CryptoAES = None
-from base.spider import Spider
+# 参考官方轻量源：部分壳子里 base.spider 不在 sys.path，裸 import 会让整个
+# 模块加载失败，壳子一直转圈到超时。这里做三级兜底。
+try:
+    from base.spider import Spider as _BaseSpider
+except Exception:
+    try:
+        import sys as _sys
+        _sys.path.append("..")
+        from base.spider import Spider as _BaseSpider
+    except Exception:
+        class _BaseSpider:
+            pass
 
 # FongMi/TVBox 的 Chaquopy 环境未必带 cryptography，多数壳只带 pycryptodome。
 # 统一入口，避免调用点直接依赖某一个库。
@@ -889,6 +929,7 @@ def _ui_send(event, timeout=3.0) -> bool:
     if not port:
         return False
     try:
+        import urllib.request   # v3: 惰性加载，首屏不付 ssl/http.client 的导入代价
         data = json.dumps(event, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             "http://127.0.0.1:%d/hook/ui" % port, data=data,
@@ -2191,274 +2232,291 @@ setTimeout(tick,800);
     return page.replace("__PROMPT__", prompt).encode("utf-8")
 
 
-class _StreamHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    server_version = "hg-stream"
+_STREAM_CLASSES = None
 
-    def log_message(self, *args: Any) -> None:
-        return None
 
-    def _fail(self, code: int, message: bytes) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(message)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        try:
-            self.wfile.write(message)
-        except OSError:
-            pass
+def _ensure_stream_classes():
+    """v3: http.server 只在真正要起本机流/二维码服务时才导入。
 
-    def _serve_login_qr(self, body: bool, query=None) -> None:
-        """二维码端点：永远回点有用的东西。
+    PC 上这一句 import 要 0.20s，Chaquopy 上更贵，而首页完全不需要它。
+    """
+    global _STREAM_CLASSES
+    if _STREAM_CLASSES is not None:
+        return _STREAM_CLASSES
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-        - `?img=1` / `<img>` 之类的图片请求 → PNG（没有就现场补码）
-        - 浏览器/WebView 顶层打开(Accept 含 text/html) → 自动换码的自助页面
-        旧实现在"宿主先于详情页来拉封面图"时回 404 + 文本 `no qrcode`，
-        宿主把这行字当图片渲染，用户看到的就是「跳网页显示 no qrcode」。
-        """
-        query = query or {}
-        want_img = bool(query.get("img"))
-        accept = str(self.headers.get("Accept") or "")
-        if not want_img and "text/html" in accept.lower():
-            page = _login_qr_page()
+    class _StreamHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "hg-stream"
+
+        def log_message(self, *args: Any) -> None:
+            return None
+
+        def _fail(self, code: int, message: bytes) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(message)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(message)
+            except OSError:
+                pass
+
+        def _serve_login_qr(self, body: bool, query=None) -> None:
+            """二维码端点：永远回点有用的东西。
+
+            - `?img=1` / `<img>` 之类的图片请求 → PNG（没有就现场补码）
+            - 浏览器/WebView 顶层打开(Accept 含 text/html) → 自动换码的自助页面
+            旧实现在"宿主先于详情页来拉封面图"时回 404 + 文本 `no qrcode`，
+            宿主把这行字当图片渲染，用户看到的就是「跳网页显示 no qrcode」。
+            """
+            query = query or {}
+            want_img = bool(query.get("img"))
+            accept = str(self.headers.get("Accept") or "")
+            if not want_img and "text/html" in accept.lower():
+                page = _login_qr_page()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                if body:
+                    try:
+                        self.wfile.write(page)
+                    except OSError:
+                        self.close_connection = True
+                return
+            try:
+                data, error = _LOGIN.png_now(force=bool(query.get("fresh")))
+            except Exception as exc:
+                data, error = b"", str(exc)[:80]
+            if not data:
+                link = _LOGIN.qr_url or ""
+                if link and not want_img:
+                    self.send_response(302)
+                    self.send_header("Location", "https://api.qrserver.com/v1/create-qr-code/"
+                                                 "?size=360x360&margin=8&data=" + quote(link, safe=""))
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    return
+                data = _placeholder_png()
+                if error:
+                    _play_log("login qr fallback: %s" % error)
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if not body:
+                return
+            try:
+                self.wfile.write(data)
+            except OSError:
+                self.close_connection = True
+
+        def _serve_login_state(self, body: bool) -> None:
+            """诊断端点: curl 127.0.0.1:<流端口>/login/state 看二维码生成情况。"""
+            try:
+                payload = json.dumps(_LOGIN.debug_state(), ensure_ascii=False).encode("utf-8")
+            except Exception as exc:
+                payload = json.dumps({"error": str(exc)[:100]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
             self.send_header("Connection", "close")
             self.end_headers()
             if body:
                 try:
-                    self.wfile.write(page)
+                    self.wfile.write(payload)
                 except OSError:
                     self.close_connection = True
-            return
-        try:
-            data, error = _LOGIN.png_now(force=bool(query.get("fresh")))
-        except Exception as exc:
-            data, error = b"", str(exc)[:80]
-        if not data:
-            link = _LOGIN.qr_url or ""
-            if link and not want_img:
-                self.send_response(302)
-                self.send_header("Location", "https://api.qrserver.com/v1/create-qr-code/"
-                                             "?size=360x360&margin=8&data=" + quote(link, safe=""))
+
+        def _serve_danmaku(self, body: bool, query=None) -> None:
+            """本机弹幕端点: /hg_dm?vid=..&sid=..&fmt=xml|json。
+
+            壳子(或任何播放器)按 playerContent 里给的地址来拉, 默认回 B 站 XML。
+            取数在后台线程跑, 这里最多等 _DM_WAIT 秒 —— 等不到就先回已取到的部分,
+            宁可少几条也不能让播放器卡在"加载弹幕"上。
+            """
+            query = query or {}
+            vid = _text((query.get("vid") or [""])[0]).strip()
+            sid = _text((query.get("sid") or [""])[0]).strip()
+            fmt = _text((query.get("fmt") or ["xml"])[0]).strip().lower() or "xml"
+            did = _text((query.get("did") or [""])[0]).strip()
+            if not vid.isdigit():
+                self._fail(400, b"missing vid")
+                return
+            req_vid = vid
+            sid = sid or _dm_series_of(req_vid)
+            # ★ 切集后壳子仍来拉**首次进播放页那个 URL**, 直接按 URL 的 vid 取数
+            #   就会一直是上一集弹幕。改判为「最近一次 /hg.mp4 实际起播的集」:
+            #   同剧、且该流请求在 10 分钟内才认, 避免串到别的剧或旧会话。
+            try:
+                with _DM_LOCK:
+                    if _DM_LAST_REQ.get("vid") != req_vid:
+                        _DM_LAST_REQ["vid"] = req_vid
+                        _DM_STREAM["vid"] = ""
+                        _DM_STREAM["t"] = 0.0
+                    cur_vid = str(_DM_STREAM.get("vid") or "")
+                    cur_at = float(_DM_STREAM.get("t") or 0.0)
+                if (cur_vid.isdigit() and cur_vid != req_vid
+                        and time.time() - cur_at < 600):
+                    cur_sid = _dm_series_of(cur_vid) or sid
+                    if cur_sid and (not sid or cur_sid == sid):
+                        vid, sid = cur_vid, cur_sid
+            except Exception:
+                pass
+            _DM_HIT[vid] = time.time()
+            # 已有结果(哪怕只是上次取到的部分)就只等一小会, 别让播放器卡在"加载弹幕"
+            known = _dm_state(vid)
+            wait = 1.5 if (known and known.get("items")) else _DM_WAIT
+            state = _dm_get(vid, sid, did or _dm_device_id(), wait=wait)
+            rows = _dm_rows(state.get("items") or [])
+            if fmt == "json":
+                data, ctype = _dm_to_json(rows), "application/json; charset=utf-8"
+            else:
+                data, ctype = _dm_to_xml(vid, rows), "text/xml; charset=utf-8"
+            ua = _text(self.headers.get("User-Agent") or "-")[:24]
+            _play_log("dm hit req=%s use=%s sid=%s fmt=%s rows=%d err=%s ua=%s"
+                      % (req_vid, vid, sid or "-", fmt, len(rows),
+                         state.get("error") or "-", ua))
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if not body:
+                return
+            try:
+                self.wfile.write(data)
+            except OSError:
+                self.close_connection = True
+
+        def _serve_danmaku_state(self, body: bool) -> None:
+            """诊断端点: /hg_dm/state 看每集弹幕取数情况。"""
+            with _DM_LOCK:
+                cache = {k: {"rows": len(v.get("items") or []),
+                             "age": round(time.time() - float(v.get("t") or 0), 1),
+                             "error": v.get("error") or ""}
+                         for k, v in list(_DM_CACHE.items())[-20:]}
+                stream = {"vid": _DM_STREAM.get("vid") or "",
+                          "age": round(time.time() - float(_DM_STREAM.get("t") or 0), 1)}
+            payload = json.dumps({"enabled": _DM_ENABLED, "host": _DM_HOST,
+                                  "series_known": len(_DM_SERIES),
+                                  "hits": len(_DM_HIT), "stream": stream, "cache": cache},
+                                 ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if body:
+                try:
+                    self.wfile.write(payload)
+                except OSError:
+                    self.close_connection = True
+
+        def do_HEAD(self) -> None:  # noqa: N802 - 标准库回调命名
+            self._serve(body=False)
+
+        def do_GET(self) -> None:  # noqa: N802 - 标准库回调命名
+            self._serve(body=True)
+
+        def _serve(self, body: bool) -> None:
+            parsed = urlparse(self.path)
+            route = parsed.path
+            # 登录二维码: 详情页 vod_pic 指到本机这个端点, 无需外网图床
+            if route.rstrip("/").endswith("/login/qr.png"):
+                self._serve_login_qr(body, parse_qs(parsed.query))
+                return
+            if route.rstrip("/").endswith("/login/state"):
+                self._serve_login_state(body)
+                return
+            # 弹幕: playerContent 里下发的地址指到这里(B 站 XML / JSON)
+            if route.rstrip("/").endswith("/hg_dm/state"):
+                self._serve_danmaku_state(body)
+                return
+            if route.rstrip("/").endswith("/hg_dm"):
+                self._serve_danmaku(body, parse_qs(parsed.query))
+                return
+            if not route.endswith(".mp4"):
+                self._fail(404, b"not found")
+                return
+            query = parse_qs(parsed.query)
+            src = (query.get("src") or [""])[0]
+            kid = (query.get("kid") or [""])[0]
+            spade = (query.get("spade") or query.get("spade_a") or [""])[0]
+            vid = (query.get("vid") or [""])[0]
+            if not src or not spade:
+                self._fail(400, b"missing src/spade")
+                return
+            # 每集起播都会打到这里, 记下当前集供弹幕端点动态改判(切集不换弹幕 URL)
+            _dm_mark_stream(vid)
+            try:
+                plan = _cenc_plan(src, kid, spade, vid)
+            except Exception as exc:
+                _play_log("cenc plan FAIL host=%s %s" % (_host_of(src), str(exc)[:80]))
+                self._fail(502, b"media session failed")
+                return
+            total = int(plan["total"])
+            requested = _parse_range(self.headers.get("Range") or "", total)
+            if requested is _RANGE_UNSATISFIABLE:
+                self.send_response(416)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Range", "bytes */%d" % total)
                 self.send_header("Content-Length", "0")
                 self.send_header("Connection", "close")
                 self.end_headers()
                 return
-            data = _placeholder_png()
-            if error:
-                _play_log("login qr fallback: %s" % error)
-        self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        if not body:
-            return
-        try:
-            self.wfile.write(data)
-        except OSError:
-            self.close_connection = True
-
-    def _serve_login_state(self, body: bool) -> None:
-        """诊断端点: curl 127.0.0.1:<流端口>/login/state 看二维码生成情况。"""
-        try:
-            payload = json.dumps(_LOGIN.debug_state(), ensure_ascii=False).encode("utf-8")
-        except Exception as exc:
-            payload = json.dumps({"error": str(exc)[:100]}).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        if body:
-            try:
-                self.wfile.write(payload)
-            except OSError:
-                self.close_connection = True
-
-    def _serve_danmaku(self, body: bool, query=None) -> None:
-        """本机弹幕端点: /hg_dm?vid=..&sid=..&fmt=xml|json。
-
-        壳子(或任何播放器)按 playerContent 里给的地址来拉, 默认回 B 站 XML。
-        取数在后台线程跑, 这里最多等 _DM_WAIT 秒 —— 等不到就先回已取到的部分,
-        宁可少几条也不能让播放器卡在"加载弹幕"上。
-        """
-        query = query or {}
-        vid = _text((query.get("vid") or [""])[0]).strip()
-        sid = _text((query.get("sid") or [""])[0]).strip()
-        fmt = _text((query.get("fmt") or ["xml"])[0]).strip().lower() or "xml"
-        did = _text((query.get("did") or [""])[0]).strip()
-        if not vid.isdigit():
-            self._fail(400, b"missing vid")
-            return
-        req_vid = vid
-        sid = sid or _dm_series_of(req_vid)
-        # ★ 切集后壳子仍来拉**首次进播放页那个 URL**, 直接按 URL 的 vid 取数
-        #   就会一直是上一集弹幕。改判为「最近一次 /hg.mp4 实际起播的集」:
-        #   同剧、且该流请求在 10 分钟内才认, 避免串到别的剧或旧会话。
-        try:
-            with _DM_LOCK:
-                if _DM_LAST_REQ.get("vid") != req_vid:
-                    _DM_LAST_REQ["vid"] = req_vid
-                    _DM_STREAM["vid"] = ""
-                    _DM_STREAM["t"] = 0.0
-                cur_vid = str(_DM_STREAM.get("vid") or "")
-                cur_at = float(_DM_STREAM.get("t") or 0.0)
-            if (cur_vid.isdigit() and cur_vid != req_vid
-                    and time.time() - cur_at < 600):
-                cur_sid = _dm_series_of(cur_vid) or sid
-                if cur_sid and (not sid or cur_sid == sid):
-                    vid, sid = cur_vid, cur_sid
-        except Exception:
-            pass
-        _DM_HIT[vid] = time.time()
-        # 已有结果(哪怕只是上次取到的部分)就只等一小会, 别让播放器卡在"加载弹幕"
-        known = _dm_state(vid)
-        wait = 1.5 if (known and known.get("items")) else _DM_WAIT
-        state = _dm_get(vid, sid, did or _dm_device_id(), wait=wait)
-        rows = _dm_rows(state.get("items") or [])
-        if fmt == "json":
-            data, ctype = _dm_to_json(rows), "application/json; charset=utf-8"
-        else:
-            data, ctype = _dm_to_xml(vid, rows), "text/xml; charset=utf-8"
-        ua = _text(self.headers.get("User-Agent") or "-")[:24]
-        _play_log("dm hit req=%s use=%s sid=%s fmt=%s rows=%d err=%s ua=%s"
-                  % (req_vid, vid, sid or "-", fmt, len(rows),
-                     state.get("error") or "-", ua))
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        if not body:
-            return
-        try:
-            self.wfile.write(data)
-        except OSError:
-            self.close_connection = True
-
-    def _serve_danmaku_state(self, body: bool) -> None:
-        """诊断端点: /hg_dm/state 看每集弹幕取数情况。"""
-        with _DM_LOCK:
-            cache = {k: {"rows": len(v.get("items") or []),
-                         "age": round(time.time() - float(v.get("t") or 0), 1),
-                         "error": v.get("error") or ""}
-                     for k, v in list(_DM_CACHE.items())[-20:]}
-            stream = {"vid": _DM_STREAM.get("vid") or "",
-                      "age": round(time.time() - float(_DM_STREAM.get("t") or 0), 1)}
-        payload = json.dumps({"enabled": _DM_ENABLED, "host": _DM_HOST,
-                              "series_known": len(_DM_SERIES),
-                              "hits": len(_DM_HIT), "stream": stream, "cache": cache},
-                             ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        if body:
-            try:
-                self.wfile.write(payload)
-            except OSError:
-                self.close_connection = True
-
-    def do_HEAD(self) -> None:  # noqa: N802 - 标准库回调命名
-        self._serve(body=False)
-
-    def do_GET(self) -> None:  # noqa: N802 - 标准库回调命名
-        self._serve(body=True)
-
-    def _serve(self, body: bool) -> None:
-        parsed = urlparse(self.path)
-        route = parsed.path
-        # 登录二维码: 详情页 vod_pic 指到本机这个端点, 无需外网图床
-        if route.rstrip("/").endswith("/login/qr.png"):
-            self._serve_login_qr(body, parse_qs(parsed.query))
-            return
-        if route.rstrip("/").endswith("/login/state"):
-            self._serve_login_state(body)
-            return
-        # 弹幕: playerContent 里下发的地址指到这里(B 站 XML / JSON)
-        if route.rstrip("/").endswith("/hg_dm/state"):
-            self._serve_danmaku_state(body)
-            return
-        if route.rstrip("/").endswith("/hg_dm"):
-            self._serve_danmaku(body, parse_qs(parsed.query))
-            return
-        if not route.endswith(".mp4"):
-            self._fail(404, b"not found")
-            return
-        query = parse_qs(parsed.query)
-        src = (query.get("src") or [""])[0]
-        kid = (query.get("kid") or [""])[0]
-        spade = (query.get("spade") or query.get("spade_a") or [""])[0]
-        vid = (query.get("vid") or [""])[0]
-        if not src or not spade:
-            self._fail(400, b"missing src/spade")
-            return
-        # 每集起播都会打到这里, 记下当前集供弹幕端点动态改判(切集不换弹幕 URL)
-        _dm_mark_stream(vid)
-        try:
-            plan = _cenc_plan(src, kid, spade, vid)
-        except Exception as exc:
-            _play_log("cenc plan FAIL host=%s %s" % (_host_of(src), str(exc)[:80]))
-            self._fail(502, b"media session failed")
-            return
-        total = int(plan["total"])
-        requested = _parse_range(self.headers.get("Range") or "", total)
-        if requested is _RANGE_UNSATISFIABLE:
-            self.send_response(416)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Range", "bytes */%d" % total)
-            self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close")
+            start, end = requested if requested else (0, total - 1)
+            self.send_response(206 if requested else 200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            if requested:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, total))
             self.end_headers()
-            return
-        start, end = requested if requested else (0, total - 1)
-        self.send_response(206 if requested else 200)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(end - start + 1))
-        if requested:
-            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, total))
-        self.end_headers()
-        if not body:
-            return
-        try:
-            for block in _cenc_iter(plan, start, end):
-                self.wfile.write(block)
-        except (BrokenPipeError, ConnectionResetError):
-            self.close_connection = True
-        except Exception as exc:
-            if not getattr(exc, "_hg_logged", False):
-                _play_log("cenc stream FAIL %s" % str(exc)[:80])
-            self.close_connection = True
+            if not body:
+                return
+            try:
+                for block in _cenc_iter(plan, start, end):
+                    self.wfile.write(block)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            except Exception as exc:
+                if not getattr(exc, "_hg_logged", False):
+                    _play_log("cenc stream FAIL %s" % str(exc)[:80])
+                self.close_connection = True
 
 
-class _StreamServer(ThreadingHTTPServer):
-    """★ Windows 的 SO_REUSEADDR 语义与 Linux 不同：它允许**重复绑定已占用端口**，
-    于是第二个进程(比如调试脚本/重启后残留的旧进程)也能 bind 上去，
-    连接被谁接走就变成随机 —— 表现为封面图时好时坏、播放偶发 502。
-    这里关掉 reuse，占用时直接失败并顺延到下一个端口，行为可预期。
-    """
-    allow_reuse_address = False
-    daemon_threads = True
+    class _StreamServer(ThreadingHTTPServer):
+        """★ Windows 的 SO_REUSEADDR 语义与 Linux 不同：它允许**重复绑定已占用端口**，
+        于是第二个进程(比如调试脚本/重启后残留的旧进程)也能 bind 上去，
+        连接被谁接走就变成随机 —— 表现为封面图时好时坏、播放偶发 502。
+        这里关掉 reuse，占用时直接失败并顺延到下一个端口，行为可预期。
+        """
+        allow_reuse_address = False
+        daemon_threads = True
+
+    _STREAM_CLASSES = (_StreamHandler, _StreamServer)
+    return _STREAM_CLASSES
 
 
 def _start_stream_server() -> int:
     with _STREAM_LOCK:
         if _STREAM_STATE["port"]:
             return int(_STREAM_STATE["port"])
+        handler, server_cls = _ensure_stream_classes()
         for port in range(_STREAM_PORT_RANGE[0], _STREAM_PORT_RANGE[1]):
             try:
-                server = _StreamServer(("127.0.0.1", port), _StreamHandler)
+                server = server_cls(("127.0.0.1", port), handler)
             except OSError:
                 continue
             server.daemon_threads = True
@@ -5999,22 +6057,44 @@ def _light_category_page(route, page):
 # 打开源时壳会先要首页，过去这里的兜底是「拿第一个分类再拉一页」——
 # 那一下要多花 0.8s（最新排序是所有排序里最慢的），是「打开源慢」的主因。
 _HOME_SSR_TTL = 900
+_HOME_SSR_FAIL_TTL = 60      # v3: 失败也记短暂空态，避免 homeContent 与
+                             # homeVideoContent 各等一次完整超时(8+8=16s)
 _HOME_SSR_STATE: list = []
 _HOME_SSR_LOCK = threading.Lock()
+_HOME_SSR_BUSY = threading.Event()
+_HOME_SSR_DONE = threading.Event()
+_HOME_SSR_WAIT = 1.2             # v3: 首屏最多等后台取数 1.2s，超时直接用内置兜底
+_FALLBACK_HOME_CACHE: list = []
+
+# v3: 官网 SSR 首页 27 条卡片（zlib+base85，2.6KB）。
+# 手机侧 DNS/TLS 不通或官网超时时，首屏立刻用这份数据出内容，0 网络等待；
+# 联网成功后会被真实数据覆盖，正常路径完全用不到它。
+_FALLBACK_HOME_B85 = 'c-p<0TTdLx8HWE0*K51Z2jAr~zafgEs_Lp;YZr`cWN8&80<*wyGP4d~%wY%2!C)9*H<%2=>Cbfa%v|kX$k*UV@z`E%_mD`aFS<wSuD8DL{hqh@(_j0ZJx>1eDCv9HCnX|MP|P@@h-k#P?EC8G@qp>~@Po855qB2j%2m8vNH5k~2M2L>B(AK)`sRlp4nA`5yKjbu2A@8B@L*8f8+iQ8e|O)0Kja_ve|_IQ?tgG|=N|m<ftEBe38Pedgo4qAC)fswy<ij*#{WJv_}#O6PrrHcXyDt2f}w}#{-b{Lwg2$0C%)f2`SvNiFOKaJL^><uAD+0!14Djb2%f-=q3;L%e-_Xht!FRmty(=!zU}+lSO2|sp%u|gXr`2qN@0ROUVD5w)7m+Y)fZXi$Jp43+y9I|TxYxQvdR5UeLmJ|WfX8!dMjvRl~9RA%3IAnN|ZG&L73<w3Sfj#uM$YcwIobXj<mv(bxAO`+p3Oc_4D@d=&u*cv9g>trX$F)+DtFk+lPC(G%xa}?W2XXF<iDRkPnH)UR#H-$DTovcxkm^ic-cz5mBTPy=fv5mqaK{6;_%s#6_1T6B}u>*?N7IHWt&f9cYR4Z0(B+r@y^$Z!N=!`rt*tA~=_DLlxl$CsasQs2Z^BdEpFG1x}z8d;%5v<ArDE8=cp0(&jH&Wf|U=EghwesW`V4x88zB<T^A)OX@&`LCmW}OXvj`utVSqN@9^Hp*2nl>7Z1vIxr$IA)tg55^Jpr`a&*6bEaf3D8mfH0%HO-piJ-qDay3=galy{T0{y?aPPgq;8PUA5_7^o@rO@(As-LrYCu@d6>~;G5pW`y26INpTaI&Eptw*CNZRYdDMN};BDtgj3)Ni%$8(*9321@N+D~z7IX#<>)tT6wiWkqbH#=qaT~bC6)=C=`nBp?XU>ruEIT#{Bh4x+0UdMvwm?A;I5hQ$r?y^AmY6IgSTRhH|YGw8s86yzGMkm67!`i@u^oCNn=^ZIn<O22F?i?-(YtD#-E$`au>}WPl)MLHcK6wvK-+r^-TAql9r}1z-_rI+@TB_QG;+AMbEp|3H{X_&ws0vbtAh0hq@(OhMY7H9pb0T0(xuzIgmtsLw_t1m39@~$<jKr;Xar+ehI(t{Ka{TMXOlM*?TQ~thvR8BM+0FLw@Qwe?cSd*12&0&hIA9<{=>vD#VPPb-k|B(Jkh~Zmk)D;gp+wC&15RW@f*W)xQyB*o%17V!tE_Sjg1}g4ACCeSL4ULs$IFOdyk<H891@xk%$4Ds3zPFm0>sQ!q3S?)P#wS|Fc2|gN+T?~ktl2IWwrVAd^=u^fdH-ZO13%~SAJ^EFO?dBC?Py(F1YiQ1?_}j7KJ2{T1)8*tzNM^SUt>R28;}72~DCX`FQo6{UzA%90~T8VfAtDG;fl;PtM|8r8T{tUpEfQ)PW6zE6uPY-dO@b6cFdu!EhAbNns1s!JR0<HIh^U5J=46Gd@<LeYBijZ`_dJ@NFZ+)!okMWo$gpCa>DVBklK#>G?r6e;S9IWh#Rb0n^AK&s7jeB2PgOOo9o@Y3&NRrqXwy2Z8Lwl+=I;z=_?J0WxGi*RrMU?D(V<6F?BcOjBgN!;S^4g9q8Y=E1_eEQCbrE{23az{WrYS_`az*18&D{&n2?xwZU5XXI5jepP10L{J04gJBEX3!Y1*;>L%-3~`vbVy#c^qTm^o8VFoT0aH=ZF5`m=uU4{3HEoW=8-apb3o~(H3R-}c#NdDu?0|s{kq)ZLr~nL#G^Ow<A|!<rp#1l5dUmn@g-ECbKoKW-C`R3paCINn3<S`cufYiHteocdzt`-%Isp=HL+4MeXEP&N^#E?(Udw30Bq0!oNrE8-IYY6BW-y+5<rol?ER>0~=v5O&5d~I95{MB7Vs|EjI6Pm?#&_f1HROW4MBY~655ht|6zbKuGkQx%B@-f*fhuRQG0r(;C<0bei6K^FFbh=d&_MCut;Qez_!&Bad@KakQiC19!0x7_eDmKN$Fc2rI1P#6b~Kb-w@+*WFkmd^-iAO!f)uAP2q7^;mlQlY>uKH47zl<S02u<3XAs`HieNvVe%bVFoLy{h%)m8{Oteql=6rDZkGR@|JAjR?`j4^JOdDrC9T^~*P#pl1ttJKm7ARy5$xm<)WNKbW7*b$Pd_fpRfD(9qhM^I{UBa~XuG^<mkR@)tA{S|DD()_&*Lx7Cz)9obTB+Eem80-hnP6dYl341vu{0-l?VT$$Drtd}w9jh*xF`h_r>07LipxMmA1t#u4jQzNN7~m*?ai@xGy_GDo^Rex5Xf9<W3psT03pE!1cXC?_>P<dLb8rK@CkuUaR1+CA(RsW<Nygf#|HJ8a9NLMC)xUCtexc!vD$=Daa$j0qj`J877r`w<y`(B2?*bL*DRL`7Z9|KwTM_4r(h%+%0xP+xuwA?MT-g3YqLP9<+GJB2Aq!+>T=KLvk_ti7{+1VES<IW*42y7W-XgMZNL9luG8UZ`|_ysZZ~d~0!(6)ppy`+1FEFP1Km-V5NbU@H7a=SDtqf1p``$})B+%1BK64;L}z$7UY^Cvm)Y8O-Zj^+)5g2>dabjtm^NnP_GLDDR;nPtuQWInLK;$qO(16lOLXFlPK*%$>#_3Ze*+;y))o'
 
 
-def _home_hot_list():
-    """v2：只解析 homeSections 数组，不再 raw_decode 整页 586KB JSON。"""
-    with _HOME_SSR_LOCK:
-        if _HOME_SSR_STATE and time.time() - _HOME_SSR_STATE[0] < _HOME_SSR_TTL:
-            return list(_HOME_SSR_STATE[1])
-    rows, seen = [], set()
+def _fallback_home():
+    """解码内置首页，只解一次。"""
+    global _FALLBACK_HOME_CACHE
+    if not _FALLBACK_HOME_CACHE:
+        try:
+            raw = zlib.decompress(base64.b85decode(_FALLBACK_HOME_B85))
+            rows = json.loads(raw.decode("utf-8"))
+            _FALLBACK_HOME_CACHE = rows if isinstance(rows, list) else []
+        except Exception:
+            _FALLBACK_HOME_CACHE = []
+    return list(_FALLBACK_HOME_CACHE)
+
+
+def _home_fetch():
+    """后台线程：真正抓官网首页并写缓存（单飞，首屏线程永不碰网络）。"""
+    rows = []
     try:
-        html = _page_static(SITE + "/")
+        html = _page_static(SITE + "/", timeout=6)
         secs = _json_fragment(html, "homeSections", None)
         if not isinstance(secs, list) or not secs:
             secs = (((_router_from_html(html).get("loaderData") or {}).get("page") or {})
                     .get("homeSections")) or []
+        seen = set()
         for sec in secs:
             if not isinstance(sec, dict):
                 continue
@@ -6026,14 +6106,67 @@ def _home_hot_list():
                 seen.add(sid)
                 item = _item(x)
                 if item.get("vod_id"):
-                    item["type_name"] = tname   # 参考官方轻量源：按板块出卡
+                    item["type_name"] = tname
                     rows.append(item)
     except Exception:
         rows = []
-    if rows:
+    finally:
         with _HOME_SSR_LOCK:
-            _HOME_SSR_STATE[:] = [time.time(), rows]
-    return list(rows)
+            _HOME_SSR_STATE[:] = [time.time(), rows]   # 空也写，防连等两次超时
+        _HOME_SSR_BUSY.clear()
+        _HOME_SSR_DONE.set()
+    return rows
+
+
+def _ensure_home_fetch():
+    """保证只有一个后台线程在取首页。"""
+    with _HOME_SSR_LOCK:
+        if _HOME_SSR_BUSY.is_set():
+            return False
+        _HOME_SSR_BUSY.set()
+        _HOME_SSR_DONE.clear()
+    try:
+        threading.Thread(target=_home_fetch, daemon=True,
+                          name="hg-home-fetch").start()
+    except Exception:
+        with _HOME_SSR_LOCK:
+            _HOME_SSR_BUSY.clear()
+        _HOME_SSR_DONE.set()
+    return True
+
+
+def _home_prefetch():
+    """v3: init() 阶段就后台取首页，等 homeContent 被调用时多半已就绪。"""
+    _ensure_home_fetch()
+
+
+def _home_hot_list():
+    """v3: 首屏永不自己发同步请求。
+
+    命中缓存立即返回；否则确保后台在取，最多等 _HOME_SSR_WAIT 秒，
+    超时直接给内置兜底 —— 手机侧官网再慢也不会转圈。
+    """
+    with _HOME_SSR_LOCK:
+        state = list(_HOME_SSR_STATE)
+    now = time.time()
+    ttl = _HOME_SSR_TTL if (state and state[1]) else _HOME_SSR_FAIL_TTL
+    if state and now - state[0] < ttl:
+        return list(state[1]) or _fallback_home()
+    _ensure_home_fetch()
+    _HOME_SSR_DONE.wait(_HOME_SSR_WAIT)
+    with _HOME_SSR_LOCK:
+        state = list(_HOME_SSR_STATE)
+    if state and state[1]:
+        return list(state[1])
+    # 首屏已经用兜底出了内容，写一份短暂空态：壳子紧接着再调
+    # homeVideoContent 时就直接命中，不会再白等一轮 _HOME_SSR_WAIT。
+    # 后台取数成功后会用真实 rows 覆盖这份空态。
+    with _HOME_SSR_LOCK:
+        if not _HOME_SSR_STATE:
+            _HOME_SSR_STATE[:] = [time.time(), []]
+    return _fallback_home()
+
+
 # 剧集表: 详情页把每部剧的 vid 顺序记下来, 播放时才能"边看这集边把下集取好"。
 # 上游对同一 IP 的取流有 3 秒级间隔窗口, 用户连播时必然踩到 ——
 # 提前在后台取好下集, 切集就是 0 毫秒命中缓存。
@@ -7954,9 +8087,11 @@ def _data(url):
         return {}
 
 
-def _page_static(url):
-    """抓官网 SSR, 不发浏览器 UA —— 走 CDN 静态缓存, 见 _http_static 说明。"""
-    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"}, timeout=8)
+def _page_static(url, timeout=8):
+    """抓官网 SSR, 不发浏览器 UA —— 走 CDN 静态缓存, 见 _http_static 说明。
+    v3: 超时可配，首页用短超时，避免手机网络不通时转圈一整轮。"""
+    r = _http_static().get(url, headers={"Accept-Language": "zh-CN,zh;q=0.9"},
+                           timeout=timeout)
     r.raise_for_status()
     return r.text
 
@@ -8665,7 +8800,7 @@ def _device_identity() -> tuple[str, str]:
     return device_id, install_id
 
 
-class Spider(Spider):
+class Spider(_BaseSpider):
     def __init__(self):
         self.device_id, self.install_id = _device_identity()
 
@@ -8687,6 +8822,13 @@ class Spider(Spider):
         self._extra_config = cfg
         # v2：去掉 _warm_conn() 的 3 个后台 HEAD。Android 冷启 DNS+TLS 会占线程，
         # 首屏本来就要发的那一个官网请求自己会完成握手，预热反而抢资源。
+        # v3：但「官网首页」这一发可以提前到 init 阶段 —— 壳子在 init 与
+        # homeContent 之间还有渲染开销，等真正要首页时缓存多半已经好了。
+        try:
+            threading.Thread(target=_home_prefetch, daemon=True,
+                             name="hg-home-prefetch").start()
+        except Exception:
+            pass
         return None
 
     def _cfg(self):
@@ -8705,20 +8847,9 @@ class Spider(Spider):
         return cfg
 
     def homeContent(self, filter):
-        # 顺手把本机流/登录服务拉起来: 首页是必然被访问到的入口，
-        # 这样用户想直接开 http://127.0.0.1:<port>/login/qr.png 时端口已经在了。
-        # 轻量版：Android/Chaquopy 上 bind 本机端口会拖慢进源，改后台起。
-        # 二维码端点仍有 _login_pic() / playerContent 里的同步兜底。
-        def _boot_stream():
-            try:
-                _start_stream_server()
-            except Exception as _exc:
-                _play_log("stream server start FAIL: %r" % (_exc,))
-        try:
-            threading.Thread(target=_boot_stream, daemon=True,
-                             name="hg-light-stream").start()
-        except Exception:
-            pass
+        # v3: 不在进源时起本机流/登录服务 —— 那会触发 http.server 导入 + bind
+        # 端口，抢 Chaquopy 首屏的 GIL。二维码端点仍由 _login_pic() /
+        # playerContent 里的 _start_stream_server() 同步兜底，用到才起。
         # 进源 = 新会话：推荐流翻页游标归零，别接着上一次的位置继续
         try:
             _rec_reset_session()
