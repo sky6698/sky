@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v4 · 2026-11-15 =====
+# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v5 · 2026-11-15 =====
 # v3 针对「进源转圈 15 秒」：模块顶层 import 惰性化 + 首页内置兜底 + 后台预热。
 # v4 修复「bytevc2 集只有声音没图像」：改走备用接口的标准 hvc1 未加密直链。
+# v5 加固：gear 全空判据 / 不静默回落 / url_expire 自愈 / 失败作废模型缓存。
 # 由 红果短剧sky.py 派生，只针对 Android/Chaquopy 壳做减法：
 #   1) 不再自己插「推荐」分类（壳子自带一个，否则显示两个推荐）
 #   2) 榜单分类整块去掉
@@ -16,6 +17,7 @@ HG_LIGHT_BUILD = True
 HG_LIGHT_V2 = True
 HG_LIGHT_V3 = True
 HG_LIGHT_V4 = True
+HG_LIGHT_V5 = True
 import base64
 import binascii
 import bisect
@@ -2431,21 +2433,45 @@ def _ensure_stream_classes():
         def do_GET(self) -> None:  # noqa: N802 - 标准库回调命名
             self._serve(body=True)
 
-        def _serve_plain(self, src, body):
-            """v4: 未加密标准 hvc1 直链直通（ByteVC2 兜底用）。
-
-            透传 Range，保留 206/Content-Range，播放器与弹幕切集标记都不受影响。
-            """
+        def _serve_plain(self, src, body, fb="", vid="", name=""):
+            # v5: 未加密标准 hvc1 直链直通（ByteVC2 兜底用），透传 Range，
+            # 保留 206/Content-Range；额外带 url_expire 过期自愈。
             headers = dict(MEDIA_HEADERS)
             rng = self.headers.get("Range")
             if rng:
                 headers["Range"] = rng
+
+            def fetch(url):
+                return requests.get(url, headers=headers, stream=True, timeout=30)
+
             try:
-                upstream = requests.get(src, headers=headers, stream=True, timeout=30)
+                upstream = fetch(src)
             except Exception as exc:
+                _MODEL_CACHE.pop(vid, None)
                 _play_log("plain stream FAIL %s" % str(exc)[:80])
                 self._fail(502, b"media upstream failed")
                 return
+            # ③ 自愈：直链过期 / CDN 403 -> 用 fallback_api 重新取一次新 URL
+            if upstream.status_code in _MEDIA_BLOCK_CODES and fb:
+                fresh = ""
+                try:
+                    fresh = _hg_plain_refresh(fb, name)
+                except Exception:
+                    pass
+                if fresh and fresh != src:
+                    _MODEL_CACHE.pop(vid, None)
+                    _play_log("plain stream expired -> refresh %s" % (vid or "?"))
+                    try:
+                        upstream.close()
+                        upstream = fetch(fresh)
+                        src = fresh
+                    except Exception:
+                        pass
+            if upstream.status_code not in (200, 206):
+                # ④ 播放失败自愈：作废模型缓存，下次 playerContent 会重新取流
+                _MODEL_CACHE.pop(vid, None)
+                _play_log("plain stream FAIL code=%d vid=%s"
+                          % (upstream.status_code, vid or "?"))
             try:
                 status = upstream.status_code if upstream.status_code in (200, 206) else 502
                 self.send_response(status)
@@ -2493,15 +2519,17 @@ def _ensure_stream_classes():
             kid = (query.get("kid") or [""])[0]
             spade = (query.get("spade") or query.get("spade_a") or [""])[0]
             vid = (query.get("vid") or [""])[0]
+            fb = (query.get("fb") or [""])[0] or _PLAIN_FB.get(vid, "")
+            name = (query.get("name") or [""])[0]
             if not src:
                 self._fail(400, b"missing src")
                 return
             # 每集起播都会打到这里, 记下当前集供弹幕端点动态改判(切集不换弹幕 URL)
             _dm_mark_stream(vid)
-            # v4: spade 为空 = bytevc2 兜底拿到的标准 hvc1 未加密直链，
-            # 不用 CENC 解密，原样转发即可（Range / 弹幕标记都照常）。
+            # v5: spade 为空 = bytevc2 兜底拿到的标准 hvc1 未加密直链，直通转发
+            # （Range / 弹幕切集标记 / 过期自愈都照常）。
             if not spade:
-                self._serve_plain(src, body)
+                self._serve_plain(src, body, fb, vid, name)
                 return
             try:
                 plan = _cenc_plan(src, kid, spade, vid)
@@ -7836,92 +7864,51 @@ def _gear_height(value: Any) -> int:
     return 0
 
 
-# ---------------------------------------------------------------- v4: ByteVC2 兼容
+# ---------------------------------------------------------------- v5: ByteVC2 兼容（加固）
 # 同一部剧不同集可能用不同视频编码：老集 2:h265_hvc1，新集 2:bytevc2。
-# bytevc2 是字节自研编码，壳子播放器解不了 -> 视频轨黑屏、AAC 音频正常，
-# 表现就是「只有声音没图像」。v3 把加密视轨统一标成 hvc1，等于错标。
-# 参考源 236 的做法：命中 bytevc2 时改走 fallback_api 的 codec_type=1，
-# 拿同档 1:normal + h265_hvc1 的未加密直链直接给播放器。
+# bytevc2 是字节自研编码，通用壳子解不了 -> 视频轨黑屏、AAC 音频正常，
+# 表现就是「只有声音没图像」。原实现把加密视轨统一标成 hvc1，等于错标。
+# 官方 236 参考源 / h127.exe(1.2.27) 的 CompatVideoModel+compatFallbackURL
+# 三方一致的修法：fallback_api 的 codec_type 改成 1，拿同档
+# 1:normal + h265_hvc1 的未加密直链。
+HG_CODEC_V5 = True
 _QTYPE_HEIGHT = {0: 2160, 2: 1440, 1: 1080, 10: 720, 20: 540, 30: 480, 40: 360}
-_SPADE_URL_CONSTANTS = bytes.fromhex(
-    "4dd4c2e6b83162090e52b3c7a6733ba4"
-    "1cb2462b829ab58a196b39db57177524"
-    "f49baf7f08e8d68d26a72e37c1a95a2f"
-    "1f05a51892aef2949732b62a38aadd58")
+_PLAIN_FB: dict = {}          # vid -> fallback_api；App 重启后从 query 也能拿到
 
 
-def _hg_is_bytevc2_model(model: Any) -> bool:
-    """这次取流里是否出现 ByteVC2 档位（壳解不了，会只有声音）。"""
+def _hg_codec_verdict(model) -> str:
+    # 'bytevc2' = 确认出现私有编码；'unknown' = 全部档位没有编码标记；
+    # 'normal'  = 明确的 h265_hvc1 / h264。
+    # ★ 不能用 fallback_api 的 codec_type 当判据：实测第16集 5 档全
+    #   h265_hvc1 却也是 codec_type=4；第2集 gear 全空却是 codec_type=3。
+    rows = []
     try:
-        rows = (model or {}).get("video_list") or []
-        return any("bytevc2" in str(x.get("gear_des_key") or "")
-                   for x in rows if isinstance(x, Mapping))
+        vl = model.get("video_list") if isinstance(model, Mapping) else None
+        if isinstance(vl, Mapping):
+            rows = list(vl.values())
+        elif isinstance(vl, (list, tuple)):
+            rows = list(vl)
     except Exception:
-        return False
+        rows = []
+    rows = [x for x in rows if isinstance(x, Mapping)]
+    if not rows:
+        return "unknown"
+    plain = 0
+    for x in rows:
+        gk = str(x.get("gear_des_key") or "")
+        if "bytevc2" in gk:
+            return "bytevc2"
+        if any(k in gk for k in ("h265_hvc1", "h264", "avc", "hvc1")):
+            plain += 1
+    return "normal" if plain else "unknown"
 
 
-def _fallback_api_value(value: Any) -> str:
-    """fallback_api 可能是字符串 / {'fallback_api': url} / JSON 串 / 列表。"""
-    if isinstance(value, Mapping):
-        return _first(value.get("fallback_api"), value.get("url"),
-                      value.get("api"), value.get("data"))
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            hit = _fallback_api_value(item)
-            if hit:
-                return hit
-        return ""
-    text = _text(value)
-    if text.startswith("{"):
-        try:
-            decoded = json.loads(text)
-        except ValueError:
-            decoded = {}
-        if decoded:
-            return _fallback_api_value(decoded)
-    return text if len(text) > 10 else ""
+def _hg_is_bytevc2_model(model) -> bool:
+    return _hg_codec_verdict(model) == "bytevc2"
 
 
-def _key_seed_from_model(model: Any) -> bytes:
-    """备用接口响应里的 key_seed（可能嵌在 video_info/data 里）。"""
-    if not isinstance(model, Mapping):
-        return b""
-    value = _text(model.get("key_seed"))
-    if value:
-        return _b64(value)
-    for key in ("dynamic_video", "video_info", "data"):
-        hit = _key_seed_from_model(model.get(key))
-        if hit:
-            return hit
-    return b""
-
-
-def _decrypt_spade_url(value: str, key_seed: bytes) -> str:
-    """解开备用接口返回的 qAAB... 加密 URL（AES-CBC + PKCS7）。"""
-    raw = _b64(value)
-    if len(raw) < 20 or raw[0] != 0xA8 or raw[2:4] != b"\x01\x00":
-        raise HongguoPluginError("spade URL 头无效")
-    cipher_data = raw[4: len(raw) - (len(raw) - 4) % 16]
-    if not cipher_data:
-        raise HongguoPluginError("spade URL 密文为空")
-    first = hashlib.sha512(key_seed).digest()
-    second = hashlib.sha512(first + _SPADE_URL_CONSTANTS).digest()
-    plain = _aes_cbc_decrypt(second[:16], second[16:32], cipher_data)
-    if plain:
-        padding = plain[-1]
-        if 1 <= padding <= 16 and padding <= len(plain):
-            plain = plain[:-padding]
-    return plain.rstrip(b"\0").decode("utf-8", errors="replace")
-
-
-def _hg_plain_tracks(model: Any, timeout: int = 8) -> list:
-    """ByteVC2 专用：fallback_api codec_type=1 -> 同档标准 hvc1 未加密直链。
-
-    返回与 _cenc_tracks 同结构的 [(name, item), ...]，但 spade/kid 为空，
-    由 /hg.mp4 的直通分支转发。只收 1:normal 的未加密条目，避免把
-    加密壳或 bvc2 又交回播放器。
-    """
-    fb = _fallback_api_value(model.get("fallback_api") if isinstance(model, Mapping) else None)
+def _hg_plain_model(fb: str, timeout: int = 8) -> list:
+    # 调 fallback_api(codec_type=1)，解析出标准 hvc1 未加密直链档位。
     if not fb:
         return []
     api = re.sub(r"codec_type=[0-9]+", "codec_type=1", fb)
@@ -7930,8 +7917,9 @@ def _hg_plain_tracks(model: Any, timeout: int = 8) -> list:
     try:
         r = _http().get(api, headers={"User-Agent": APP_UA}, timeout=timeout)
         j = r.json() if r.status_code == 200 else None
-    except Exception:
-        j = None
+    except Exception as exc:
+        _play_log("plain model FAIL %s" % str(exc)[:80])
+        return []
     if not isinstance(j, Mapping):
         return []
     data = j
@@ -7944,35 +7932,63 @@ def _hg_plain_tracks(model: Any, timeout: int = 8) -> list:
     raw_list = data.get("video_list") or {}
     items = list(raw_list.values()) if isinstance(raw_list, Mapping) else [
         x for x in (raw_list or []) if isinstance(x, Mapping)]
-    found, seen = [], set()
-    for it in items:
-        gk = str(it.get("gear_des_key") or "")
-        if "bytevc2" in gk or "1:encrypt" in gk:
-            continue
-        if "h265_hvc1" not in gk and "h264" not in gk and "avc" not in gk:
-            continue
-        raw_url = _text(it.get("main_url"))
-        if not raw_url:
-            continue
-        url = raw_url
-        if not url.startswith("http") and seed:
-            try:
-                url = _decrypt_spade_url(raw_url, seed)
-            except Exception:
+
+    def collect(strict):
+        out, seen = [], set()
+        for it in items:
+            gk = str(it.get("gear_des_key") or "")
+            if "bytevc2" in gk or "1:encrypt" in gk:
                 continue
-        if not url.startswith("http") or url in seen:
-            continue
-        seen.add(url)
-        qtype = _int(it.get("quality_type"))
-        height = _QTYPE_HEIGHT.get(qtype, 0) or _gear_height(gk)
-        name = ("%dP" % height) if height else "红果"
-        found.append((name, {"src": url, "kid": "", "spade": "",
-                             "height": height, "alts": [],
-                             "size": _int(it.get("size")),
-                             "bitrate": _int(it.get("bitrate")),
-                             "qtype": qtype}))
-    found.sort(key=lambda pair: pair[1]["height"], reverse=True)
+            if strict and not any(k in gk for k in ("h265_hvc1", "h264", "avc", "hvc1")):
+                continue
+            raw_url = _text(it.get("main_url"))
+            if not raw_url:
+                continue
+            url = raw_url
+            if not url.startswith("http"):
+                if not seed:
+                    continue
+                try:
+                    url = _decrypt_spade_url(raw_url, seed)
+                except Exception:
+                    continue
+            if not url.startswith("http") or url in seen:
+                continue
+            seen.add(url)
+            qtype = _int(it.get("quality_type"))
+            height = _QTYPE_HEIGHT.get(qtype, 0) or _gear_height(gk)
+            name = ("%dP" % height) if height else "红果"
+            out.append((name, {"src": url, "kid": "", "spade": "", "fb": fb,
+                               "height": height, "alts": [],
+                               "size": _int(it.get("size")),
+                               "bitrate": _int(it.get("bitrate")),
+                               "qtype": qtype}))
+        out.sort(key=lambda pair: pair[1]["height"], reverse=True)
+        return out
+
+    found = collect(True)
+    if not found:
+        # 放宽：备用接口偶尔不给 gear 编码段，只要未加密且不含 bytevc2 就收
+        found = collect(False)
+        if found:
+            _play_log("plain model relaxed -> %d 档" % len(found))
     return found
+
+
+def _hg_plain_tracks(model, timeout: int = 8) -> list:
+    fb = _fallback_api_value(model.get("fallback_api")) if isinstance(model, Mapping) else ""
+    return _hg_plain_model(fb, timeout)
+
+
+def _hg_plain_refresh(fb: str, name: str = "", timeout: int = 8) -> str:
+    # 直链 url_expire（约 68s）过期时重新调备用接口，取同档（或最高档）新 URL。
+    tracks = _hg_plain_model(fb, timeout)
+    if not tracks:
+        return ""
+    for n, item in tracks:
+        if not name or n == name:
+            return item.get("src") or ""
+    return tracks[0][1].get("src") or ""
 
 
 def _cenc_tracks(model: Any) -> list:
@@ -9705,17 +9721,37 @@ class Spider(_BaseSpider):
             error = ""
             try:
                 model = _video_model(vid, self._cfg(), ct_hint=ct_hint)
+                # v5: 按集判定视频编码。bytevc2 通用壳子解不了，走原 CENC
+                # 会「只有声音没图像」；改走 fallback_api 的 codec_type=1
+                # 拿同档标准 hvc1 未加密直链。
+                verdict = _hg_codec_verdict(model)
+                fb = _fallback_api_value(model.get("fallback_api"))
                 tracks = []
-                # v4: 这一集是 bytevc2（壳解不了视频轨，会只有声音没图像）时，
-                # 改走 fallback_api codec_type=1 的同档标准 hvc1 未加密直链。
-                # 正常 h265_hvc1 的集仍走原来的 CENC 解密路径，一字不变。
-                if _hg_is_bytevc2_model(model):
-                    tracks = _hg_plain_tracks(model)
+                if verdict in ("bytevc2", "unknown"):
+                    tracks = _hg_plain_model(fb)
+                    if not tracks and verdict == "bytevc2":
+                        # ④ 自愈：备用接口偶发失败 -> 作废模型缓存重取一次再试
+                        _MODEL_CACHE.pop(vid, None)
+                        try:
+                            model = _video_model(vid, self._cfg(), ct_hint=ct_hint)
+                            fb = _fallback_api_value(model.get("fallback_api"))
+                            tracks = _hg_plain_model(fb)
+                        except Exception:
+                            tracks = []
                     if tracks:
-                        _play_log("play %s -> bytevc2 转标准 hvc1 直链 %d 档"
-                                  % (vid, len(tracks)))
-                if not tracks:
+                        _play_log("play %s -> %s 转标准 hvc1 直链 %d 档"
+                                  % (vid, verdict, len(tracks)))
+                    elif verdict == "bytevc2":
+                        # ② 绝不静默回落 CENC：那必然只有声音没图像。
+                        # 明确报错让播放器换线路/重试，日志里也能直接看到。
+                        raise HongguoPluginError("bytevc2 且无可用标准 H.265 直链")
+                    else:
+                        # ① gear 全空只是「不确定」，回落原路径不算退化
+                        tracks = _cenc_tracks(model)
+                else:
                     tracks = _cenc_tracks(model)
+                if fb and tracks and not tracks[0][1].get("spade"):
+                    _PLAIN_FB[vid] = fb
             except Exception as exc:
                 error = str(exc)[:70]
                 tracks = []
@@ -9728,6 +9764,7 @@ class Spider(_BaseSpider):
                         "src": item.get("src") or "",
                         "kid": item.get("kid") or "",
                         "spade": item.get("spade") or "",
+                        "fb": item.get("fb") or "",
                         "name": name,
                         # 带上 vid：流服务端写日志、以及"媒体地址全线失败时作废
                         # model 缓存"都要用到，不能只靠进程内的映射表
@@ -9757,6 +9794,7 @@ class Spider(_BaseSpider):
                         "src": item["src"],
                         "kid": item["kid"],
                         "spade": item["spade"],
+                        "fb": item.get("fb") or "",
                         "name": name,
                         "vid": vid,
                     })
