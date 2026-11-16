@@ -7907,13 +7907,20 @@ def _hg_is_bytevc2_model(model) -> bool:
     return _hg_codec_verdict(model) == "bytevc2"
 
 
-def _hg_plain_model(fb: str, timeout: int = 8) -> list:
+def _hg_plain_model(fb: str, timeout: int = 8, force_h264: bool = False) -> list:
     # 调 fallback_api(codec_type=1)，解析出标准 hvc1 未加密直链档位。
+    # v5.1: hongguoTV-kotlin 0.16.4 实证——全档 bytevc2 时单改 codec_type=1
+    # 仍返回 bytevc2，必须再带 force_codec=h264 才切到 h265_hvc1（43集 5/5 档）。
     if not fb:
         return []
     api = re.sub(r"codec_type=[0-9]+", "codec_type=1", fb)
     if "codec_type=" not in api:
         api += ("&" if "?" in api else "?") + "codec_type=1"
+    if force_h264:
+        if "force_codec=" in api:
+            api = re.sub(r"force_codec=[^&]*", "force_codec=h264", api)
+        else:
+            api += ("&" if "?" in api else "?") + "force_codec=h264"
     try:
         r = _http().get(api, headers={"User-Agent": APP_UA}, timeout=timeout)
         j = r.json() if r.status_code == 200 else None
@@ -7932,6 +7939,9 @@ def _hg_plain_model(fb: str, timeout: int = 8) -> list:
     raw_list = data.get("video_list") or {}
     items = list(raw_list.values()) if isinstance(raw_list, Mapping) else [
         x for x in (raw_list or []) if isinstance(x, Mapping)]
+    all_bvc2 = bool(items) and all(
+        "bytevc2" in str(it.get("gear_des_key") or "")
+        for it in items if isinstance(it, Mapping))
 
     def collect(strict):
         out, seen = [], set()
@@ -7972,12 +7982,100 @@ def _hg_plain_model(fb: str, timeout: int = 8) -> list:
         found = collect(False)
         if found:
             _play_log("plain model relaxed -> %d 档" % len(found))
+    if not found and all_bvc2 and not force_h264:
+        # Kotlin 版同款兼容路径：只对「全档 bytevc2 且普通备用取不到」重试，
+        # 正常集不受影响。43集实测拿到 5 档 h265_hvc1。
+        _play_log("plain model all bytevc2 -> retry force_codec=h264")
+        return _hg_plain_model(fb, timeout, True)
     return found
 
 
 def _hg_plain_tracks(model, timeout: int = 8) -> list:
     fb = _fallback_api_value(model.get("fallback_api")) if isinstance(model, Mapping) else ""
     return _hg_plain_model(fb, timeout)
+
+
+def _hg_force_api(fb: str) -> str:
+    # Kotlin 0.16.4 同款：codec_type=1 + force_codec=h264。
+    api = re.sub(r"codec_type=[0-9]+", "codec_type=1", fb)
+    if "codec_type=" not in api:
+        api += ("&" if "?" in api else "?") + "codec_type=1"
+    if "force_codec=" in api:
+        api = re.sub(r"force_codec=[^&]*", "force_codec=h264", api)
+    else:
+        api += ("&" if "?" in api else "?") + "force_codec=h264"
+    return api
+
+
+def _hg_compat_cenc_tracks(model, fb: str, timeout: int = 8) -> list:
+    # 43 集实证：force_codec=h264 给的是 1:encrypt + h265_hvc1 的标准加密档，
+    # 没有 encrypt_info，但 kid/spade_a 与原 bytevc2 档一致。
+    # 因此用兼容接口取 URL，配原模型的 kid/spade 走既有 CENC 解密链。
+    if not fb or not isinstance(model, Mapping):
+        return []
+    try:
+        r = _http().get(_hg_force_api(fb), headers={"User-Agent": APP_UA}, timeout=timeout)
+        j = r.json() if r.status_code == 200 else None
+    except Exception as exc:
+        _play_log("compat cenc model FAIL %s" % str(exc)[:80])
+        return []
+    if not isinstance(j, Mapping):
+        return []
+    data = j
+    for key in ("video_info", "data"):
+        if isinstance(data.get(key), Mapping):
+            data = data[key]
+    if isinstance(data.get("data"), Mapping):
+        data = data["data"]
+    seed = _key_seed_from_model(j)
+    raw_list = data.get("video_list") or {}
+    items = list(raw_list.values()) if isinstance(raw_list, Mapping) else [
+        x for x in (raw_list or []) if isinstance(x, Mapping)]
+    # 原模型按档位收集 kid/spade；全档共用时退到第一条。
+    keys, any_key = {}, None
+    orig = model.get("video_list") or {}
+    orig_rows = list(orig.values()) if isinstance(orig, Mapping) else [
+        x for x in (orig or []) if isinstance(x, Mapping)]
+    for it in orig_rows:
+        info = it.get("encrypt_info") if isinstance(it.get("encrypt_info"), Mapping) else {}
+        kid, spade = _text(info.get("kid")), _text(info.get("spade_a"))
+        if kid and spade:
+            keys[_int(it.get("quality_type"))] = (kid, spade)
+            any_key = any_key or (kid, spade)
+    found, seen = [], set()
+    for it in items:
+        gk = str(it.get("gear_des_key") or "")
+        if "bytevc2" in gk or not any(k in gk for k in ("h265", "hvc1", "h264", "avc")):
+            continue
+        raw = _text(it.get("main_url"))
+        if not raw:
+            continue
+        url = raw
+        if not url.startswith("http"):
+            if not seed:
+                continue
+            try:
+                url = _decrypt_spade_url(raw, seed)
+            except Exception:
+                continue
+        if not url.startswith("http") or url in seen:
+            continue
+        qtype = _int(it.get("quality_type"))
+        pair = keys.get(qtype) or any_key
+        if not pair:
+            continue
+        seen.add(url)
+        height = _QTYPE_HEIGHT.get(qtype, 0) or _gear_height(gk)
+        name = ("%dP" % height) if height else "红果"
+        found.append((name, {"src": url, "kid": pair[0], "spade": pair[1],
+                             "height": height, "alts": [],
+                             "size": _int(it.get("size")),
+                             "bitrate": _int(it.get("bitrate")),
+                             "qtype": qtype}))
+    found.sort(key=lambda pair: pair[1]["height"], reverse=True)
+    if found:
+        _play_log("compat cenc model -> %d 档 h265 (force_codec=h264)" % len(found))
+    return found
 
 
 def _hg_plain_refresh(fb: str, name: str = "", timeout: int = 8) -> str:
@@ -9738,13 +9836,19 @@ class Spider(_BaseSpider):
                             tracks = _hg_plain_model(fb)
                         except Exception:
                             tracks = []
+                    if not tracks and verdict == "bytevc2":
+                        # v5.1/43集：兼容接口 force_codec=h264 给加密 h265，
+                        # 配原模型 kid/spade 走既有 CENC 解密链（实测 hvc1 无 encv）。
+                        tracks = _hg_compat_cenc_tracks(model, fb)
                     if tracks:
-                        _play_log("play %s -> %s 转标准 hvc1 直链 %d 档"
-                                  % (vid, verdict, len(tracks)))
+                        _play_log("play %s -> %s 转标准 hvc1 %s %d 档"
+                                  % (vid, verdict,
+                                     "加密" if tracks[0][1].get("spade") else "直链",
+                                     len(tracks)))
                     elif verdict == "bytevc2":
-                        # ② 绝不静默回落 CENC：那必然只有声音没图像。
+                        # ② 绝不静默回落原 bytevc2 CENC：那必然只有声音没图像。
                         # 明确报错让播放器换线路/重试，日志里也能直接看到。
-                        raise HongguoPluginError("bytevc2 且无可用标准 H.265 直链")
+                        raise HongguoPluginError("bytevc2 且无可用标准 H.265 档位")
                     else:
                         # ① gear 全空只是「不确定」，回落原路径不算退化
                         tracks = _cenc_tracks(model)
