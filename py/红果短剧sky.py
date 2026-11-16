@@ -1,17 +1,4 @@
 # -*- coding: utf-8 -*-
-# ===== 红果短剧 · FongMi(蜂蜜影视) 轻量版 v5 · 2026-11-15 =====
-# v3 针对「进源转圈 15 秒」：模块顶层 import 惰性化 + 首页内置兜底 + 后台预热。
-# v4 修复「bytevc2 集只有声音没图像」：改走备用接口的标准 hvc1 未加密直链。
-# v5 加固：gear 全空判据 / 不静默回落 / url_expire 自愈 / 失败作废模型缓存。
-# 由 红果短剧sky.py 派生，只针对 Android/Chaquopy 壳做减法：
-#   1) 不再自己插「推荐」分类（壳子自带一个，否则显示两个推荐）
-#   2) 榜单分类整块去掉
-#   3) 去掉进源时 1+8 个带全套签名的后台预热，改成点分类才取
-#   4) 本机流/登录服务改后台起，不阻塞首屏
-#   5) homeContent 一次返回 class/filters/list，少一次 RPC
-#   6) 补纯 Python AES-128 兜底，缺 cryptography/pycryptodome 也能签名
-# 播放 / 弹幕 / 全清晰度 / 登录后个性化推荐 / 切集预取全部保留。
-# 主源与 E:/winapp/dist/无名影视 的部署副本均未改动。
 from __future__ import annotations
 HG_LIGHT_BUILD = True
 HG_LIGHT_V2 = True
