@@ -2676,8 +2676,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if not str(vid).isdigit():
             self._fail(400, b"missing vid")
             return
+        req_vid = str(vid)
         if not sid:
-            sid = _dm_series_of(vid)
+            sid = _dm_series_of(req_vid)
+        # ★ 切集后壳子仍来拉首次进播放页那个 URL, 直接按 URL 的 vid 取数
+        #   就会一直是上一集弹幕。改判为「最近一次 /hg.mp4 实际起播的集」:
+        #   同剧、且该流请求在 10 分钟内才认, 避免串到别的剧或旧会话。
+        try:
+            with _DM_LOCKS:
+                if _DM_LAST_REQ.get("vid") != req_vid:
+                    # URL 的 vid 变了 = 壳子重新解析过弹幕地址(新会话/换剧), 作废旧流标记
+                    _DM_LAST_REQ["vid"] = req_vid
+                    _DM_STREAM["vid"] = ""
+                    _DM_STREAM["t"] = 0.0
+                cur_vid = str(_DM_STREAM.get("vid") or "")
+                cur_at = float(_DM_STREAM.get("t") or 0.0)
+            if (cur_vid.isdigit() and cur_vid != req_vid
+                    and time.time() - cur_at < 600):
+                cur_sid = _dm_series_of(cur_vid) or sid
+                if cur_sid and (not sid or cur_sid == sid):
+                    vid, sid = cur_vid, cur_sid
+        except Exception:
+            pass
         try:
             _DM_HIT[vid] = time.time()
             _trim_store(_DM_HIT, cap=512, max_age=86400)
@@ -2732,6 +2752,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         try:
             _DM_STREAM_HIT[str(params["vid"])] = time.time()
             _trim_store(_DM_STREAM_HIT, cap=512, max_age=86400)
+        except Exception:
+            pass
+        # ★ 这一集真正起播：标记当前流集并后台预热其弹幕，切集弹幕靠它纠正旧 URL
+        try:
+            _dm_mark_stream(params["vid"])
         except Exception:
             pass
         try:
@@ -6069,6 +6094,13 @@ _DM_PUSHED: dict[str, float] = {}
 _DM_STREAM_HIT: dict[str, float] = {}
 _DM_HIT: dict[str, float] = {}
 _DM_LAST_ERR = ""
+# ★ 切集弹幕(v0.16.11/无名影视同款修法): 壳子无感切集时复用首次进播放页解析的
+#   弹幕 URL, 每集虽重新 GET 但地址仍是第一集的 vid -> 一直是第一集弹幕。
+#   每集起播都会请求本机 /hg.mp4 且 query 带 vid, 这是最可靠的"当前集"信号。
+_DM_STREAM: dict = {"vid": "", "t": 0.0, "warm": ""}
+# 上一次 /hg_dm 请求 URL 里的 vid: 变了说明壳子重新解析过弹幕地址(新会话/换剧),
+# 此时旧的流标记必须作废, 否则会把上一部的集串过来。
+_DM_LAST_REQ: dict = {"vid": ""}
 
 _DM_AES_KEY = bytes.fromhex("d31e3718288a1027baab59f146a09a9c")
 _DM_AES_IV = bytes.fromhex("ea180a0336ed352fcd24e4d50018ae54")
@@ -6662,6 +6694,42 @@ def _dm_get(vid: str, series_id: str = "", device_id: str = "", install_id: str 
         except Exception:
             pass
     return _dm_state(vid)
+
+
+def _dm_stream_device() -> tuple[str, str]:
+    """给预热取数用的设备号：优先复用进程里正在用的那一对。"""
+    try:
+        pair = _working_device_pair()
+        if pair:
+            return pair.get("device_id", ""), pair.get("install_id", "")
+    except Exception:
+        pass
+    return "", ""
+
+
+def _dm_mark_stream(vid: str) -> None:
+    """本机 /hg.mp4 收到请求 = 这一集真正起播。记下当前集并后台预热它的弹幕。
+
+    切集时弹幕 GET 通常比起播晚十几秒，这里提前把取数跑起来，
+    等壳子来拉旧 URL 时基本已有数据，/hg_dm 只需短等而不是干等 18s。
+    """
+    vid = _text(vid).strip()
+    if not _DM_ENABLED or not vid.isdigit():
+        return
+    sid = _dm_series_of(vid)
+    with _DM_LOCKS:
+        changed = _DM_STREAM.get("vid") != vid
+        _DM_STREAM["vid"] = vid
+        _DM_STREAM["t"] = time.time()
+        do_warm = bool(changed and sid and _DM_STREAM.get("warm") != vid)
+        if do_warm:
+            _DM_STREAM["warm"] = vid
+    if do_warm:
+        try:
+            did, iid = _dm_stream_device()
+            _dm_get(vid, sid, did, iid, wait=0)
+        except Exception:
+            pass
 
 
 def _dm_remember_series(vid: str, series_id: str) -> None:
