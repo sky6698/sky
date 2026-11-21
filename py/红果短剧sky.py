@@ -587,6 +587,95 @@ def _video_model_v5(video_id: str, config: Mapping[str, Any], ct_hint: int = 0) 
     return model
 
 
+# ---------------------------------------------------------------- v0.16.11 GET video_tab 兜底
+# 2026-11-21: 官方 hongguoTV-kotlin v0.16.11 在 v5 主接口(POST player/v1)回空时,
+# 兜底走 GET /reading/bookapi/video_tab/multi_video_model/v1/ 严格模式。真网实测:
+#   POST player/v1 (device_level=3/1) -> 恒 HTTP 200 + 0 字节(上游已封);
+#   GET  video_tab                    -> code=0 / 22KB / video_list 5 档 h265_hvc1(75s 正片)。
+# 这条路径用同一套 V5 签名底座(body=None),无需改 Signer,故直接复用 _hgv5_sign_playback_v5。
+_V5_TAB_HOSTS = (
+    "api5-normal-sinfonlineb.fqnovel.com",  # PlayRetryPlan.host(0) 首选
+    "api5-normal-hl.fqnovel.com",
+    "api5-normal-lf.fqnovel.com",
+)
+_V5_TAB_PATH = "/reading/bookapi/video_tab/multi_video_model/v1/"
+
+
+def _video_model_v5_tab(video_id: str, ct_hint: int = 0) -> dict[str, Any]:
+    """GET video_tab 严格兜底: 精确 vid 行 + code=0 + video_list 非空, 失败抛异常交给上层。"""
+    bare = _text(video_id).split("@")[0].strip()
+    if not bare:
+        raise HongguoPluginError("v5 tab 取流: 缺少 vid")
+    now = int(time.time() * 1000)
+    values = {
+        "aid": "8662", "app_name": "novelread",
+        "version_code": "73932", "version_name": "7.3.9.32",
+        "channel": "vivo_8662_64", "device_platform": "android",
+        "device_type": "PGT-AN10", "os_version": "12",
+        "manifest_version_code": "73932", "update_version_code": "73932",
+        "pv_player": "73932",
+        "iid": _HGV5_DEVICE["iid"], "cdid": _HGV5_DEVICE["cdid"],
+        "device_id": _HGV5_DEVICE["device_id"],
+        # tab 接口 extra 参数(v0.16.11 tabVideoModel 原样)
+        "video_id": bare, "video_id_type": "0", "device_level": "1",
+        "need_all_video_definition": "1", "need_mp4_align": "0",
+        "use_os_player": "0", "video_platform": "1024", "source": "0",
+        "from_video_id": "",
+    }
+    last = ""
+    for host in _V5_TAB_HOSTS:
+        base = "https://" + host + _V5_TAB_PATH
+        process_nonce = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+        try:
+            url, headers, query, f13 = _hgv5_sign_playback_v5(
+                base, values, None, now, dict(_HGV5_DEVICE), process_nonce, now)
+        except Exception as exc:  # noqa: BLE001
+            last = "签名失败: %s" % str(exc)[:60]
+            continue
+        headers["User-Agent"] = _HGV5_V5_UA
+        headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
+        try:
+            resp = _http().get(url, headers=headers, timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            last = "网络异常(%s): %s" % (host.split(".")[2], str(exc)[:60])
+            continue
+        if resp.status_code != 200 or not resp.content:
+            last = "%s HTTP %s/%dB" % (host.split(".")[2], resp.status_code,
+                                        len(resp.content or b""))
+            _play_log("v5 tab %s 空: %s" % (bare, last))
+            continue
+        # strict: code 必须为 0, 且必须精确命中 bare 这一行, video_list 非空
+        try:
+            payload = _json_response(resp)
+            if not isinstance(payload, Mapping):
+                raise ValueError("响应非对象")
+            code = payload.get("code", payload.get("Code", -1))
+            if code != 0:
+                raise ValueError("code=%s" % code)
+            data = payload.get("data") or {}
+            if not isinstance(data, Mapping):
+                raise ValueError("data 非对象")
+            rows = data.get("video_model_data") or data
+            row = rows.get(bare) if isinstance(rows, Mapping) else None
+            raw_model = row.get("video_model") if isinstance(row, Mapping) else None
+            if isinstance(raw_model, str):
+                raw_model = json.loads(raw_model)
+            if not isinstance(raw_model, Mapping):
+                raise ValueError("video_model 缺失")
+            if not (isinstance(raw_model.get("video_list"), (list, tuple))
+                    and raw_model["video_list"]):
+                raise ValueError("video_list 为空")
+            model = dict(raw_model)
+        except Exception as exc:  # noqa: BLE001
+            last = "%s 结构异常: %s" % (host.split(".")[2], str(exc)[:60])
+            _play_log("v5 tab %s reject: %s" % (bare, last))
+            continue
+        _play_log("v5 tab %s ok (%s, %dB, %d档)"
+                  % (bare, host.split(".")[2], len(resp.content), len(model["video_list"])))
+        return model
+    raise _VideoModelEmpty("v5 tab 取流失败(%s)" % (last or "unknown"))
+
+
 SITE = "https://hongguoduanju.com"
 EPISODE_PREFIX = "hg-episode-v1:"
 # 五档清晰度（显示名, 接口 definition 档位），按用户要求从高到低排列。
@@ -741,24 +830,6 @@ def _public_ok(url: str) -> bool:
         return False
 
 
-def _accessible_count(series_id: str, first_vid: str) -> int:
-    """官网播放页 SSR 里的 accessible_episode_cnt = 免费可看集数(其余为会员集)。
-    红果目前普遍只放 3 集免费, 之后的 vid 无公开直链, 提前标注避免点了播不了。"""
-    try:
-        html = _page("%s/player/%s/%s" % (PUBLIC_SITE, series_id, first_vid))
-        m = re.search(r"_ROUTER_DATA\s*=\s*", html)
-        if not m:
-            return 0
-        d = json.JSONDecoder().raw_decode(html[m.end():])[0]
-        for value in (d.get("loaderData") or {}).values():
-            if not isinstance(value, Mapping):
-                continue
-            detail = value.get("seriesDetail")
-            if isinstance(detail, Mapping) and detail.get("accessible_episode_cnt") is not None:
-                return int(detail.get("accessible_episode_cnt") or 0)
-    except Exception:
-        pass
-    return 0
 
 
 class _HongguoLogin:
@@ -1367,38 +1438,7 @@ def _json_response(response: requests.Response) -> Any:
     except ValueError as exc:
         raise HongguoPluginError("上游响应不是 JSON") from exc
 
-def _get_html(url: str, *, attempts: int = _HTML_FETCH_ATTEMPTS) -> str:
-    last_error: Exception | None = None
-    for attempt in range(max(1, attempts)):
-        try:
-            response = requests.get(
-                url,
-                headers={
-                    "User-Agent": UA,
-                    "Accept-Language": "zh-CN,zh;q=0.9",
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            response.encoding = response.encoding or "utf-8"
-            return response.text
-        except Exception as error:  # transient proxy/DNS/read failures
-            last_error = error
-            if attempt + 1 < max(1, attempts):
-                time.sleep(_HTML_FETCH_BACKOFF_SECONDS * (attempt + 1))
-    raise HongguoPluginError(f"fetch failed: {url}") from last_error
 
-def _router_data(html: str) -> dict[str, Any]:
-    match = re.search(r"(?:window\.)?_ROUTER_DATA\s*=\s*", html)
-    if not match:
-        raise HongguoPluginError("页面没有路由数据")
-    try:
-        value, _ = json.JSONDecoder().raw_decode(html[match.end() :])
-    except json.JSONDecodeError as exc:
-        raise HongguoPluginError("页面路由数据解析失败") from exc
-    if not isinstance(value, dict):
-        raise HongguoPluginError("页面路由数据格式错误")
-    return value
 
 def _decode_media_url(text: str) -> str:
     """把媒体地址规范化：部分条目的 main_url 是 **base64 编码的 URL**。
@@ -6040,15 +6080,6 @@ class _DeviceThrottled(HongguoPluginError):
         self.device_id = device_id
 
 
-def _is_throttled(exc: BaseException | None) -> bool:
-    """异常链里是否含"取流被判空"(含 _video_model 包装后的错)。"""
-    seen = 0
-    while exc is not None and seen < 5:
-        if isinstance(exc, _DeviceThrottled):
-            return True
-        exc = exc.__cause__ or exc.__context__
-        seen += 1
-    return False
 
 
 def _throttle_blocked() -> bool:
@@ -6108,28 +6139,8 @@ def _is_burned(device_id: str) -> bool:
         return bool(device_id) and device_id in _DEVICE_STATE["burned"]
 
 
-def _can_rotate() -> bool:
-    with _DEVICE_LOCK:
-        now = time.time()
-        recent = [t for t in _DEVICE_STATE["rotations"] if now - t < _DEVICE_ROTATE_WINDOW]
-        _DEVICE_STATE["rotations"] = recent
-        return len(recent) < _DEVICE_ROTATE_LIMIT
 
 
-def _rotate_device(bad_id: str = "") -> tuple[str, str]:
-    """把一个取流额度用尽的设备号换成新的(落盘), 返回新的 (device_id, install_id)。"""
-    with _DEVICE_LOCK:
-        burned = _DEVICE_STATE["burned"]
-        if bad_id and bad_id not in burned:
-            burned.append(bad_id)
-            del burned[:-_DEVICE_BURN_MAX]
-        _DEVICE_STATE["rotations"].append(time.time())
-        device_id, install_id = _random_identity()
-        while device_id in burned:
-            device_id, install_id = _random_identity()
-        _DEVICE_STATE["current"] = [device_id, install_id]
-    _persist_identity(device_id, install_id)
-    return device_id, install_id
 
 
 def _pace_request() -> None:
@@ -6142,12 +6153,6 @@ def _pace_request() -> None:
         _LAST_REQUEST_AT[0] = time.time()
 
 
-def _note_throttled() -> None:
-    """记一次空响应: 之后的请求整体往后推, 免得越撞越死。"""
-    with _DEVICE_LOCK:
-        now = time.time()
-        current = max(_THROTTLE_UNTIL[0] - now, 0.0)
-        _THROTTLE_UNTIL[0] = now + min(current + _THROTTLE_PENALTY, _THROTTLE_MAX)
 
 
 def _device_config(config: Mapping[str, Any]) -> dict[str, str]:
@@ -7267,179 +7272,8 @@ def _season_fetch(sid: str) -> dict:
         return None
 
 
-def _hg_season_plan(sid: str, meta: Mapping, cur_vids: list) -> list:
-    """算出同专辑的各季，**按季号从低到高**返回 [{no,sid,title,vids,ct,...}, ...]。
-
-    单季剧返回 []（调用方沿用原来的单线路逻辑）。结果内存 + 磁盘双缓存，
-    二次进入同一部剧零请求。
-    """
-    meta = meta or {}
-    album = _text(meta.get("album_id"))
-    sid = _text(sid).strip()
-    cur_vids = [str(v) for v in (cur_vids or []) if str(v)]
-    if not album or not sid.isdigit() or not cur_vids:
-        return []
-
-    with _SEASON_LOCK:
-        hit = _SEASON_CACHE.get(album)
-    if hit and time.time() - hit[0] < _SEASON_CACHE_TTL:
-        return hit[1]
-    try:
-        disk = _season_disk_load()
-        cached = disk.get(album)
-        if isinstance(cached, Mapping) and time.time() - float(cached.get("ts") or 0) < _SEASON_DISK_TTL:
-            seasons = [x for x in (cached.get("seasons") or []) if isinstance(x, Mapping) and x.get("vids")]
-            if seasons:
-                seasons.sort(key=lambda x: (int(x.get("no") or 0) or 1))
-                with _SEASON_LOCK:
-                    _SEASON_CACHE[album] = (time.time(), seasons)
-                return seasons
-    except Exception:
-        pass
-
-    base = _hg_base_name(meta.get("title"))
-    if not base:
-        return []
-
-    cur_no = 0
-    try:
-        cur_no = int(meta.get("season_no") or 0)
-    except (TypeError, ValueError):
-        cur_no = 0
-    cur_no = cur_no or max(1, _hg_season_no(meta.get("title")) or 1)
-
-    known = {cur_no: sid}
-    for csid, name in _hg_search_candidates(base, 1):
-        no = _hg_season_no(name)
-        if not no and _hg_base_name(name).strip() == base.strip():
-            # 第一季的剧名就是基名本身（不带「第X季」），按第 1 季收下
-            no = 1
-        if no and no not in known and csid != sid:
-            known[no] = csid
-
-    # 缺季定向补齐：基名搜索第 1 页未必覆盖到所有季（实测第五季常漏第一季）
-    top = max(known) if known else 1
-    missing = [n for n in range(1, top + 2) if n not in known]
-    if missing and top >= 2:
-        for no in missing[:3]:
-            for csid, name in _hg_search_candidates("%s第%s季" % (base, _hg_cn(no)), 1):
-                if _hg_season_no(name) == no and csid not in known.values():
-                    known[no] = csid
-                    break
-
-    seasons = [{
-        "no": cur_no, "sid": sid, "title": _text(meta.get("title")), "vids": cur_vids,
-        "cts": {}, "ct": _EP_CT.get(cur_vids[0]) if cur_vids else 0,
-        "album": album, "cover": _text(meta.get("cover")),
-        "intro": _text(meta.get("intro")), "actors": _text(meta.get("actors")),
-        "remarks": _text(meta.get("remarks")),
-    }]
-    todo = [(no, csid) for no, csid in known.items() if csid != sid]
-    if todo:
-        pool = None
-        try:
-            import concurrent.futures as _cf
-            pool = _cf.ThreadPoolExecutor(max_workers=min(4, len(todo)))
-            futures = {pool.submit(_season_fetch, csid): no for no, csid in todo}
-            deadline = time.time() + 8.0
-            for future in _cf.as_completed(list(futures), timeout=max(0.5, deadline - time.time())):
-                no = futures.get(future)
-                try:
-                    row = future.result()
-                except Exception:
-                    row = None
-                if not row or not row.get("vids"):
-                    continue
-                # 专辑 id 必须一致，否则是名字相近的别的剧（搜索经常混进来）
-                if _text(row.get("album")) and _text(row.get("album")) != album:
-                    continue
-                row["no"] = no or row.get("no") or 0
-                seasons.append(row)
-        except Exception:
-            pass
-        finally:
-            if pool is not None:
-                try:
-                    pool.shutdown(wait=False)
-                except Exception:
-                    pass
-
-    if len(seasons) <= 1:
-        return []
-
-    # 去重（不同季号给出同一份片源的情况）+ 严格按季号升序
-    seen = set()
-    unique = []
-    for row in seasons:
-        key = tuple(row.get("vids") or [])
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        unique.append(row)
-    if len(unique) <= 1:
-        return []
-    unique.sort(key=lambda x: (int(x.get("no") or 0) or 1))
-
-    with _SEASON_LOCK:
-        _SEASON_CACHE[album] = (time.time(), unique)
-    try:
-        disk = _season_disk_load()
-        disk[album] = {"ts": time.time(), "seasons": unique}
-        _season_disk_save(disk)
-    except Exception:
-        pass
-    return unique
 
 
-def _build_season_play(seasons: list, cur_sid: str = "") -> tuple:
-    """多季线路：一季一条。
-
-    ★ 两个坑都踩过，所以线路名这样定：
-    1. 壳（无名影视）会**按线路名重新排序**，不是按 vod_play_from 的先后。
-       「第一季」的「一」(U+4E00) 比「十」(U+5341) 小，于是点第十四季进来
-       默认却播第一季。→ 当前季加「★」(U+2605，码位比所有汉字都小)，
-       任何排序规则下都排第一。
-    2. 中文「第十二季」按字符串排会跑到「第二季」前面 → 其余季用零填充
-       「第02季」，排序就是季号顺序。
-    """
-    rows = [x for x in (seasons or []) if isinstance(x, Mapping)]
-    cur_sid = _text(cur_sid).strip()
-    if cur_sid:
-        mine = [x for x in rows if _text(x.get("sid")) == cur_sid]
-        rest = [x for x in rows if _text(x.get("sid")) != cur_sid]
-        if mine:
-            rows = mine + rest
-
-    names = []
-    urls = []
-    for row in rows:
-        vids = [str(v) for v in (row.get("vids") or []) if str(v)]
-        if not vids:
-            continue
-        try:
-            no = int(row.get("no") or 0)
-        except (TypeError, ValueError):
-            no = 0
-        no = no or 1
-        if cur_sid and _text(row.get("sid")) == cur_sid:
-            line = u"★第%d季" % no
-        else:
-            line = u"第%02d季" % no
-        if line in names:
-            line = "%s(%d)" % (line, len(names) + 1)
-        cts = row.get("cts") if isinstance(row.get("cts"), Mapping) else {}
-        parts = []
-        for index, vid in enumerate(vids, 1):
-            ct = cts.get(vid) or row.get("ct") or 0
-            parts.append("%d$%s%s" % (index, EPISODE_PREFIX, _hg_play_id(vid, ct)))
-        names.append(line)
-        urls.append("#".join(parts))
-        # 每季都登记集序，预取下一集才会跨季正确（看到季末集不会串到别的剧）
-        try:
-            _remember_series(row.get("sid") or "", vids)
-        except Exception:
-            pass
-    return "$$$".join(names), "$$$".join(urls)
 
 
 def _hg_signed_detail(sid: str) -> tuple:
@@ -7609,7 +7443,16 @@ def _video_model_once(video_id: str, config: Mapping[str, Any],
         _DIRECT_FAIL_AT[0] = 0.0
         return model
     except Exception as exc:  # noqa: BLE001
-        _play_log("v5 signed fail: %s -> direct fallback" % str(exc)[:60])
+        _play_log("v5 signed fail: %s -> tab fallback" % str(exc)[:60])
+
+    # 2026-11-21: v0.16.11 同款 GET video_tab 严格兜底。v5 POST player/v1 上游已恒回
+    # 200+0 字节, 这条 GET 路径真网稳定出 5 档 h265_hvc1(正片 75s), 置于直连之前。
+    try:
+        model = _video_model_v5_tab(video_id, ct_hint)
+        _DIRECT_FAIL_AT[0] = 0.0
+        return model
+    except Exception as exc:  # noqa: BLE001
+        _play_log("v5 tab fail: %s -> direct fallback" % str(exc)[:60])
 
     # **直连是当前唯一可用的取流路径**（8788 签名服务 2026-11-11 起恒回 HTTP 400）。
     # 以前这里会因 `_sig_breaker_active()`（15 分钟静默）或 `_direct_healthy()`
@@ -8034,8 +7877,6 @@ def _hg_codec_verdict(model) -> str:
     return "normal" if plain else "unknown"
 
 
-def _hg_is_bytevc2_model(model) -> bool:
-    return _hg_codec_verdict(model) == "bytevc2"
 
 
 def _hg_plain_model(fb: str, timeout: int = 8, force_h264: bool = False) -> list:
@@ -8121,9 +7962,6 @@ def _hg_plain_model(fb: str, timeout: int = 8, force_h264: bool = False) -> list
     return found
 
 
-def _hg_plain_tracks(model, timeout: int = 8) -> list:
-    fb = _fallback_api_value(model.get("fallback_api")) if isinstance(model, Mapping) else ""
-    return _hg_plain_model(fb, timeout)
 
 
 def _hg_force_api(fb: str) -> str:
@@ -8309,35 +8147,6 @@ def _pick_track(tracks: list, want: str = "") -> tuple:
     return best or tracks[0]
 
 
-def _probe_tiers(video_id: str, config: Mapping[str, Any]) -> list:
-    """探测该视频实际可用的清晰度档位(走 App video_model 接口, 无需登录)。
-
-    ⚠ 详情页已经不再调用它: 上游对同一 IP 的取流次数卡得很死(连续请求直接回
-    200 + 空 body), 详情页探测一次就等于把"播放那一次"的额度提前烧掉, 于是
-    播放时取不到流、回落到官网 10 秒试看。现在线路固定列 5 档(实测成功时
-    video_model 恒定回 360p~1080p 五档), 把唯一的取流请求留给真正播放那一刻。
-    保留此函数仅供手动诊断/调试使用。
-    """
-    now = time.time()
-    with _PROBE_LOCK:
-        if now < _PROBE_STATE["until"]:
-            return list(_PROBE_STATE["tiers"])
-    found = set()
-    try:
-        # 详情页只等这一下, 失败(空响应)单次约 0.1s, 5 次短重试最坏 ~2.5s;
-        # 成功则连带把取流模型写进缓存, 播放时不必再打一次上游。
-        model = _video_model(str(video_id), config)
-        for item in _iter_tracks(_video_list_from_model(model)):
-            definition = _definition_of(item)
-            if definition:
-                found.add(definition)
-    except Exception:
-        found = set()
-    tiers = [(name, tier) for name, tier in QUALITY_TIERS if tier in found]
-    with _PROBE_LOCK:
-        _PROBE_STATE["tiers"] = list(tiers)
-        _PROBE_STATE["until"] = time.time() + (0 if tiers else _PROBE_COOLDOWN)
-    return tiers
 
 
 def _quality_lines() -> list:
@@ -8480,13 +8289,6 @@ def _decrypt_spade_url(value: str, key_seed: bytes) -> str:
             plaintext = plaintext[:-padding]
     return plaintext.rstrip(b"\0").decode("utf-8", errors="replace")
 
-def _parse_ref(value: str, prefix: str) -> str:
-    if not value.startswith(prefix):
-        raise HongguoPluginError("播放引用无效")
-    raw = value[len(prefix) :]
-    if not raw or not _VIDEO_ID.fullmatch(raw):
-        raise HongguoPluginError("播放引用格式无效")
-    return raw
 
 def _key_seed_from_model(model: Mapping[str, Any]) -> bytes:
     value = _text(model.get("key_seed"))
@@ -8622,11 +8424,7 @@ def _item(x):
     return {"vod_id": sid, "vod_name": name, "vod_pic": str(vd.get("series_cover") or ""),
             "vod_remarks": "全%s集" % count if count else "", "vod_content": str(vd.get("series_intro") or "")}
 
-def _cat_item(x):
-    return _item(x)
 
-def _filter_group(key, name, values):
-    return {"key": key, "name": name, "value": [{"n": n, "v": v} for n, v in values]}
 
 
 def _app_params(devices):
