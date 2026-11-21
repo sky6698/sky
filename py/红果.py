@@ -789,6 +789,86 @@ def _video_model_v5(video_id: str, config=None, ct_hint: int = 0) -> dict:
         raise _HGV5Empty("v5 取流 model 为空")
     _hgv5_log("v5 signed %s ok (ct=%d, %d bytes)" % (bare, content_type, len(resp.content)))
     return model
+# ---------------------------------------------------------------- v0.16.11 GET video_tab 兜底
+# 2026-11-21: v5 主接口 POST player/v1 上游已恒回 200+0 字节; 官方 v0.16.11 兜底走
+# GET /reading/bookapi/video_tab/multi_video_model/v1/(严格模式), 真网稳定 5 档 h265_hvc1。
+_HGV5_TAB_HOSTS = (
+    "api5-normal-sinfonlineb.fqnovel.com",
+    "api5-normal-hl.fqnovel.com",
+    "api5-normal-lf.fqnovel.com",
+)
+
+
+def _hgv5_model_tab(video_id: str, ct_hint: int = 0) -> dict:
+    """GET video_tab 严格兜底: code=0 + 精确 vid 行 + video_list 非空。"""
+    bare = _text(video_id).split("@")[0].strip()
+    if not bare:
+        raise _HGV5Empty("v5 tab: 缺少 vid")
+    now = int(time.time() * 1000)
+    values = {
+        "aid": "8662", "app_name": "novelread",
+        "version_code": "73932", "version_name": "7.3.9.32",
+        "channel": "vivo_8662_64", "device_platform": "android",
+        "device_type": "PGT-AN10", "os_version": "12",
+        "manifest_version_code": "73932", "update_version_code": "73932",
+        "pv_player": "73932",
+        "iid": _HGV5_DEVICE["iid"], "cdid": _HGV5_DEVICE["cdid"],
+        "device_id": _HGV5_DEVICE["device_id"],
+        "video_id": bare, "video_id_type": "0", "device_level": "1",
+        "need_all_video_definition": "1", "need_mp4_align": "0",
+        "use_os_player": "0", "video_platform": "1024", "source": "0",
+        "from_video_id": "",
+    }
+    last = ""
+    for host in _HGV5_TAB_HOSTS:
+        base = "https://" + host + "/reading/bookapi/video_tab/multi_video_model/v1/"
+        process_nonce = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+        try:
+            url, headers, query, f13 = _hgv5_sign_playback_v5(
+                base, values, None, now, dict(_HGV5_DEVICE), process_nonce, now)
+        except Exception as exc:  # noqa: BLE001
+            last = "签名失败: %s" % str(exc)[:60]
+            continue
+        headers["User-Agent"] = _HGV5_V5_UA
+        headers["Accept"] = "application/json; charset=utf-8,application/x-protobuf"
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            last = "网络异常(%s): %s" % (host.split(".")[2], str(exc)[:60])
+            continue
+        if resp.status_code != 200 or not resp.content:
+            last = "%s HTTP %s/%dB" % (host.split(".")[2], resp.status_code,
+                                        len(resp.content or b""))
+            continue
+        try:
+            payload = _json_response(resp)
+            if not isinstance(payload, Mapping):
+                raise ValueError("响应非对象")
+            if payload.get("code", payload.get("Code", -1)) != 0:
+                raise ValueError("code=%s" % payload.get("code"))
+            data = payload.get("data") or {}
+            if not isinstance(data, Mapping):
+                raise ValueError("data 非对象")
+            rows = data.get("video_model_data") or data
+            row = rows.get(bare) if isinstance(rows, Mapping) else None
+            raw_model = row.get("video_model") if isinstance(row, Mapping) else None
+            if isinstance(raw_model, str):
+                raw_model = json.loads(raw_model)
+            if not isinstance(raw_model, Mapping):
+                raise ValueError("video_model 缺失")
+            if not (isinstance(raw_model.get("video_list"), (list, tuple))
+                    and raw_model["video_list"]):
+                raise ValueError("video_list 为空")
+            model = dict(raw_model)
+        except Exception as exc:  # noqa: BLE001
+            last = "%s 结构异常: %s" % (host.split(".")[2], str(exc)[:60])
+            _hgv5_log("v5 tab %s reject: %s" % (bare, last))
+            continue
+        _hgv5_log("v5 tab %s ok (%s, %dB, %d档)"
+                  % (bare, host.split(".")[2], len(resp.content), len(model["video_list"])))
+        return model
+    raise _HGV5Empty("v5 tab 取流失败(%s)" % (last or "unknown"))
+
 # ============ V5 取流胶水结束 ============
 
 
@@ -4866,7 +4946,12 @@ def _video_model(video_id: str, config: Mapping[str, Any], video_url: str | None
     try:
         return _video_model_v5(video_id, config)
     except Exception as _v5_err:  # noqa: BLE001
-        _hgv5_log("v5 signed fail: %s -> legacy fallback" % str(_v5_err)[:70])
+        _hgv5_log("v5 signed fail: %s -> tab fallback" % str(_v5_err)[:70])
+    # 2026-11-21: v0.16.11 GET video_tab 严格兜底(v5 POST 恒回空时稳定出 5 档正片)
+    try:
+        return _hgv5_model_tab(video_id)
+    except Exception as _tab_err:  # noqa: BLE001
+        _hgv5_log("v5 tab fail: %s -> legacy fallback" % str(_tab_err)[:70])
     devices = _device_config(config)
     params = {
         "iid": devices["install_id"],
