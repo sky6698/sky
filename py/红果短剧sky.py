@@ -723,6 +723,90 @@ PLAY_LINE = "红果┃短剧"
 # 线路名直接写清楚, 免得用户以为是正片却"点开就结束"。
 PLAY_LINE_PREVIEW = "红果┃试看360p"
 
+# ---------------------------------------------------------------- 官网完整公开兜底片源
+# 2026-11-23: 上游把 App 取流全链路(v5 POST / video_tab / 直连 / 签名服务)统一改成
+# HTTP 200 + 0 字节(占位签名表现) —— 这是当前"只有10秒"的真正根因。
+# 依据 jackotom/hongguo-drama v8.0(2026-11-23 发的空响应修复)与能播的 hgplayer v1.2.29:
+# 官网网页播放器有个公开兜底接口, 返回**完整 360p H.264** MP4 直链(非 SEO 页 10 秒预览)。
+_WEBFB_ORIGIN = "https://hongguoduanju.com"   # 必须无 www(www 会 301)
+_WEBFB_PATH = "/api/video/protected/fallback-play-info"
+_WEBFB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+_WEBFB_CDN_RE = re.compile(r"(^|\.)(?:qznovelvod|fqnovelvod|douyinvod)\.com$", re.I)
+_HTTP_WEBFB = None
+_WEBFB_CACHE: dict[str, tuple] = {}   # vid -> (url, expire_ts)
+_WEBFB_TTL = 120
+
+
+def _http_webfb():
+    """官网兜底接口专用连接池: 不走环境代理(对齐开源实现 proxy:false + 官网真实DNS)。"""
+    global _HTTP_WEBFB
+    if _HTTP_WEBFB is None:
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+        _HTTP_WEBFB = sess
+    return _HTTP_WEBFB
+
+
+def _web_fallback_url(vid: str) -> str:
+    """官网完整公开兜底片源。成功返回可直接播放的完整 360p MP4 直链, 失败返回 ''。
+
+    与 /video/public/<vid>/360p.mp4(SEO 10 秒试看)不同, 这条返回整集正片。
+    只对"当前公开分集"可用, 其它 vid 会回 public_fallback_unavailable —— 属正常。
+    """
+    bare = _text(vid).split("@")[0].strip()
+    if not bare.isdigit():
+        return ""
+    now = time.time()
+    cached = _WEBFB_CACHE.get(bare)
+    if cached and cached[1] > now + 5:
+        return cached[0]
+    try:
+        resp = _http_webfb().post(
+            _WEBFB_ORIGIN + _WEBFB_PATH,
+            data=json.dumps({"item_id": bare}),
+            headers={"User-Agent": _WEBFB_UA, "Accept": "application/json",
+                     "Content-Type": "application/json", "Referer": _WEBFB_ORIGIN + "/"},
+            timeout=8, allow_redirects=False)
+        if resp.status_code != 200 or not resp.content:
+            return ""
+        payload = resp.json()
+        if not isinstance(payload, Mapping):
+            return ""
+        base_resp = payload.get("base_resp")
+        code = (base_resp.get("StatusCode") if isinstance(base_resp, Mapping) else None)
+        if code is None:
+            code = payload.get("code", -1)
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = -1
+        if code != 0:
+            return ""
+        raw_url = _text(payload.get("main_url"))
+        if not raw_url.startswith("https://"):
+            return ""
+        parsed = urlparse(raw_url)
+        if not _WEBFB_CDN_RE.search(parsed.hostname or ""):
+            return ""
+        try:
+            expire = int(payload.get("url_expire") or 0)
+        except (TypeError, ValueError):
+            expire = 0
+        if expire and expire <= now + 5:
+            return ""
+        _WEBFB_CACHE[bare] = (raw_url, now + _WEBFB_TTL)
+        _play_log("web fallback %s ok (%dB, expire=%s)"
+                  % (bare, len(resp.content), expire))
+        return raw_url
+    except Exception as exc:  # noqa: BLE001
+        _play_log("web fallback %s fail: %s" % (bare, str(exc)[:60]))
+        return ""
+
+
 # ---------------------------------------------------------------- 账号登录
 # 红果官网自身挂着番茄小说 passport 网关, 扫码登录流程:
 #   get_qrcode 拿 token+二维码 -> 用「红果短剧」App 扫码并确认
@@ -9890,6 +9974,17 @@ class Spider(Spider):
                                    "url": pairs, "header": {"User-Agent": UA}}, dm)
             _play_log("play %s -> app-stream FAIL(%s), fallback preview(10s)"
                       % (vid, error or "无可用档位"))
+        # 2026-11-23: App 取流全链路回空前, 先试官网完整公开兜底片源
+        # (/api/video/protected/fallback-play-info) —— 返回整集 360p H.264 MP4,
+        # 不是下面 /video/public 的 10 秒 SEO 试看。公开 CDN 直链无需解密/特殊头。
+        if vid.isdigit():
+            web_full = _web_fallback_url(vid)
+            if web_full:
+                _play_log("play %s -> web full fallback (360p 完整片源)" % vid)
+                return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
+                                   "url": web_full,
+                                   "header": {"User-Agent": _WEBFB_UA,
+                                              "Referer": _WEBFB_ORIGIN + "/"}}, dm)
         # 兜底: 官网公开直链(仅 10 秒试看片段)
         if public_url and _public_ok(public_url):
             return {"parse": 0, "jx": 0, "playUrl": "", "url": public_url, "header": header}
