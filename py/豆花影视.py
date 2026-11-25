@@ -14,6 +14,7 @@
 
 import re
 import json
+import time
 import urllib.parse
 import requests
 from lxml import etree
@@ -49,18 +50,37 @@ class Spider(Spider):
     def init(self, extend=''):
         pass
 
+    # _GET_RETRY_FIX: 站点多 IP 偶发 TLS 断连，短重试避免误判为空数据
     def _get(self, url, params=None, allow_redirects=True):
-        """发送GET请求"""
-        r = requests.get(url, headers=self.header, params=params,
-                         timeout=20, allow_redirects=allow_redirects)
-        r.encoding = 'utf-8'
-        return r.text
+        """发送GET请求（网络异常/空内容重试 2 次）"""
+        for attempt in range(3):
+            try:
+                r = requests.get(url, headers=self.header, params=params,
+                                 timeout=20, allow_redirects=allow_redirects)
+                r.encoding = 'utf-8'
+                if r.text and len(r.text) > 100:
+                    return r.text
+                if attempt == 2:
+                    return r.text
+            except Exception:
+                if attempt == 2:
+                    raise
+            time.sleep(0.25 * (attempt + 1))
+        return ''
 
     def _post(self, url, data=None):
-        """发送POST请求"""
-        r = requests.post(url, headers=self.header, data=data, timeout=20)
-        r.encoding = 'utf-8'
-        return r.text
+        """发送POST请求（网络异常重试 2 次）"""
+        for attempt in range(3):
+            try:
+                r = requests.post(url, headers=self.header, data=data, timeout=20)
+                r.encoding = 'utf-8'
+                if r.text:
+                    return r.text
+            except Exception:
+                if attempt == 2:
+                    raise
+            time.sleep(0.25 * (attempt + 1))
+        return ''
 
     def _fix_url(self, url):
         """修复相对URL为绝对URL"""
@@ -710,7 +730,9 @@ class Spider(Spider):
                 "header": json.dumps(self.header)
             }
         except Exception:
-            return {"parse": 0, "playUrl": "", "url": ""}
+            # 解析失败时交回 TVBox 内置解析器，避免返回空 URL 直接播放失败
+            return {"parse": 1, "playUrl": "", "url": play_url,
+                    "header": json.dumps(self.header)}
 
     # ==================== 搜索接口 ====================
 
