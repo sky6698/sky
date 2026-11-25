@@ -28,7 +28,38 @@ CERT_MD5 = '089C68CF7E7F6A5A29790CC656EB7126'
 CERT_SHA1 = '7E1141ECF197A3A7FD9A41900F8C638A12BA102F'
 PKG = 'com.lxf.sncgtzxyx'
 VC = '6001'
-HOST = 'http://43.240.158.154:18004'
+HOST = 'http://43.241.18.119:18004'
+_SITE_URL = 'https://1851089669.cdn.123clouddisk.com/1851089669/44107727'
+
+# ---- 站点动态域名（config.json 的 site 地址，2026-11-25 修复）----
+_SITE_DOMAIN_CACHE = {}
+
+def _site_domain(url, fallback):
+    """拉取订阅 site 配置里的 domain；失败/未开启则回退内置 host。缓存 30 分钟。"""
+    try:
+        now = time.time()
+        hit = _SITE_DOMAIN_CACHE.get(url)
+        if hit and now - hit[0] < 1800:
+            return hit[1]
+        try:
+            import ssl as _sslmod
+            _ctx = _sslmod._create_unverified_context()
+        except Exception:
+            _ctx = None
+        _req = urllib.request.Request(url, headers={'User-Agent': 'okhttp/3.12.1'})
+        _raw = urllib.request.urlopen(_req, timeout=8, context=_ctx).read()
+        _obj = json.loads(_raw.decode('utf-8', 'ignore'))
+        _dom = str(_obj.get('domain') or '').strip()
+        if _dom and _obj.get('enabled', True):
+            if '://' not in _dom:
+                _dom = 'http://' + _dom
+            _dom = _dom.rstrip('/')
+            _SITE_DOMAIN_CACHE[url] = (now, _dom)
+            return _dom
+    except Exception:
+        pass
+    return fallback
+
 UA = 'okhttp/3.12.1'
 
 _e = base64.b64encode(AES.new(PW_SAFE, AES.MODE_ECB).encrypt(pad(
@@ -100,6 +131,8 @@ class Spider(_Base):
     _cur_id = ''
 
     def init(self, extend=''):
+        global HOST
+        HOST = _site_domain(_SITE_URL, HOST)
         self.udid = hashlib.md5(str(time.time()).encode()).hexdigest()[:16].upper()
         self._rsa1 = PKCS1_v1_5.new(RSA.import_key(base64.b64decode(PUB1_B64)))
         self._rsa2 = None
