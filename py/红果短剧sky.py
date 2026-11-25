@@ -3583,6 +3583,133 @@ class _StreamServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+
+# ==================== EXE LOCAL HD PROXY (2026-11-25) ====================
+# 短剧播放器.exe 自带新版签名 + CENC 解密，通过本地 HTTP 服务输出标准 MP4：
+#   GET http://127.0.0.1:<port>/media/<vid>/<quality>  ->  206 video/mp4
+# 端口每次启动随机。这里自动发现：找 exe 进程 PID -> 其 LISTEN 端口 -> 探测 /media。
+# 命中后源直接把 play URL 指向本地服务，彻底绕开上游签名（跟随 exe 自动更新）。
+_HG_EXE_PROXY = True          # 总开关，设 False 可完全禁用本链路
+_HG_EXE_PROXY_CACHE = {"port": 0, "t": 0.0, "probe_vid": ""}
+_HG_EXE_PROXY_TTL = 120.0     # 缓存秒数；exe 不重启端口不变，重启后最多 TTL 秒重新发现
+
+def _hg_exe_pids():
+    """按进程名找短剧播放器 PID（纯 ctypes，无 psutil 依赖）。"""
+    pids = []
+    try:
+        import ctypes, ctypes.wintypes as _w
+        k = ctypes.windll.kernel32
+        snap = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        if snap == -1:
+            return pids
+        class _PE(ctypes.Structure):
+            _fields_ = [("dwSize", _w.DWORD), ("cntUsage", _w.DWORD),
+                        ("th32ProcessID", _w.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                        ("th32ModuleID", _w.DWORD), ("cntThreads", _w.DWORD),
+                        ("th32ParentProcessID", _w.DWORD), ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", _w.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+        pe = _PE(); pe.dwSize = ctypes.sizeof(_PE)
+        ok = k.Process32FirstW(snap, ctypes.byref(pe))
+        names = ("短剧播放器.exe", "hgplayer.exe")
+        while ok:
+            nm = pe.szExeFile or ""
+            if any(nm.lower() == n.lower() for n in names):
+                pids.append(int(pe.th32ProcessID))
+            ok = k.Process32NextW(snap, ctypes.byref(pe))
+        k.CloseHandle(snap)
+    except Exception:
+        pass
+    return pids
+
+def _hg_exe_listen_ports(pids):
+    """GetExtendedTcpTable 找这些 PID 的 LISTEN 端口。"""
+    ports = []
+    if not pids:
+        return ports
+    try:
+        import ctypes, ctypes.wintypes as _w, struct as _struct, socket as _socket
+        k = ctypes.windll.iphlpapi
+        TBL_OWNER_PID_LISTENER = 3
+        buf = ctypes.create_string_buffer(8192 * 4)
+        size = _w.DWORD(ctypes.sizeof(buf))
+        res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
+                                    TBL_OWNER_PID_LISTENER, 0)
+        if res != 0:
+            buf = ctypes.create_string_buffer(size.value)
+            res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
+                                        TBL_OWNER_PID_LISTENER, 0)
+        if res == 0:
+            raw = buf.raw[:size.value]
+            n = _struct.unpack_from("<I", raw, 0)[0]
+            off = 4
+            for _ in range(n):
+                state, laddr, lport, raddr, rport, pid = _struct.unpack_from("<IIIIII", raw, off)
+                off += 24
+                if state == 2 and pid in pids:  # LISTEN
+                    ports.append(_socket.ntohs(lport & 0xFFFF))
+    except Exception:
+        pass
+    return ports
+
+def _hg_probe_media_port(ports, vid):
+    """逐端口探测 /media/<vid>/360p 是否返回标准 MP4。"""
+    if not ports:
+        return 0
+    try:
+        import requests as _rq
+        s = _rq.Session(); s.trust_env = False
+        for p in ports:
+            try:
+                r = s.get("http://127.0.0.1:%d/media/%s/360p" % (p, vid),
+                          headers={"Range": "bytes=0-31", "Accept": "video/mp4"}, timeout=4)
+                if r.status_code in (200, 206) and r.content[:4] in (b"\x00\x00\x00\x00", b"\x00\x00\x00\x1c"):
+                    return p
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 0
+
+def _hg_exe_media_port(vid=""):
+    """发现（或复用缓存）exe 本地高清代理端口。失败返回 0。"""
+    if not _HG_EXE_PROXY:
+        return 0
+    now = time.time()
+    c = _HG_EXE_PROXY_CACHE
+    if c.get("port") and (now - c.get("t", 0)) < _HG_EXE_PROXY_TTL:
+        return c["port"]
+    try:
+        pids = _hg_exe_pids()
+        ports = _hg_exe_listen_ports(pids)
+        probe_vid = (str(vid).split("@")[0].strip() if str(vid).isdigit()
+                     else (c.get("probe_vid") or "7695629314057849880"))
+        found = _hg_probe_media_port(ports, probe_vid)
+        if found:
+            c.update(port=found, t=now, probe_vid=probe_vid)
+            try:
+                _play_log("exe local proxy found :%d" % found)
+            except Exception:
+                pass
+            return found
+    except Exception:
+        pass
+    return 0
+
+def _hg_exe_proxy_tracks(vid, tier=""):
+    """若本地代理可用，返回 [(档位名, 直链URL), ...]（标准 MP4，无需解密）。失败返回 []。"""
+    port = _hg_exe_media_port(vid)
+    if not port or not str(vid).isdigit():
+        return []
+    bases = ("1080p", "720p", "540p", "480p", "360p")
+    order = bases
+    if tier and (tier + "p") in bases:
+        order = [tier + "p"] + [q for q in bases if q != tier + "p"]
+    out = []
+    for q in order:
+        out.append((q, "http://127.0.0.1:%d/media/%s/%s" % (port, vid, q)))
+    return out
+# ================== END EXE LOCAL HD PROXY ==================
+
 def _start_stream_server() -> int:
     with _STREAM_LOCK:
         if _STREAM_STATE["port"]:
@@ -10470,6 +10597,30 @@ class Spider(Spider):
         #      旧实现每切一档/每播一集都多烧一次额度, 于是"这集能播下集不行"。
         #   2. 交给 playerContent 的是一个 [档位名, 地址, 档位名, 地址, ...] 数组,
         #      播放器自己列线路, 与 node 源返回多路 url 的行为一致。
+        # 2026-11-25: 若本机正在运行短剧播放器.exe, 它的本地高清代理用新签名
+        # 取流+解密, 输出标准 MP4。优先走它, 一劳永逸绕开上游签名升级。
+        try:
+            _exe_tracks = _hg_exe_proxy_tracks(vid, tier_hint)
+        except Exception:
+            _exe_tracks = []
+        if _exe_tracks:
+            try:
+                _dm0 = _dm_payload(0, vid)
+            except Exception:
+                _dm0 = {}
+            if tier_hint:
+                _en, _eu = _exe_tracks[0]
+                return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
+                                   "url": _eu, "header": {"User-Agent": UA}}, _dm0)
+            _pairs = []
+            for _n, _u in _exe_tracks:
+                _pairs.append(_n); _pairs.append(_u)
+            try:
+                _play_log("play %s -> exe local proxy %d tiers" % (vid, len(_exe_tracks)))
+            except Exception:
+                pass
+            return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
+                               "url": _pairs, "header": {"User-Agent": UA}}, _dm0)
         try:
             port = _start_stream_server()
         except Exception:
