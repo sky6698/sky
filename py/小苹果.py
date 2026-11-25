@@ -21,8 +21,39 @@ except Exception:
     class _Base:
         pass
 
-HOST = '122.228.193.211'
-PORT = 18008
+HOST = '122.228.193.199'
+PORT = 30399
+_SITE_URL = 'https://xpgandroid03-1372779881.cos.ap-beijing.myqcloud.com/app_xpg_android.txt'
+
+# ---- 站点动态域名（config.json 的 site 地址，2026-11-25 修复）----
+_SITE_DOMAIN_CACHE = {}
+
+def _site_domain(url, fallback):
+    """拉取订阅 site 配置里的 domain；失败/未开启则回退内置 host。缓存 30 分钟。"""
+    try:
+        now = time.time()
+        hit = _SITE_DOMAIN_CACHE.get(url)
+        if hit and now - hit[0] < 1800:
+            return hit[1]
+        try:
+            import ssl as _sslmod
+            _ctx = _sslmod._create_unverified_context()
+        except Exception:
+            _ctx = None
+        _req = urllib.request.Request(url, headers={'User-Agent': 'okhttp/3.12.1'})
+        _raw = urllib.request.urlopen(_req, timeout=8, context=_ctx).read()
+        _obj = json.loads(_raw.decode('utf-8', 'ignore'))
+        _dom = str(_obj.get('domain') or '').strip()
+        if _dom and _obj.get('enabled', True):
+            if '://' not in _dom:
+                _dom = 'http://' + _dom
+            _dom = _dom.rstrip('/')
+            _SITE_DOMAIN_CACHE[url] = (now, _dom)
+            return _dom
+    except Exception:
+        pass
+    return fallback
+
 PUB1 = 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCduNEnfxGaLuQRk5ABzXHhPV43zi00sCHjLo8BYc+Wi6xXm2b4v0i28Sq4WlNCKhseft9fz8kO/qLr6/022o1RcuOU7e4GFL3U9WnNODwRBYSYWd+K8nqpI/tAUDmZEBGRWqjrc7x6aMl3A+xpnWkLbPCLsuhbuuUE3tv09oeOpwIDAQAB'
 NATIVE = b'ed5fdsgucxumegqa'
 DATAIV = b'OC1A06E197EF10CF3F6058CA7A803B5E'
@@ -175,7 +206,15 @@ class Spider(_Base):
         return '小苹果'
 
     def init(self, extend=''):
-        return
+        global HOST, PORT
+        try:
+            _d = _site_domain(_SITE_URL, 'http://%s:%d' % (HOST, PORT))
+            _p = urllib.parse.urlsplit(_d)
+            if _p.hostname:
+                HOST = _p.hostname
+                PORT = _p.port or 80
+        except Exception:
+            pass
 
     def _pd(self, ts):
         r16 = base64.b64encode(_rnd(12).encode()).decode()
