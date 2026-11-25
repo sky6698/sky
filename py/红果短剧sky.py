@@ -324,6 +324,9 @@ def _v5_proto(fields) -> bytes:
         if typ == "sint":
             _v5_varint(out, tag << 3)
             _v5_varint(out, _v5_zigzag(int(val)))
+        elif typ == "float":
+            _v5_varint(out, (tag << 3) | 5)
+            out.extend(struct.pack("<f", float(val)))
         else:
             b = val.encode("utf-8") if isinstance(val, str) else bytes(val)
             if len(b) > 0:
@@ -511,29 +514,50 @@ def _v5_aes_encrypt(key_bytes: bytes, ts: int, source: bytes, iv_bytes: bytes) -
 
 
 def _v5_medusa(query_str: str, body_bytes, ts: int, who: dict, p_nonce: str, p_start: int, field21: int = 312) -> str:
+    # 对齐 hongguoTV-kotlin v0.16.16 Signer.medusaV5:
+    # 设备信封扩展到 36 字段(到 field38), flags=4480000000000000,
+    # counter block=305/4/694367/1621072674, deviceToken 前置 'A'。
+    # 这是 2026-11-25 官方 74532 profile 恢复取流的关键差异。
     query = _sm3(query_str.encode("utf-8"))
     body_md5 = hashlib.md5(body_bytes).digest() if body_bytes is not None else bytes(16)
     f13 = _v5_hash_f13(query, body_md5, ts)
-    flags = bytes(8)
+    flags = bytes.fromhex("4480000000000000")
     version = who["version_name"]
+    # device token: 24 字符 base64url nonce 前置 'A' 补足 25 位
+    _pn = p_nonce or ""
+    device_token = _pn if (len(_pn) == 25 and _pn.startswith("A")) else ("A" + (_pn + "A" * 24)[:24])
+    brand = who.get("device_brand") or "HONOR"
+    dtype = who.get("device_type") or "25053RT47C"
+    os_ver = who.get("os_version") or "16"
+    env_launch = random.randint(100, 120)
+    env_pid = random.randint(10001, 12001)
     dev_info = _v5_proto([
         (1, 1, "sint"), (2, 2, "sint"), (3, "8662"), (4, who["device_id"]),
-        (5, p_nonce), (6, "!noperm!"), (12, "Asia/Shanghai,8"), (13, "zh_CN"),
-        (22, who["os_version"]), (25, p_start, "sint"),
-        (30, who["device_type"]), (31, "HONOR"),
-        (32, who["device_type"]), (34, "HONOR"),
+        (5, device_token), (6, "!noperm!"),
+        (7, -888888, "sint"), (8, -888888, "sint"), (9, 3, "sint"), (10, -888888, "sint"),
+        (11, "!notset!"), (12, "Asia/Shanghai,8"), (13, "zh_CN"), (14, 4, "sint"),
+        (16, 0.0, "float"), (17, 0.0, "float"), (18, 0.0, "float"),
+        (19, 0.0, "float"), (20, 0.0, "float"), (21, 0.0, "float"),
+        (22, os_ver), (23, 41, "sint"), (24, 36, "sint"),
+        (25, p_start, "sint"), (26, p_start, "sint"), (27, p_start, "sint"),
+        (28, int(time.time() * 1000), "sint"), (29, -1, "sint"),
+        (30, dtype), (31, brand), (32, dtype), (33, dtype),
+        (34, brand), (35, brand), (36, brand), (38, 31, "sint"),
     ])
     env = _v5_proto([
-        (6, "v04.10.03.04-bugfix"), (8, who["channel"]),
-        (12, dev_info), (14, version),
+        (1, env_launch, "sint"), (2, 247235599, "sint"), (3, 247235596, "sint"),
+        (5, 7, "sint"), (6, "v04.10.03.04-bugfix"), (7, env_pid, "sint"),
+        (8, who["channel"]), (12, dev_info),
+        (13, _v5_proto([(1, ts, "sint"), (2, -2, "sint"), (4, 200, "sint")])),
+        (14, version),
     ])
     message = _v5_proto([
         (1, V5_MAGIC), (2, 5, "sint"), (3, random.getrandbits(32), "sint"),
         (4, "8662"), (5, who["device_id"]), (6, V5_LICENSE),
         (7, version), (8, "v04.10.03-ml-android"), (9, 0x040A0300, "sint"),
         (10, flags), (12, ts, "sint"), (13, f13), (14, query[:6]),
-        (15, _v5_proto([(1, 1, "sint"), (2, 1, "sint"), (3, 1, "sint"), (5, 1, "sint")])),
-        (17, ts, "sint"), (20, "none"), (21, field21, "sint"), (23, env),
+        (15, _v5_proto([(1, 305, "sint"), (2, 4, "sint"), (3, 694367, "sint"), (5, 1621072674, "sint")])),
+        (16, device_token), (17, ts, "sint"), (20, "none"), (21, field21, "sint"), (23, env),
         (24, '{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}'),
     ])
     nonce = random.getrandbits(32)
