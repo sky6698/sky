@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 """
+
+协议来源：订阅 spider jar（classes.dex）中 com.github.catvod.spider.AppDrama
+以及其 proto 模型（DramaDetail / DramaVideo / SecureRequest / ApiResult）的反编译结果。
+
 链路：
   1) 握手 POST /api/v5/find/app/zone
      body = RSARequest{timestamp, randomStr, sign=RSA1(ts+random), fake1, fake2}
@@ -35,7 +39,38 @@ except Exception:
         pass
 
 # ---------------------------------------------------------------- 站点参数
-HOST = 'https://juziapp.hzhcbkj.cn'
+HOST = 'http://juziappcc.hzhcbkj.cn'
+_SITE_URL = 'https://1848463092.cdn.123clouddisk.com/1848463092/cct/az.txt'
+
+# ---- 站点动态域名（config.json 的 site 地址，2026-11-25 修复）----
+_SITE_DOMAIN_CACHE = {}
+
+def _site_domain(url, fallback):
+    """拉取订阅 site 配置里的 domain；失败/未开启则回退内置 host。缓存 30 分钟。"""
+    try:
+        now = time.time()
+        hit = _SITE_DOMAIN_CACHE.get(url)
+        if hit and now - hit[0] < 1800:
+            return hit[1]
+        try:
+            import ssl as _sslmod
+            _ctx = _sslmod._create_unverified_context()
+        except Exception:
+            _ctx = None
+        _req = urllib.request.Request(url, headers={'User-Agent': 'okhttp/3.12.1'})
+        _raw = urllib.request.urlopen(_req, timeout=8, context=_ctx).read()
+        _obj = json.loads(_raw.decode('utf-8', 'ignore'))
+        _dom = str(_obj.get('domain') or '').strip()
+        if _dom and _obj.get('enabled', True):
+            if '://' not in _dom:
+                _dom = 'http://' + _dom
+            _dom = _dom.rstrip('/')
+            _SITE_DOMAIN_CACHE[url] = (now, _dom)
+            return _dom
+    except Exception:
+        pass
+    return fallback
+
 UA = 'okhttp/3.12.1'
 
 CONF = {
@@ -330,7 +365,7 @@ class Spider(_Spider):
 
     # ------------------------------------------------------------ 初始化
     def init(self, extend=''):
-        self.host = HOST
+        self.host = _site_domain(_SITE_URL, HOST)
         self.conf = dict(CONF)
         self._load_ext(extend)
         self.vapp = str(self.conf['version']).replace('.', '')
