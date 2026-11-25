@@ -14,6 +14,8 @@ import re
 import struct
 import threading
 import time
+import tempfile
+import uuid
 import zlib
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3608,131 +3610,202 @@ class _StreamServer(ThreadingHTTPServer):
 
 
 
-# ==================== EXE LOCAL HD PROXY (2026-11-25) ====================
-# 短剧播放器.exe 自带新版签名 + CENC 解密，通过本地 HTTP 服务输出标准 MP4：
-#   GET http://127.0.0.1:<port>/media/<vid>/<quality>  ->  206 video/mp4
-# 端口每次启动随机。这里自动发现：找 exe 进程 PID -> 其 LISTEN 端口 -> 探测 /media。
-# 命中后源直接把 play URL 指向本地服务，彻底绕开上游签名（跟随 exe 自动更新）。
-_HG_EXE_PROXY = True          # 总开关，设 False 可完全禁用本链路
-_HG_EXE_PROXY_CACHE = {"port": 0, "t": 0.0, "probe_vid": ""}
-_HG_EXE_PROXY_TTL = 120.0     # 缓存秒数；exe 不重启端口不变，重启后最多 TTL 秒重新发现
 
-def _hg_exe_pids():
-    """按进程名找短剧播放器 PID（纯 ctypes，无 psutil 依赖）。"""
-    pids = []
+
+# ============ REMOTE SIGNER FALLBACK (2026-11-26, kstore 漫剧|小红同源) ============
+# 上游取流签名外包给远程服务：本地 envelope 签名失败时用它兜底拿 video_model。
+# 鉴权: HMAC-SHA256("POST\n<path>\n\n<sha256(body)>\n<ts>\n<nonce>\n<client>", secret)
+# 服务端直接返回签好的请求包(method/url/headers/body_base64)，本源原样打上游，
+# 拿到 video_model 后走与本地签名完全相同的 CENC 解密链。
+_RS_API = "http://211.101.237.42:8788"
+_RS_CLIENT = "java-client"
+_RS_SECRET = "7683cfa39c6fc5e700b34ffc022eea016a85c6ff641b70cc1c9f1bd09b0b6f92"
+_RS_TOKEN_FILE = os.path.join(tempfile.gettempdir(), "hg_remote_profile.json")
+_RS_STATE = {"token": "", "exp": 0, "at": 0.0, "fails": 0}
+_RS_TOKEN_TTL = 20 * 86400  # 注册令牌约 30 天有效，提前续期
+_RS_FAIL_COOLDOWN = 300.0   # 连续失败冷却，避免每集都注册
+
+
+def _rs_load_token():
+    if _RS_STATE["token"] and _RS_STATE["exp"] > time.time() + 60:
+        return _RS_STATE["token"]
     try:
-        import ctypes, ctypes.wintypes as _w
-        k = ctypes.windll.kernel32
-        snap = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
-        if snap == -1:
-            return pids
-        class _PE(ctypes.Structure):
-            _fields_ = [("dwSize", _w.DWORD), ("cntUsage", _w.DWORD),
-                        ("th32ProcessID", _w.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
-                        ("th32ModuleID", _w.DWORD), ("cntThreads", _w.DWORD),
-                        ("th32ParentProcessID", _w.DWORD), ("pcPriClassBase", ctypes.c_long),
-                        ("dwFlags", _w.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
-        pe = _PE(); pe.dwSize = ctypes.sizeof(_PE)
-        ok = k.Process32FirstW(snap, ctypes.byref(pe))
-        names = ("短剧播放器.exe", "hgplayer.exe")
-        while ok:
-            nm = pe.szExeFile or ""
-            if any(nm.lower() == n.lower() for n in names):
-                pids.append(int(pe.th32ProcessID))
-            ok = k.Process32NextW(snap, ctypes.byref(pe))
-        k.CloseHandle(snap)
+        with io.open(_RS_TOKEN_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        tok = str(d.get("token") or "")
+        exp = float(d.get("exp") or 0)
+        if tok and exp > time.time() + 60:
+            _RS_STATE["token"] = tok
+            _RS_STATE["exp"] = exp
+            return tok
     except Exception:
         pass
-    return pids
+    return ""
 
-def _hg_exe_listen_ports(pids):
-    """GetExtendedTcpTable 找这些 PID 的 LISTEN 端口。"""
-    ports = []
-    if not pids:
-        return ports
+
+def _rs_save_token(tok, exp):
+    _RS_STATE["token"] = tok
+    _RS_STATE["exp"] = float(exp)
     try:
-        import ctypes, ctypes.wintypes as _w, struct as _struct, socket as _socket
-        k = ctypes.windll.iphlpapi
-        TBL_OWNER_PID_LISTENER = 3
-        buf = ctypes.create_string_buffer(8192 * 4)
-        size = _w.DWORD(ctypes.sizeof(buf))
-        res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
-                                    TBL_OWNER_PID_LISTENER, 0)
-        if res != 0:
-            buf = ctypes.create_string_buffer(size.value)
-            res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
-                                        TBL_OWNER_PID_LISTENER, 0)
-        if res == 0:
-            raw = buf.raw[:size.value]
-            n = _struct.unpack_from("<I", raw, 0)[0]
-            off = 4
-            for _ in range(n):
-                state, laddr, lport, raddr, rport, pid = _struct.unpack_from("<IIIIII", raw, off)
-                off += 24
-                if state == 2 and pid in pids:  # LISTEN
-                    ports.append(_socket.ntohs(lport & 0xFFFF))
+        tmp = _RS_TOKEN_FILE + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"token": tok, "exp": exp}, f)
+        os.replace(tmp, _RS_TOKEN_FILE)
     except Exception:
         pass
-    return ports
 
-def _hg_probe_media_port(ports, vid):
-    """逐端口探测 /media/<vid>/360p 是否返回标准 MP4。"""
-    if not ports:
-        return 0
+
+def _rs_sign_json(path, body):
+    raw = json.dumps(body or {}, separators=(",", ":")).encode("utf-8")
+    ts = str(int(time.time() * 1000))
+    nonce = uuid.uuid4().hex
+    sha = hashlib.sha256(raw).hexdigest()
+    sign_str = "POST\n%s\n\n%s\n%s\n%s\n%s" % (path, sha, ts, nonce, _RS_CLIENT)
+    sig = hmac.new(_RS_SECRET.encode("utf-8"), sign_str.encode("utf-8"),
+                   hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json; charset=utf-8",
+               "X-Huolong-Client": _RS_CLIENT, "X-Huolong-Time": ts,
+               "X-Huolong-Nonce": nonce, "X-Huolong-Sign": sig}
+    r = requests.post(_RS_API + path, data=raw, headers=headers, timeout=10)
+    if r.status_code < 200 or r.status_code >= 300:
+        raise RuntimeError("rs HTTP %s" % r.status_code)
+    d = r.json()
+    _code = d.get("code")
     try:
-        import requests as _rq
-        s = _rq.Session(); s.trust_env = False
-        for p in ports:
-            try:
-                r = s.get("http://127.0.0.1:%d/media/%s/360p" % (p, vid),
-                          headers={"Range": "bytes=0-31", "Accept": "video/mp4"}, timeout=4)
-                if r.status_code in (200, 206) and r.content[:4] in (b"\x00\x00\x00\x00", b"\x00\x00\x00\x1c"):
-                    return p
-            except Exception:
-                continue
+        _code = int(_code) if _code is not None else -1
     except Exception:
-        pass
-    return 0
+        _code = -1
+    if _code != 0:
+        raise RuntimeError("rs %s" % str(d.get("code") or d.get("message"))[:40])
+    return d.get("data") or {}
 
-def _hg_exe_media_port(vid=""):
-    """发现（或复用缓存）exe 本地高清代理端口。失败返回 0。"""
-    if not _HG_EXE_PROXY:
-        return 0
+
+def _rs_envelope(data):
+    method = str(data.get("method") or "GET").upper()
+    url = str(data.get("url") or "")
+    if not url:
+        raise RuntimeError("rs envelope no url")
+    hdr = dict(data.get("headers") or {})
+    bb = data.get("body_base64")
+    body = base64.b64decode(str(bb)) if bb else str(data.get("body") or "").encode("utf-8")
+    exp = int(data.get("expires_at_ms") or 0)
+    return method, url, hdr, body, exp
+
+
+def _rs_execute(env):
+    method, url, hdr, body, exp = env
+    if exp and exp <= int(time.time() * 1000) + 500:
+        raise RuntimeError("EXPIRED_ENVELOPE")
+    r = requests.request(method, url, headers=hdr, data=body if method == "POST" else None,
+                         timeout=12)
+    enc = str(r.headers.get("Content-Encoding") or "").lower()
+    raw = r.content
+    if enc == "gzip" and raw[:2] == bytes((0x1F, 0x8B)):
+        try:
+            raw = gzip.decompress(raw)
+        except Exception:
+            pass
+    elif enc == "deflate" and raw[:1] == bytes((0x78,)):
+        try:
+            raw = zlib.decompress(raw)
+        except Exception:
+            pass
+    if r.status_code < 200 or r.status_code >= 300:
+        raise RuntimeError("upstream HTTP %s" % r.status_code)
+    return raw
+
+
+def _rs_register():
+    """prepare -> 打上游注册 -> complete 换 profile_token（约30天有效）"""
+    d = _rs_sign_json("/device/v1/hongguo/prepare", {})
+    tok_reg = str(d.get("registration_token") or "")
+    req = d.get("request")
+    if not tok_reg or not req:
+        raise RuntimeError("rs prepare empty")
+    env = _rs_envelope(req)
+    method, url, hdr, body, _ = env
+    r = requests.request(method, url, headers=hdr,
+                         data=body if method == "POST" else None, timeout=12)
+    enc = str(r.headers.get("content-encoding") or "").lower()
+    dec = r.content
+    if enc == "gzip" and dec[:2] == bytes((0x1F, 0x8B)):
+        try:
+            dec = gzip.decompress(dec)
+        except Exception:
+            pass
+    elif enc == "deflate" and dec[:1] == bytes((0x78,)):
+        try:
+            dec = zlib.decompress(dec)
+        except Exception:
+            pass
+    d2 = _rs_sign_json("/device/v1/hongguo/complete", {
+        "registration_token": tok_reg,
+        "status_code": r.status_code,
+        "content_encoding": "" if dec == r.content else enc,
+        "response_base64": base64.b64encode(dec).decode("ascii"),
+    })
+    tok = str(d2.get("profile_token") or "")
+    if not tok:
+        raise RuntimeError("rs complete no token")
+    exp = int(d2.get("expires_at_ms") or 0) / 1000.0
+    _rs_save_token(tok, exp)
+    return tok
+
+
+def _rs_token():
+    tok = _rs_load_token()
+    if tok:
+        return tok
     now = time.time()
-    c = _HG_EXE_PROXY_CACHE
-    if c.get("port") and (now - c.get("t", 0)) < _HG_EXE_PROXY_TTL:
-        return c["port"]
+    if _RS_STATE["fails"] > 0 and now - _RS_STATE["at"] < _RS_FAIL_COOLDOWN:
+        return ""
     try:
-        pids = _hg_exe_pids()
-        ports = _hg_exe_listen_ports(pids)
-        probe_vid = (str(vid).split("@")[0].strip() if str(vid).isdigit()
-                     else (c.get("probe_vid") or "7695629314057849880"))
-        found = _hg_probe_media_port(ports, probe_vid)
-        if found:
-            c.update(port=found, t=now, probe_vid=probe_vid)
-            try:
-                _play_log("exe local proxy found :%d" % found)
-            except Exception:
-                pass
-            return found
+        tok = _rs_register()
+        _RS_STATE["fails"] = 0
+        _RS_STATE["at"] = now
+        return tok
     except Exception:
-        pass
-    return 0
+        _RS_STATE["fails"] += 1
+        _RS_STATE["at"] = now
+        return ""
 
-def _hg_exe_proxy_tracks(vid, tier=""):
-    """若本地代理可用，返回 [(档位名, 直链URL), ...]（标准 MP4，无需解密）。失败返回 []。"""
-    port = _hg_exe_media_port(vid)
-    if not port or not str(vid).isdigit():
-        return []
-    bases = ("1080p", "720p", "540p", "480p", "360p")
-    order = bases
-    if tier and (tier + "p") in bases:
-        order = [tier + "p"] + [q for q in bases if q != tier + "p"]
-    out = []
-    for q in order:
-        out.append((q, "http://127.0.0.1:%d/media/%s/%s" % (port, vid, q)))
-    return out
-# ================== END EXE LOCAL HD PROXY ==================
+
+def _rs_video_model(vid):
+    """远程签名取 video_model；返回与 _video_model 同结构的 dict 或 None"""
+    tok = _rs_token()
+    if not tok:
+        return None
+    for action in ("play", "play_tab"):
+        try:
+            data = _rs_sign_json("/sign/v1/hongguo/%s" % action,
+                                 {"vid": str(vid), "content_type": 1,
+                                  "profile_token": tok})
+            raw = _rs_execute(_rs_envelope(data))
+            j = json.loads(raw.decode("utf-8", "replace"))
+            _jcode = j.get("code")
+            try:
+                _jcode = int(_jcode) if _jcode is not None else -1
+            except Exception:
+                _jcode = -1
+            if _jcode != 0:
+                continue
+            d = j.get("data") or {}
+            vm = d.get("video_model")
+            if not vm and action == "play_tab":
+                vmd = d.get("video_model_data") or {}
+                if isinstance(vmd, dict):
+                    vm = (vmd.get(str(vid)) or {}).get("video_model")
+            if isinstance(vm, str):
+                vm = json.loads(vm)
+            if isinstance(vm, dict) and (vm.get("video_list") or
+                                        (vm.get("dynamic_video") or {}).get("dynamic_video_list")):
+                _RS_STATE["fails"] = 0
+                return vm
+        except Exception:
+            continue
+    return None
+# ================== END REMOTE SIGNER FALLBACK ====================
+
 
 def _start_stream_server() -> int:
     with _STREAM_LOCK:
@@ -8295,7 +8368,20 @@ def _video_model_once(video_id: str, config: Mapping[str, Any],
         _DIRECT_FAIL_AT[0] = 0.0
         return model
     except Exception as exc:  # noqa: BLE001
-        _play_log("v5 tab fail: %s -> direct fallback" % str(exc)[:60])
+        _play_log("v5 tab fail: %s -> remote signer fallback" % str(exc)[:60])
+
+    # 2026-11-26: 本地签名(v5/v5-tab)已确认失败 -> 立刻走远程签名服务兜底。
+    # 实测 1.2s 拿到完整 5 档 model（含1080p），比继续撞 7 发直连 + 30min
+    # 限频探测快得多，且 profile_token 缓存 20 天后几乎零开销。
+    try:
+        _rm = _rs_video_model(_text(video_id).split("@")[0].strip())
+        if _rm:
+            _DIRECT_FAIL_AT[0] = 0.0
+            _play_log("play %s -> remote signer model %d tiers"
+                      % (video_id, len(_rm.get("video_list") or [])))
+            return _rm
+    except Exception as _rme:
+        _play_log("remote signer fail: %s" % str(_rme)[:60])
 
     # **直连是当前唯一可用的取流路径**（8788 签名服务 2026-11-11 起恒回 HTTP 400）。
     # 以前这里会因 `_sig_breaker_active()`（15 分钟静默）或 `_direct_healthy()`
@@ -10621,30 +10707,6 @@ class Spider(Spider):
         #      旧实现每切一档/每播一集都多烧一次额度, 于是"这集能播下集不行"。
         #   2. 交给 playerContent 的是一个 [档位名, 地址, 档位名, 地址, ...] 数组,
         #      播放器自己列线路, 与 node 源返回多路 url 的行为一致。
-        # 2026-11-25: 若本机正在运行短剧播放器.exe, 它的本地高清代理用新签名
-        # 取流+解密, 输出标准 MP4。优先走它, 一劳永逸绕开上游签名升级。
-        try:
-            _exe_tracks = _hg_exe_proxy_tracks(vid, tier_hint)
-        except Exception:
-            _exe_tracks = []
-        if _exe_tracks:
-            try:
-                _dm0 = _dm_payload(0, vid)
-            except Exception:
-                _dm0 = {}
-            if tier_hint:
-                _en, _eu = _exe_tracks[0]
-                return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
-                                   "url": _eu, "header": {"User-Agent": UA}}, _dm0)
-            _pairs = []
-            for _n, _u in _exe_tracks:
-                _pairs.append(_n); _pairs.append(_u)
-            try:
-                _play_log("play %s -> exe local proxy %d tiers" % (vid, len(_exe_tracks)))
-            except Exception:
-                pass
-            return _dm_attach({"parse": 0, "jx": 0, "playUrl": "",
-                               "url": _pairs, "header": {"User-Agent": UA}}, _dm0)
         try:
             port = _start_stream_server()
         except Exception:
