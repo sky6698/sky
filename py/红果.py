@@ -2027,7 +2027,79 @@ def _spade_value(item: Mapping[str, Any]) -> str:
         encrypt_info = {}
     return _first(item.get("spade_a"), encrypt_info.get("spade_a"))
 
-def derive_content_key(spade_b64: str) -> bytes:
+# ===== NEW SPADE KEY ALGO (from 红果短剧sky.py, v51 兼容) =====
+def _spade_direct(text: str) -> bytes | None:
+    """对齐 node 的 T20()：把一段文本当密钥本体读。
+
+    十六进制优先，其次 base64；只有长度落在 16/24/32（AES-128/192/256）才认。
+    """
+    value = (text or "").strip()
+    if not value:
+        return None
+    if len(value) % 2 == 0 and all(char in "0123456789abcdefABCDEF" for char in value):
+        try:
+            raw = binascii.unhexlify(value)
+        except (ValueError, binascii.Error):
+            raw = b""
+        if len(raw) in (16, 24, 32):
+            return raw
+    try:
+        raw = _b64(value + "=" * (-len(value) % 4))
+    except Exception:  # noqa: BLE001 - base64 失败就当不是密钥
+        return None
+    return raw if len(raw) in (16, 24, 32) else None
+
+
+
+def _yqt(value: int) -> int:
+    """node 的 Yqt()：'0'-'9' -> 0-9，'a'-'z' -> 10-35，其它 -1。"""
+    if 48 <= value <= 57:
+        return value - 48
+    if 97 <= value <= 122:
+        return value - 97 + 10
+    return -1
+
+
+
+def _spade_payload(spade: str) -> str:
+    """对齐 node 的 qqt()：解出 spade_a 里包裹的「payload + type」。
+
+    布局：三字节异或出偏移 c，type_len = c-48，data_len = len-c+47；
+    真正的内容在原始串的 [1, 1+data_len) 段，先按 zqt(..., t=null, n=0)
+    做交替种子异或还原，再用首字符解码出 payload 的截取长度。
+    """
+    raw = _b64((spade or "").strip() + "=" * (-len(spade or "") % 4))
+    if len(raw) < 5:
+        return ""
+    magic = (raw[0] ^ raw[1] ^ raw[2]) & 0xFF
+    type_len = magic - 48
+    data_len = len(raw) - magic + 47
+    if type_len < 1 or data_len < 1 or 1 + data_len > len(raw):
+        return ""
+    if len(raw) - type_len - 2 < 0:
+        return ""
+    body = bytearray(raw[1 : 1 + data_len])
+    seed_left, seed_right = 85, 250
+    for index in range(len(body)):
+        value = body[index]
+        if index & 1:
+            previous = seed_left
+            seed_left = value
+        else:
+            previous = seed_right
+            seed_right = value
+        body[index] = ((previous ^ value) - 21 - bin(index).count("1")) & 0xFF
+    head = _yqt(body[0])
+    if head < 0 or data_len - head < 2:
+        return ""
+    begin = 1
+    size = data_len - head - 1
+    return bytes(body[begin : begin + size]).decode("utf-8", "ignore")
+
+
+
+
+def _derive_content_key_legacy(spade_b64: str) -> bytes:
     raw = _b64(spade_b64)
     if len(raw) < 3:
         raise HongguoPluginError("spade_a 太短")
@@ -3456,6 +3528,133 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except Exception:
             self.close_connection = True
 
+
+
+# ==================== EXE LOCAL HD PROXY (2026-11-25) ====================
+# 短剧播放器.exe 自带新版签名 + CENC 解密，通过本地 HTTP 服务输出标准 MP4：
+#   GET http://127.0.0.1:<port>/media/<vid>/<quality>  ->  206 video/mp4
+# 端口每次启动随机。这里自动发现：找 exe 进程 PID -> 其 LISTEN 端口 -> 探测 /media。
+# 命中后源直接把 play URL 指向本地服务，彻底绕开上游签名（跟随 exe 自动更新）。
+_HG_EXE_PROXY = True          # 总开关，设 False 可完全禁用本链路
+_HG_EXE_PROXY_CACHE = {"port": 0, "t": 0.0, "probe_vid": ""}
+_HG_EXE_PROXY_TTL = 120.0     # 缓存秒数；exe 不重启端口不变，重启后最多 TTL 秒重新发现
+
+def _hg_exe_pids():
+    """按进程名找短剧播放器 PID（纯 ctypes，无 psutil 依赖）。"""
+    pids = []
+    try:
+        import ctypes, ctypes.wintypes as _w
+        k = ctypes.windll.kernel32
+        snap = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        if snap == -1:
+            return pids
+        class _PE(ctypes.Structure):
+            _fields_ = [("dwSize", _w.DWORD), ("cntUsage", _w.DWORD),
+                        ("th32ProcessID", _w.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                        ("th32ModuleID", _w.DWORD), ("cntThreads", _w.DWORD),
+                        ("th32ParentProcessID", _w.DWORD), ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", _w.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+        pe = _PE(); pe.dwSize = ctypes.sizeof(_PE)
+        ok = k.Process32FirstW(snap, ctypes.byref(pe))
+        names = ("短剧播放器.exe", "hgplayer.exe")
+        while ok:
+            nm = pe.szExeFile or ""
+            if any(nm.lower() == n.lower() for n in names):
+                pids.append(int(pe.th32ProcessID))
+            ok = k.Process32NextW(snap, ctypes.byref(pe))
+        k.CloseHandle(snap)
+    except Exception:
+        pass
+    return pids
+
+def _hg_exe_listen_ports(pids):
+    """GetExtendedTcpTable 找这些 PID 的 LISTEN 端口。"""
+    ports = []
+    if not pids:
+        return ports
+    try:
+        import ctypes, ctypes.wintypes as _w, struct as _struct, socket as _socket
+        k = ctypes.windll.iphlpapi
+        TBL_OWNER_PID_LISTENER = 3
+        buf = ctypes.create_string_buffer(8192 * 4)
+        size = _w.DWORD(ctypes.sizeof(buf))
+        res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
+                                    TBL_OWNER_PID_LISTENER, 0)
+        if res != 0:
+            buf = ctypes.create_string_buffer(size.value)
+            res = k.GetExtendedTcpTable(buf, ctypes.byref(size), False, 2,
+                                        TBL_OWNER_PID_LISTENER, 0)
+        if res == 0:
+            raw = buf.raw[:size.value]
+            n = _struct.unpack_from("<I", raw, 0)[0]
+            off = 4
+            for _ in range(n):
+                state, laddr, lport, raddr, rport, pid = _struct.unpack_from("<IIIIII", raw, off)
+                off += 24
+                if state == 2 and pid in pids:  # LISTEN
+                    ports.append(_socket.ntohs(lport & 0xFFFF))
+    except Exception:
+        pass
+    return ports
+
+def _hg_probe_media_port(ports, vid):
+    """逐端口探测 /media/<vid>/360p 是否返回标准 MP4。"""
+    if not ports:
+        return 0
+    try:
+        import requests as _rq
+        s = _rq.Session(); s.trust_env = False
+        for p in ports:
+            try:
+                r = s.get("http://127.0.0.1:%d/media/%s/360p" % (p, vid),
+                          headers={"Range": "bytes=0-31", "Accept": "video/mp4"}, timeout=4)
+                if r.status_code in (200, 206) and r.content[:4] in (b"\x00\x00\x00\x00", b"\x00\x00\x00\x1c"):
+                    return p
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 0
+
+def _hg_exe_media_port(vid=""):
+    """发现（或复用缓存）exe 本地高清代理端口。失败返回 0。"""
+    if not _HG_EXE_PROXY:
+        return 0
+    now = time.time()
+    c = _HG_EXE_PROXY_CACHE
+    if c.get("port") and (now - c.get("t", 0)) < _HG_EXE_PROXY_TTL:
+        return c["port"]
+    try:
+        pids = _hg_exe_pids()
+        ports = _hg_exe_listen_ports(pids)
+        probe_vid = (str(vid).split("@")[0].strip() if str(vid).isdigit()
+                     else (c.get("probe_vid") or "7695629314057849880"))
+        found = _hg_probe_media_port(ports, probe_vid)
+        if found:
+            c.update(port=found, t=now, probe_vid=probe_vid)
+            try:
+                _play_log("exe local proxy found :%d" % found)
+            except Exception:
+                pass
+            return found
+    except Exception:
+        pass
+    return 0
+
+def _hg_exe_proxy_tracks(vid, tier=""):
+    """若本地代理可用，返回 [(档位名, 直链URL), ...]（标准 MP4，无需解密）。失败返回 []。"""
+    port = _hg_exe_media_port(vid)
+    if not port or not str(vid).isdigit():
+        return []
+    bases = ("1080p", "720p", "540p", "480p", "360p")
+    order = bases
+    if tier and (tier + "p") in bases:
+        order = [tier + "p"] + [q for q in bases if q != tier + "p"]
+    out = []
+    for q in order:
+        out.append((q, "http://127.0.0.1:%d/media/%s/%s" % (port, vid, q)))
+    return out
+# ================== END EXE LOCAL HD PROXY ==================
 
 def _start_stream_server() -> int:
     with _STREAM_LOCK:
@@ -5728,6 +5927,88 @@ def _video_model(video_id: str, config: Mapping[str, Any], video_url: str | None
         raise HongguoPluginError("video_model 为空")
     return dict(raw_model)
 
+# ===== WEB FULL FALLBACK (from 红果短剧sky.py, 官网完整 360p) =====
+_WEBFB_ORIGIN = "https://hongguoduanju.com"   # 必须无 www(www 会 301)
+_WEBFB_PATH = "/api/video/protected/fallback-play-info"
+_WEBFB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+_WEBFB_CDN_RE = re.compile(r"(^|\.)(?:qznovelvod|fqnovelvod|douyinvod)\.com$", re.I)
+_HTTP_WEBFB = None
+_WEBFB_CACHE: dict[str, tuple] = {}   # vid -> (url, expire_ts)
+_WEBFB_TTL = 120
+
+
+def _http_webfb():
+    """官网兜底接口专用连接池: 不走环境代理(对齐开源实现 proxy:false + 官网真实DNS)。"""
+    global _HTTP_WEBFB
+    if _HTTP_WEBFB is None:
+        sess = requests.Session()
+        try:
+            sess.trust_env = False
+        except Exception:
+            pass
+        _HTTP_WEBFB = sess
+    return _HTTP_WEBFB
+
+
+def _web_fallback_url(vid: str) -> str:
+    """官网完整公开兜底片源。成功返回可直接播放的完整 360p MP4 直链, 失败返回 ''。
+
+    与 /video/public/<vid>/360p.mp4(SEO 10 秒试看)不同, 这条返回整集正片。
+    只对"当前公开分集"可用, 其它 vid 会回 public_fallback_unavailable —— 属正常。
+    """
+    bare = _text(vid).split("@")[0].strip()
+    if not bare.isdigit():
+        return ""
+    now = time.time()
+    cached = _WEBFB_CACHE.get(bare)
+    if cached and cached[1] > now + 5:
+        return cached[0]
+    try:
+        resp = _http_webfb().post(
+            _WEBFB_ORIGIN + _WEBFB_PATH,
+            data=json.dumps({"item_id": bare}),
+            headers={"User-Agent": _WEBFB_UA, "Accept": "application/json",
+                     "Content-Type": "application/json", "Referer": _WEBFB_ORIGIN + "/"},
+            timeout=8, allow_redirects=False)
+        if resp.status_code != 200 or not resp.content:
+            return ""
+        payload = resp.json()
+        if not isinstance(payload, Mapping):
+            return ""
+        base_resp = payload.get("base_resp")
+        code = (base_resp.get("StatusCode") if isinstance(base_resp, Mapping) else None)
+        if code is None:
+            code = payload.get("code", -1)
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = -1
+        if code != 0:
+            return ""
+        raw_url = _text(payload.get("main_url"))
+        if not raw_url.startswith("https://"):
+            return ""
+        parsed = urlparse(raw_url)
+        if not _WEBFB_CDN_RE.search(parsed.hostname or ""):
+            return ""
+        try:
+            expire = int(payload.get("url_expire") or 0)
+        except (TypeError, ValueError):
+            expire = 0
+        if expire and expire <= now + 5:
+            return ""
+        _WEBFB_CACHE[bare] = (raw_url, now + _WEBFB_TTL)
+        _hgv5_log("web fallback %s ok (%dB, expire=%s)"
+                  % (bare, len(resp.content), expire))
+        return raw_url
+    except Exception as exc:  # noqa: BLE001
+        _hgv5_log("web fallback %s fail: %s" % (bare, str(exc)[:60]))
+        return ""
+
+
+
+
 def _video_list_from_model(model: Mapping[str, Any]) -> Any:
     for key in ("video_list", "dynamic_video_list"):
         if model.get(key) is not None:
@@ -7430,6 +7711,23 @@ def _dm_push_local(url: str, vid: str) -> None:
         pass
 
 
+# v51 兼容的 derive_content_key：新算法优先，老算法兜底。
+# 2026-11-24: v51preload 的 spade 用 payload 封装（seed 85/250），老算法(85/246)解不出。
+def derive_content_key(spade_b64: str) -> bytes:
+    try:
+        direct = _spade_direct(spade_b64)
+        if direct:
+            return direct
+        payload = _spade_payload(spade_b64)
+        if payload:
+            direct = _spade_direct(payload)
+            if direct:
+                return direct
+    except Exception:
+        pass
+    return _derive_content_key_legacy(spade_b64)
+
+
 class Spider(_BaseSpider):
     def __init__(self):
         self.device_id = str(random.randint(10**17, 10**18 - 1))
@@ -7773,12 +8071,59 @@ class Spider(_BaseSpider):
         # 本机流服务支持 206 / Content-Range / Accept-Ranges，首字节约 1s，切集稳定。
         # 会话构建（取 video_model + 拉 moov）在冷启动时约 3~18s，若等到播放器连上来
         # 才建会话，响应头会被拖延到读超时。这里先建好会话再交 URL。
+        # 2026-11-25: 若本机正在运行短剧播放器.exe, 它的本地高清代理用新签名
+        # 取流+解密, 输出标准 MP4。优先走它, 一劳永逸绕开上游签名升级。
+        try:
+            _exe_tracks = _hg_exe_proxy_tracks(vid, q)
+        except Exception:
+            _exe_tracks = []
+        if _exe_tracks:
+            # 标记切集，供 /hg_dm 弹幕路由识别当前 vid（本地代理链路不经过 /hg.mp4）
+            try:
+                _dm_mark_stream(vid)
+            except Exception:
+                pass
+            _res = {"parse": 0, "jx": 0, "playUrl": "", "header": {"User-Agent": UA}}
+            if q and q != "1080":
+                _en, _eu = _exe_tracks[0]
+                _res["url"] = _eu
+            else:
+                _pairs = []
+                for _n, _u in _exe_tracks:
+                    _pairs.append(_n); _pairs.append(_u)
+                _res["url"] = _pairs
+            try:
+                _res.update(self._danmaku_payload(port=0, vid=vid))
+            except Exception:
+                pass
+            try:
+                _hgv5_log("play %s -> exe local proxy %d tiers" % (vid, len(_exe_tracks)))
+            except Exception:
+                pass
+            return _res
         cfg = {"device_id": self.device_id or "", "install_id": self.install_id or ""}
         session = None
         try:
             session = _stream_session(vid, cfg, q)
         except Exception:
             session = None
+        # 2026-11-24: App 取流链路(v51/v5/tab/direct)因上游频率限制或封禁全部回空时,
+        # 先用官网公开兜底接口拿完整 360p H.264 MP4(非 10 秒 SEO 试看), 保证能播完整正片。
+        # 本机流服务/壳代理都依赖 session, 无 session 时它们只会拿到空流 -> 不能播放。
+        if session is None and str(vid).isdigit():
+            try:
+                _web_full = _web_fallback_url(str(vid))
+            except Exception:
+                _web_full = ""
+            if _web_full:
+                try:
+                    _hgv5_log("play %s -> web full fallback (360p 完整片源)" % vid)
+                except Exception:
+                    pass
+                return {
+                    "parse": 0, "jx": 0, "playUrl": "", "url": _web_full,
+                    "header": {"User-Agent": _WEBFB_UA, "Referer": _WEBFB_ORIGIN + "/"},
+                }
 
         def _try_start_server(wait):
             # 启本机服务对弹幕(直通路)/中转(CENC路)是加分项而非前提；宿主环境禁止
